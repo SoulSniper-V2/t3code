@@ -70,6 +70,7 @@ export function totalTokens(totals: UsageTokenTotals): number {
 export function mightCarryUsage(line: string, provider: UsageProviderKind): boolean {
   if (provider === "claude") return line.includes('"usage"');
   if (provider === "grok") return line.includes('"turn_completed"');
+  if (provider === "commandcode") return line.includes('"usage"');
   return line.includes('"token_count"');
 }
 
@@ -483,6 +484,100 @@ export function parseGrokLine(line: string): readonly UsageRecord[] {
     });
   }
   return results;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Command Code                                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Rolling state for a single Command Code transcript file.
+ *
+ * Assistant message lines carry usage and the model but no session id; the
+ * file's own id arrives once on the leading `session` line, so it is carried
+ * forward exactly like the Codex model attribution.
+ */
+export interface CommandCodeScanState {
+  sessionId: string;
+}
+
+export function initialCommandCodeScanState(): CommandCodeScanState {
+  return { sessionId: "" };
+}
+
+/**
+ * Parses one line of a Command Code transcript
+ * (`~/.commandcode/projects/**\/*.jsonl`, never `*.checkpoints.jsonl`).
+ *
+ * One record per assistant `message` line that carries a `usage` object.
+ * Token fields mirror the Anthropic vocabulary (`inputTokens`,
+ * `cacheReadTokens`, `cacheWriteTokens`, `outputTokens`), so like the Claude
+ * parser they are treated as disjoint: `inputTokens` is the uncached portion.
+ * Cost is authoritative whenever the transcript reports it (`usage.costUsd`).
+ */
+export function parseCommandCodeLine(
+  line: string,
+  state: CommandCodeScanState,
+): UsageRecord | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+
+  const record = parsed as Record<string, unknown>;
+  if (record["type"] === "session") {
+    const id = record["id"];
+    if (typeof id === "string" && id.length > 0) state.sessionId = id;
+    return null;
+  }
+  if (record["type"] !== "message") return null;
+
+  const message = record["message"];
+  if (typeof message !== "object" || message === null) return null;
+  const messageRecord = message as Record<string, unknown>;
+  if (messageRecord["role"] !== "assistant") return null;
+
+  const usage = (record as Record<string, unknown>)["usage"];
+  if (typeof usage !== "object" || usage === null) return null;
+  const usageRecord = usage as Record<string, unknown>;
+
+  const timestampMs = parseTimestampMs(record["timestamp"]);
+  if (timestampMs === null) return null;
+
+  const model = typeof record["model"] === "string" ? record["model"] : "";
+  if (model.length === 0) return null;
+
+  const messageId = typeof record["id"] === "string" ? record["id"] : null;
+
+  const totals: UsageTokenTotals = {
+    uncachedInputTokens: int(usageRecord["inputTokens"]),
+    cachedInputTokens: int(usageRecord["cacheReadTokens"]),
+    cacheCreationTokens: int(usageRecord["cacheWriteTokens"]),
+    outputTokens: int(usageRecord["outputTokens"]),
+    // Command Code folds thinking into output and does not break it out.
+    reasoningTokens: 0,
+  };
+  if (totalTokens(totals) === 0) return null;
+
+  const cost = usageRecord["costUsd"];
+
+  return {
+    provider: "commandcode",
+    timestampMs,
+    model,
+    sessionId: state.sessionId,
+    totals,
+    reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
+    dedupeKey:
+      messageId === null
+        ? null
+        : state.sessionId.length > 0
+          ? `${state.sessionId}:${messageId}`
+          : messageId,
+  };
 }
 
 export { EMPTY_TOTALS };

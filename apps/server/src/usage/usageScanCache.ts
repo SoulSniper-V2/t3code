@@ -17,13 +17,14 @@
 import type { UsageProviderKind } from "@t3tools/contracts";
 
 import { GUARD_LENGTH, type TranscriptParsePosition } from "./usageTranscriptReader.ts";
-import type { CodexScanState, UsageRecord } from "./usageTranscripts.ts";
+import type { CodexScanState, CommandCodeScanState, UsageRecord } from "./usageTranscripts.ts";
 
 // v2: Codex fork-copy suppression changed what a file parses to, so v1
 // entries would keep serving double-counted records forever.
 // v3: entries carry the parse position and reducer state so a grown file
 // re-parses only its appended bytes instead of starting over.
-const USAGE_SCAN_CACHE_VERSION = 3 as const;
+// v4: entries carry the Command Code session state for the same resume.
+const USAGE_SCAN_CACHE_VERSION = 4 as const;
 
 export interface CachedFile {
   readonly size: number;
@@ -73,6 +74,8 @@ interface SerializedFile {
   readonly gh: number;
   /** Codex reducer state at `o`; `null` for stateless providers. */
   readonly cs: CodexScanState | null;
+  /** Command Code session state at `o`; `null` for other providers. */
+  readonly ccs: CommandCodeScanState | null;
 }
 
 interface SerializedCache {
@@ -123,6 +126,7 @@ export function encodeScanCache(cache: ScanCache): SerializedCache {
       gl: entry.position.guardLength,
       gh: entry.position.guardHash,
       cs: entry.position.codexState,
+      ccs: entry.position.commandCodeState,
     };
   }
 
@@ -216,7 +220,13 @@ export function decodeScanCache(document: unknown): ScanCache {
     if (typeof raw !== "object" || raw === null) continue;
     const entry = raw as Partial<SerializedFile>;
     if (typeof entry.s !== "number" || typeof entry.m !== "number") continue;
-    if (entry.p !== "claude" && entry.p !== "codex" && entry.p !== "grok") continue;
+    if (
+      entry.p !== "claude" &&
+      entry.p !== "codex" &&
+      entry.p !== "grok" &&
+      entry.p !== "commandcode"
+    )
+      continue;
     if (!isRecordArray(entry.r) || !isRecordArray(entry.t)) continue;
     // Position fields feed byte offsets and a Buffer allocation in the reader,
     // so anything outside their real ranges must reject the entry: a bogus
@@ -238,6 +248,8 @@ export function decodeScanCache(document: unknown): ScanCache {
     }
     const codexState = decodeCodexState(entry.cs);
     if (codexState === undefined) continue;
+    const commandCodeState = decodeCommandCodeState(entry.ccs);
+    if (commandCodeState === undefined) continue;
 
     const provider: UsageProviderKind = entry.p;
     const records = decodeRecords(entry.r, provider);
@@ -255,6 +267,7 @@ export function decodeScanCache(document: unknown): ScanCache {
         guardLength: entry.gl,
         guardHash: entry.gh,
         codexState,
+        commandCodeState,
       },
     });
   }
@@ -290,6 +303,19 @@ function decodeCodexState(value: unknown): CodexScanState | null | undefined {
     suppressingForkCopies: state.suppressingForkCopies,
     forkCopyAnchorMs: state.forkCopyAnchorMs,
   };
+}
+
+/**
+ * Validates a persisted Command Code scan state. Returns `undefined` for a
+ * corrupt value, which disqualifies the entry: resuming with a bad session id
+ * would attribute appended usage to the wrong session.
+ */
+function decodeCommandCodeState(value: unknown): CommandCodeScanState | null | undefined {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "object") return undefined;
+  const state = value as Partial<CommandCodeScanState>;
+  if (typeof state.sessionId !== "string") return undefined;
+  return { sessionId: state.sessionId };
 }
 
 /** Keeps saved usage after transcript cleanup, until the reporting retention expires. */

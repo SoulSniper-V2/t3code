@@ -93,6 +93,31 @@ checkpoints but cannot roll back its conversation. The [checkpoint boundary](./o
 therefore rejects revert before touching files. Native permission and question option IDs must
 also survive normalization; a display label is not necessarily a valid reply.
 
+Command Code runs one headless `-p` subprocess per turn ([CommandCodeAdapter](../../apps/server/src/provider/Layers/CommandCodeAdapter.ts)).
+Its print mode never shows interactive prompts: file writes and shell commands are hard-blocked
+unless the CLI is launched with `--yolo`, and `--permission-mode auto-accept` does **not** unlock
+them — so the driver's auto-accept mode maps to `--yolo`, and "standard" runs fail-closed with
+read-only tools. Resolve the binary as `command-code`, never bare `cmd` (cmd.exe wins on
+Windows). Streamed assistant text is buffered by the engine and revealed at message boundaries by
+default. Item ids emitted by the adapter must be unique per turn: ingestion derives the persisted
+assistant message id from the event's item id, and a reused id appends a new turn's text onto the
+previous turn's message. A signal-killed child reports its exit as a failure rather than a code,
+so the exit wait is neutralised and the interruption/result framing below owns the outcome.
+
+Custom endpoints (API key + URL + model options) ride on Command Code's own
+BYOK providers (`~/.commandcode/providers.json` via `/connect`): the driver's
+`--list-models` probe advertises those models and turns route to them with no
+T3-side driver work. Per-instance `environment` entries can inject the key
+variables the BYOK entry references, and `customModels` covers display-name
+overrides. A native generic HTTP driver remains future work — see the closed
+OpenRouter attempt for why endpoint-per-driver shims were rejected.
+
+Command Code usage is read from its own transcripts
+(`~/.commandcode/projects/**\/*.jsonl`, never `*.checkpoints.jsonl`), one
+record per assistant message line with the session id carried forward from the
+leading `session` line. Token fields follow the Anthropic vocabulary and are
+treated as disjoint; `usage.costUsd` is authoritative when present.
+
 ## Attachments and stored history
 
 Attachments live outside the project workspace. [ProviderService](../../apps/server/src/provider/Layers/ProviderService.ts)

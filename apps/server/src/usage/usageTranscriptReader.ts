@@ -22,11 +22,14 @@ import type { UsageProviderKind } from "@t3tools/contracts";
 
 import {
   initialCodexScanState,
+  initialCommandCodeScanState,
   mightCarryUsage,
   parseClaudeLine,
   parseCodexLine,
+  parseCommandCodeLine,
   parseGrokLine,
   type CodexScanState,
+  type CommandCodeScanState,
   type UsageRecord,
 } from "./usageTranscripts.ts";
 
@@ -56,6 +59,8 @@ export interface TranscriptParsePosition {
   readonly guardHash: number;
   /** Codex reducer state as of `resumeOffset`; `null` for stateless providers. */
   readonly codexState: CodexScanState | null;
+  /** Command Code session attribution as of `resumeOffset`; `null` otherwise. */
+  readonly commandCodeState: CommandCodeScanState | null;
 }
 
 export interface TranscriptParseResult {
@@ -96,14 +101,18 @@ function fnv1a(buffer: Buffer): number {
  * `fileName` restricts the walk to a single basename (Grok's `updates.jsonl`).
  * Grok sessions also ship multi-megabyte `chat_history` and `events` logs that
  * never carry usage, so the basename filter keeps a cold scan off those files.
+ * `excludeSuffix` drops files ending in that suffix (Command Code's
+ * `*.checkpoints.jsonl`, which shares the transcript directory but carries no
+ * per-message usage).
  */
 export async function listTranscriptFiles(
   root: string,
   sinceMs: number,
-  options?: { readonly fileName?: string },
+  options?: { readonly fileName?: string; readonly excludeSuffix?: string },
 ): Promise<readonly TranscriptFile[]> {
   const found: TranscriptFile[] = [];
   const fileName = options?.fileName;
+  const excludeSuffix = options?.excludeSuffix;
 
   const walk = async (dir: string): Promise<void> => {
     let entries;
@@ -123,6 +132,7 @@ export async function listTranscriptFiles(
       } else if (!entry.name.endsWith(".jsonl")) {
         continue;
       }
+      if (excludeSuffix !== undefined && entry.name.endsWith(excludeSuffix)) continue;
       try {
         const stats = await NodeFSP.stat(child);
         if (stats.mtimeMs >= sinceMs) {
@@ -204,20 +214,29 @@ export async function readTranscriptRecords(
 
   try {
     let codexState = initialCodexScanState();
+    let commandCodeState = initialCommandCodeScanState();
     let resumed = false;
     let start = 0;
     if (
       resumeFrom !== undefined &&
       resumeFrom.resumeOffset > 0 &&
       (provider !== "codex" || resumeFrom.codexState !== null) &&
+      (provider !== "commandcode" || resumeFrom.commandCodeState !== null) &&
       (await guardMatches(handle, resumeFrom))
     ) {
       if (resumeFrom.codexState !== null) codexState = { ...resumeFrom.codexState };
+      if (resumeFrom.commandCodeState !== null)
+        commandCodeState = { ...resumeFrom.commandCodeState };
       start = resumeFrom.resumeOffset;
       resumed = true;
     }
 
-    const parseLine = (line: string, state: CodexScanState, out: UsageRecord[]): void => {
+    const parseLine = (
+      line: string,
+      state: CodexScanState,
+      commandState: CommandCodeScanState,
+      out: UsageRecord[],
+    ): void => {
       if (provider === "codex") {
         if (
           !mightCarryUsage(line, provider) &&
@@ -227,6 +246,20 @@ export async function readTranscriptRecords(
           return;
         }
         const record = parseCodexLine(line, state);
+        if (record !== null) out.push(record);
+        return;
+      }
+      if (provider === "commandcode") {
+        // Session lines carry no usage but establish the session id the
+        // following message lines attribute to; they must pass the gate.
+        if (
+          !mightCarryUsage(line, provider) &&
+          !line.includes('"session"') &&
+          !line.includes('"message"')
+        ) {
+          return;
+        }
+        const record = parseCommandCodeLine(line, commandState);
         if (record !== null) out.push(record);
         return;
       }
@@ -270,7 +303,12 @@ export async function readTranscriptRecords(
       for (;;) {
         const newlineIndex = buffer.indexOf(NEWLINE, lineStart);
         if (newlineIndex === -1) break;
-        parseLine(toLineString(buffer.subarray(lineStart, newlineIndex)), codexState, records);
+        parseLine(
+          toLineString(buffer.subarray(lineStart, newlineIndex)),
+          codexState,
+          commandCodeState,
+          records,
+        );
         lineStart = newlineIndex + 1;
       }
       resumeOffset += lineStart;
@@ -283,7 +321,8 @@ export async function readTranscriptRecords(
     const tailRecords: UsageRecord[] = [];
     if (pendingChunks.length > 0) {
       const pending = pendingChunks.length === 1 ? pendingChunks[0]! : Buffer.concat(pendingChunks);
-      if (pending.length > 0) parseLine(toLineString(pending), { ...codexState }, tailRecords);
+      if (pending.length > 0)
+        parseLine(toLineString(pending), { ...codexState }, { ...commandCodeState }, tailRecords);
     }
 
     const guardLength = Math.min(GUARD_LENGTH, resumeOffset);
@@ -302,6 +341,7 @@ export async function readTranscriptRecords(
         guardLength,
         guardHash,
         codexState: provider === "codex" ? codexState : null,
+        commandCodeState: provider === "commandcode" ? commandCodeState : null,
       },
       resumed,
     };

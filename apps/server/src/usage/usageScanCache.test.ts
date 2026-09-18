@@ -35,6 +35,7 @@ function position(overrides: Partial<CachedFile["position"]> = {}): CachedFile["
     guardLength: 64,
     guardHash: 0xdeadbeef,
     codexState: null,
+    commandCodeState: null,
     ...overrides,
   };
 }

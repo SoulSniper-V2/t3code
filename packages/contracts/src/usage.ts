@@ -3,7 +3,9 @@
  *
  * Each environment scans the provider CLIs' own on-disk session transcripts
  * (`~/.claude/projects/**\/*.jsonl`, `~/.codex/sessions/**\/*.jsonl`,
- * `~/.grok/sessions/**\/updates.jsonl`) rather than relying on T3 Code's own
+ * `~/.grok/sessions/**\/updates.jsonl`,
+ * `~/.commandcode/projects/**\/*.jsonl` excluding `*.checkpoints.jsonl`)
+ * rather than relying on T3 Code's own
  * orchestration projections, so usage stays complete even for turns that were
  * never driven through T3 Code. This mirrors the approach `ccusage` takes.
  *
@@ -21,18 +23,18 @@ import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
  * client renders partial coverage when an environment reports an older version
  * rather than failing the whole page.
  */
-export const USAGE_CONTRACT_VERSION = 5 as const;
+export const USAGE_CONTRACT_VERSION = 6 as const;
 
 /**
  * Oldest {@link UsageSummary} version a current client will still merge.
  *
- * v5 only adds `grok` to {@link UsageProviderKind}; v4 Claude/Codex buckets
- * remain valid, so mixed-version environments keep those totals instead of
- * treating every older server as stale.
+ * v6 only adds `commandcode` to {@link UsageProviderKind}; v4/v5
+ * Claude/Codex/Grok buckets remain valid, so mixed-version environments keep
+ * those totals instead of treating every older server as stale.
  */
 export const USAGE_MERGE_COMPATIBLE_SINCE = 4 as const;
 
-export const UsageProviderKind = Schema.Literals(["claude", "codex", "grok"]);
+export const UsageProviderKind = Schema.Literals(["claude", "codex", "grok", "commandcode"]);
 export type UsageProviderKind = typeof UsageProviderKind.Type;
 
 /**

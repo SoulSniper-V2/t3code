@@ -102,6 +102,7 @@ const serviceLayers = (input: {
     Layer.provideMerge(
       Layer.succeed(HostProcessEnvironment, {
         GROK_HOME: NodePath.join(input.home, "grok"),
+        COMMANDCODE_HOME: NodePath.join(input.home, "commandcode"),
         ...input.environment,
       }),
     ),
@@ -226,6 +227,93 @@ describe("UsageService", () => {
         sources.filter((source) => source.fingerprint.provider === "codex").length,
         1,
       );
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("reads Command Code transcripts while skipping checkpoint files", () =>
+    Effect.gen(function* () {
+      const { settings, home } = yield* setup;
+      const commandCodeHome = NodePath.join(home, "commandcode");
+      const sessionId = "46429755-6739-42c0-8382-da7804bacd1e";
+      const transcriptLines =
+        [
+          encodeUnknownJsonString({
+            type: "session",
+            version: 3,
+            id: sessionId,
+            timestamp: "2026-08-01T09:00:00Z",
+            cwd: home,
+          }),
+          encodeUnknownJsonString({
+            type: "message",
+            id: "assistant-1",
+            parentId: "user-1",
+            timestamp: "2026-08-01T10:00:00Z",
+            message: { role: "assistant", content: [{ type: "text", text: "hi" }] },
+            usage: {
+              inputTokens: 100,
+              outputTokens: 17,
+              cacheReadTokens: 40,
+              cacheWriteTokens: 5,
+              costUsd: 0.01,
+            },
+            model: "deepseek/deepseek-v4-flash",
+          }),
+        ].join("\n") + "\n";
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(NodePath.join(commandCodeHome, "projects", "proj"), {
+          recursive: true,
+        });
+        await NodeFSP.writeFile(
+          NodePath.join(commandCodeHome, "projects", "proj", "session.jsonl"),
+          transcriptLines,
+        );
+        // Checkpoint sidecars share the directory but carry no per-message
+        // usage; a usage-looking line here must never leak into totals.
+        await NodeFSP.writeFile(
+          NodePath.join(commandCodeHome, "projects", "proj", "session.checkpoints.jsonl"),
+          `${encodeUnknownJsonString({ type: "message", usage: { inputTokens: 9999 } })}\n`,
+        );
+      });
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-commandcode-test",
+            home,
+            settings: {
+              ...settings,
+              providerInstances: {
+                [ProviderInstanceId.make("commandCode")]: {
+                  driver: ProviderDriverKind.make("commandCode"),
+                  environment: [
+                    { name: "COMMANDCODE_HOME", value: commandCodeHome, sensitive: false },
+                  ],
+                },
+              },
+            },
+          }),
+        ),
+      );
+      const summary = yield* service.readSummary(WINDOW);
+      const bucket = summary.buckets.find((entry) => entry.provider === "commandcode");
+      assert.isDefined(bucket);
+      assert.strictEqual(bucket?.model, "deepseek/deepseek-v4-flash");
+      assert.deepStrictEqual(bucket?.totals, {
+        uncachedInputTokens: 100,
+        cachedInputTokens: 40,
+        cacheCreationTokens: 5,
+        outputTokens: 17,
+        reasoningTokens: 0,
+      });
+      const source = summary.sources.find((entry) => entry.fingerprint.provider === "commandcode");
+      assert.strictEqual(source?.status, "ok");
+      assert.strictEqual(source?.scannedFiles, 1);
+      // The service canonicalises directories through realPath, which on
+      // macOS rewrites /var to /private/var; resolve the same way here.
+      const expectedProjects = yield* Effect.promise(() =>
+        NodeFSP.realpath(NodePath.join(commandCodeHome, "projects")),
+      );
+      assert.strictEqual(source?.fingerprint.resolvedHomePath, expectedProjects);
     }).pipe(Effect.scoped),
   );
 

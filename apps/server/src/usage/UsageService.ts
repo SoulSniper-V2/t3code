@@ -1,8 +1,8 @@
 /**
  * UsageService - scans provider transcripts and returns priced usage buckets.
  *
- * The scan reads the provider CLIs' own session files (Claude Code, Codex, and
- * Grok Build) rather than T3 Code's orchestration projections, so usage covers
+ * The scan reads the provider CLIs' own session files (Claude Code, Codex,
+ * Grok Build, and Command Code) rather than T3 Code's orchestration projections, so usage covers
  * turns driven outside T3 Code too. This is the approach `ccusage` takes.
  *
  * Transcripts are append-only, so parsed records are memoised per file by
@@ -258,9 +258,10 @@ export const make = Effect.gen(function* () {
       dir: string;
       volumeId: string;
       fileName?: string;
+      excludeSuffix?: string;
     }> = [];
     const seen = new Set<string>();
-    for (const driver of ["claudeAgent", "codex", "grok"] as const) {
+    for (const driver of ["claudeAgent", "codex", "grok", "commandCode"] as const) {
       // Disabled accounts still have history. Explicit default slots replace
       // the legacy settings, just as they do in the provider registry.
       const instances: Array<Pick<ProviderInstanceConfig, "config" | "environment">> =
@@ -270,7 +271,8 @@ export const make = Effect.gen(function* () {
       }
       for (const instance of instances) {
         const environment = mergeProviderInstanceEnvironment(instance.environment, hostEnvironment);
-        const provider = driver === "claudeAgent" ? "claude" : driver;
+        const provider: UsageProviderKind =
+          driver === "claudeAgent" ? "claude" : driver === "commandCode" ? "commandcode" : driver;
         let home: string;
         if (driver === "codex") {
           const decoded = decodeCodexSettings(instance.config ?? {});
@@ -290,12 +292,19 @@ export const make = Effect.gen(function* () {
           home = configured
             ? expandHomePath(configured)
             : environment.CLAUDE_CONFIG_DIR?.trim() || path.join(NodeOS.homedir(), ".claude");
+        } else if (driver === "commandCode") {
+          home = expandHomePath(
+            environment.COMMANDCODE_HOME?.trim() || path.join(NodeOS.homedir(), ".commandcode"),
+          );
         } else {
           home = expandHomePath(
             environment.GROK_HOME?.trim() || path.join(NodeOS.homedir(), ".grok"),
           );
         }
-        const directory = path.resolve(home, provider === "claude" ? "projects" : "sessions");
+        const directory = path.resolve(
+          home,
+          provider === "claude" || provider === "commandcode" ? "projects" : "sessions",
+        );
         const sourceKey = provider + "\0" + directory;
         const previous = sourceCache.get(sourceKey);
         // Keep canonical paths and source fingerprints stable after root cleanup,
@@ -330,6 +339,7 @@ export const make = Effect.gen(function* () {
           dir,
           volumeId,
           ...(provider === "grok" ? { fileName: "updates.jsonl" } : {}),
+          ...(provider === "commandcode" ? { excludeSuffix: ".checkpoints.jsonl" } : {}),
         });
       }
     }
@@ -463,7 +473,7 @@ export const make = Effect.gen(function* () {
       Effect.provideService(Path.Path, path),
     );
     const scanned: ScannedDir[] = [];
-    for (const { provider, dir, volumeId, fileName } of dirs) {
+    for (const { provider, dir, volumeId, fileName, excludeSuffix } of dirs) {
       const exists = yield* fileSystem
         .exists(dir)
         .pipe(Effect.catchCause(() => Effect.succeed(false)));
@@ -472,7 +482,16 @@ export const make = Effect.gen(function* () {
         continue;
       }
       const files = yield* Effect.promise(() =>
-        listTranscriptFiles(dir, windowStartMs, fileName === undefined ? undefined : { fileName }),
+        listTranscriptFiles(
+          dir,
+          windowStartMs,
+          fileName === undefined && excludeSuffix === undefined
+            ? undefined
+            : {
+                ...(fileName === undefined ? {} : { fileName }),
+                ...(excludeSuffix === undefined ? {} : { excludeSuffix }),
+              },
+        ),
       );
       const parsedFiles: { path: string; records: readonly UsageRecord[] }[] = [];
       for (const file of files) {

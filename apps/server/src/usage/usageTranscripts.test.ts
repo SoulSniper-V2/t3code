@@ -3,8 +3,10 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   GROK_COST_USD_TICKS_PER_DOLLAR,
   initialCodexScanState,
+  initialCommandCodeScanState,
   parseClaudeLine,
   parseCodexLine,
+  parseCommandCodeLine,
   parseGrokLine,
   totalTokens,
 } from "./usageTranscripts.ts";
@@ -562,5 +564,86 @@ describe("parseGrokLine", () => {
 
     const records = parseGrokLine(line);
     expect(records[0]?.timestampMs).toBe(1_786_372_566_000);
+  });
+});
+
+describe("parseCommandCodeLine", () => {
+  const sessionLine = JSON.stringify({
+    type: "session",
+    version: 3,
+    id: "46429755-6739-42c0-8382-da7804bacd1e",
+    timestamp: "2026-08-15T22:55:58.027Z",
+    cwd: "/Users/soulsniper/undmg",
+  });
+
+  /** Shaped after a real Command Code assistant message line. */
+  function messageLine(overrides?: {
+    id?: string;
+    role?: string;
+    usage?: Record<string, unknown> | null;
+    model?: string;
+  }): string {
+    return JSON.stringify({
+      type: "message",
+      id: overrides?.id ?? "31db8428",
+      parentId: "477cfd4f",
+      timestamp: "2026-08-15T22:56:40.515Z",
+      message: {
+        role: overrides?.role ?? "assistant",
+        content: [{ type: "text", text: "hi" }],
+      },
+      ...(overrides?.usage === null
+        ? {}
+        : {
+            usage: overrides?.usage ?? {
+              inputTokens: 20119,
+              outputTokens: 105,
+              cacheReadTokens: 7424,
+              cacheWriteTokens: 0,
+              costUsd: 0,
+            },
+          }),
+      model: overrides?.model ?? "poolside/laguna-s-2.1-free",
+    });
+  }
+
+  it("attributes assistant usage to the file session with a dedupe key", () => {
+    const state = initialCommandCodeScanState();
+    expect(parseCommandCodeLine(sessionLine, state)).toBeNull();
+    expect(state.sessionId).toBe("46429755-6739-42c0-8382-da7804bacd1e");
+
+    const record = parseCommandCodeLine(messageLine(), state);
+    expect(record?.provider).toBe("commandcode");
+    expect(record?.model).toBe("poolside/laguna-s-2.1-free");
+    expect(record?.sessionId).toBe("46429755-6739-42c0-8382-da7804bacd1e");
+    expect(record?.totals).toEqual({
+      uncachedInputTokens: 20119,
+      cachedInputTokens: 7424,
+      cacheCreationTokens: 0,
+      outputTokens: 105,
+      reasoningTokens: 0,
+    });
+    expect(record?.reportedCostUsd).toBe(0);
+    expect(record?.dedupeKey).toBe("46429755-6739-42c0-8382-da7804bacd1e:31db8428");
+  });
+
+  it("ignores user messages, tool results, and usage-free lines", () => {
+    const state = initialCommandCodeScanState();
+    expect(parseCommandCodeLine(messageLine({ role: "user" }), state)).toBeNull();
+    expect(parseCommandCodeLine(messageLine({ usage: null }), state)).toBeNull();
+    expect(parseCommandCodeLine(sessionLine, state)).toBeNull();
+    expect(parseCommandCodeLine("not json", state)).toBeNull();
+  });
+
+  it("drops zero-token records instead of emitting empty buckets", () => {
+    const state = initialCommandCodeScanState();
+    expect(
+      parseCommandCodeLine(
+        messageLine({
+          usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+        }),
+        state,
+      ),
+    ).toBeNull();
   });
 });
