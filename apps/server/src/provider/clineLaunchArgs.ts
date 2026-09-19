@@ -33,6 +33,21 @@ export interface ClineTurnArgsInput {
   readonly prompt?: string | undefined;
 }
 
+/**
+ * Format the prompt argument for Cline CLI.
+ *
+ * Cline CLI has a strict heuristic in non-interactive mode:
+ * `if (d.args.length > 1 || !/\s/.test(d.args[0])) { po(d.args); process.exitCode = 1; return; }`
+ * Any single-word prompt without spaces (e.g. "hi", "test", "status") is
+ * misclassified as an unknown subcommand and rejected. Ensuring the prompt
+ * contains whitespace satisfies the heuristic so Cline always runs the task.
+ */
+export function formatClinePrompt(prompt: string): string {
+  const trimmed = prompt.trim();
+  if (trimmed.length === 0) return "Continue. ";
+  return /\s/.test(trimmed) ? trimmed : `${trimmed} `;
+}
+
 /** Build the argv for one headless turn. */
 export function clineTurnArgs(input: ClineTurnArgsInput): ReadonlyArray<string> {
   const args: string[] = [
@@ -52,7 +67,7 @@ export function clineTurnArgs(input: ClineTurnArgsInput): ReadonlyArray<string> 
   }
   args.push(...tokenizeCliArgs(input.launchArgs));
   if (input.prompt !== undefined && input.prompt.length > 0) {
-    args.push("--", input.prompt);
+    args.push("--", formatClinePrompt(input.prompt));
   }
   return args;
 }

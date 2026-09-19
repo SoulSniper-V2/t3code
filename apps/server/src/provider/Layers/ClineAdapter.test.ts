@@ -108,13 +108,14 @@ it.layer(ClineAdapterTestLayer)("ClineAdapter (mock CLI)", (it) => {
       ).toBe(true);
       expect(events.some((event) => event.type === "turn.completed")).toBe(true);
 
-      // Headless JSON with explicit auto-approve and the requested model.
+      // Headless JSON with explicit auto-approve, the requested model, and
+      // prompt formatted with a space for Cline CLI's whitespace heuristic.
       const argv = readArgvLog(harness.argvLogPath);
       expect(argv.argv).toContain("--json");
       expect(argv.argv).toContain("--auto-approve");
       expect(argv.argv).toContain("true");
       expect(argv.argv).toContain("--model");
-      expect(argv.prompt).toBe("hola");
+      expect(argv.prompt).toBe("hola ");
     }).pipe(Effect.scoped),
   );
 
