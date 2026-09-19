@@ -246,6 +246,7 @@ import {
 import { useEnvironmentQuery } from "~/state/query";
 import { useDebouncedValue } from "~/state/queries";
 import { ProviderModelPicker } from "./ProviderModelPicker";
+import { AccountSwitcher } from "./AccountSwitcher";
 import { resolveModelPickerSelectedModel } from "./ModelPickerContent";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
@@ -5048,6 +5049,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         }}
         onOpenProviderSetup={onOpenProviderSetup}
       />
+
+      {providerInstanceEntries.length > 1 ? (
+        <AccountSwitcher
+          activeInstanceId={selectedInstanceId}
+          instanceEntries={providerInstanceEntries}
+          size={composerControlsInStrip ? "xs" : "sm"}
+          onSelectInstance={(instanceId) => {
+            const defaultModel = modelOptionsByInstance.get(instanceId)?.[0]?.slug ?? "default";
+            onProviderModelSelect(instanceId, defaultModel);
+          }}
+          onOpenAddAccount={() => onOpenProviderSetup(selectedInstanceId)}
+        />
+      ) : null}
 
       {composerControlsCompact ? (
         <CompactComposerControlsMenu

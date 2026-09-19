@@ -52,6 +52,7 @@ import {
   MonitorIcon,
   MoonIcon,
   PaletteIcon,
+  UsersIcon,
   SettingsIcon,
   SquarePenIcon,
   SunIcon,
@@ -708,6 +709,7 @@ function OpenCommandPaletteDialog(props: {
   const cloneRepository = useAtomCommand(sourceControlEnvironment.cloneRepository, {
     reportFailure: false,
   });
+  const composerHandleRef = useComposerHandleContext();
   const startProjectClone = useAtomCommand(sourceControlEnvironment.startProjectClone, {
     reportFailure: false,
   });
@@ -1773,6 +1775,25 @@ function OpenCommandPaletteDialog(props: {
       icon: <SquarePenIcon className={ITEM_ICON_CLASS} />,
       addonIcon: <SquarePenIcon className={ADDON_ICON_CLASS} />,
       groups: [{ value: "projects", label: "Projects", items: projectThreadItems }],
+    });
+
+    actionItems.push({
+      kind: "action",
+      value: "action:switch-ai-account",
+      searchTerms: [
+        "account",
+        "switch account",
+        "hot swap",
+        "provider instance",
+        "codex",
+        "claude",
+        "model",
+      ],
+      title: "Hot-swap AI account / model",
+      icon: <UsersIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        composerHandleRef?.current?.openModelPicker();
+      },
     });
   }
 

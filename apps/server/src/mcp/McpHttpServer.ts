@@ -17,6 +17,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
 import * as DeviceService from "../device/DeviceService.ts";
+import type { ComputerToolError } from "@t3tools/contracts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
@@ -40,6 +41,15 @@ import {
   DeviceScreenshotToolkit,
   DeviceStandardToolkit,
 } from "./toolkits/device/tools.ts";
+import {
+  ComputerScreenshotToolkitHandlersLive,
+  ComputerStandardToolkitHandlersLive,
+} from "./toolkits/computer/handlers.ts";
+import {
+  ComputerScreenshotTool,
+  ComputerScreenshotToolkit,
+  ComputerStandardToolkit,
+} from "./toolkits/computer/tools.ts";
 
 const unauthorized = HttpServerResponse.jsonUnsafe(
   {
@@ -621,6 +631,35 @@ export const DeviceToolkitRegistrationLive = Layer.mergeAll(
   DeviceScreenshotRegistrationLive,
 );
 
+const registerComputerScreenshot = Effect.fn("McpHttpServer.registerComputerScreenshot")(
+  function* () {
+    const built = yield* ComputerScreenshotToolkit;
+    yield* registerImageTool(
+      ComputerScreenshotTool,
+      (payload) =>
+        built
+          .handle("computer_screenshot", payload)
+          .pipe(Stream.unwrap, Stream.run(Sink.last()), Effect.flatMap(Effect.fromOption)),
+      (effect) => effect,
+      "screenshot",
+      "Desktop screenshot failed.",
+    );
+  },
+);
+
+const ComputerStandardToolkitRegistrationLive = McpServer.toolkit(ComputerStandardToolkit).pipe(
+  Layer.provide(ComputerStandardToolkitHandlersLive),
+);
+
+const ComputerScreenshotRegistrationLive = Layer.effectDiscard(registerComputerScreenshot()).pipe(
+  Layer.provide(ComputerScreenshotToolkitHandlersLive),
+);
+
+export const ComputerToolkitRegistrationLive = Layer.mergeAll(
+  ComputerStandardToolkitRegistrationLive,
+  ComputerScreenshotRegistrationLive,
+);
+
 const McpTransportLive = McpServer.layerHttp({
   name: "T3 Code",
   version: packageJson.version,
@@ -632,4 +671,5 @@ export const layer = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   PullRequestsToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,
+  ComputerToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive));

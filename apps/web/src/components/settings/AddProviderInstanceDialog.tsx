@@ -185,7 +185,14 @@ export function AddProviderInstanceDialog({
     setHasAttemptedSubmit(true);
     if (instanceIdError !== null) return;
 
-    const config = configByDriver[driver] ?? {};
+    const config: Record<string, unknown> = { ...(configByDriver[driver] ?? {}) };
+    // Multi-account hot-swapping: automatically isolate auth directories for secondary accounts
+    if (driver === "codex" && !config.shadowHomePath) {
+      config.shadowHomePath = `~/.codex-t3/${instanceId}`;
+    }
+    if (driver === "claudeAgent" && !config.homePath) {
+      config.homePath = `~/.claude-t3/${instanceId}`;
+    }
     const hasConfig = Object.keys(config).length > 0;
     const normalizedAccentColor = normalizeProviderAccentColor(accentColor);
 
