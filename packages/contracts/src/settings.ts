@@ -938,6 +938,98 @@ export const CommandCodeSettings = makeProviderSettingsSchema(
 export type CommandCodeSettings = typeof CommandCodeSettings.Type;
 
 /**
+ * Permission policy for headless Cline runs. The CLI auto-approves tools by
+ * default, so "auto-accept" passes `--auto-approve true` explicitly while
+ * "standard" passes `--auto-approve false` and the run stops at approvals.
+ */
+export const CLINE_PERMISSION_MODES = [
+  { value: "auto-accept", label: "Auto-accept (tools run without prompts)" },
+  { value: "standard", label: "Standard (stop at tool approvals)" },
+] as const satisfies ReadonlyArray<ProviderSettingsFormOption>;
+export const ClinePermissionMode = Schema.Literals(
+  CLINE_PERMISSION_MODES.map((mode) => mode.value),
+);
+export type ClinePermissionMode = typeof ClinePermissionMode.Type;
+
+/**
+ * Reasoning effort levels accepted by `cline --thinking`. Empty means the
+ * flag is omitted and the CLI/provider default applies.
+ */
+export const CLINE_THINKING_LEVELS = [
+  { value: "", label: "Provider default" },
+  { value: "none", label: "None" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "Extra high" },
+] as const satisfies ReadonlyArray<ProviderSettingsFormOption>;
+export const ClineThinkingLevel = Schema.Literals(
+  CLINE_THINKING_LEVELS.map((level) => level.value),
+);
+export type ClineThinkingLevel = typeof ClineThinkingLevel.Type;
+
+export const ClineSettings = makeProviderSettingsSchema(
+  {
+    // Off by default like Cursor, Grok, OpenCode, and Command Code: headless
+    // Cline is only useful on environments that already run the CLI.
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    binaryPath: makeBinaryPathSetting("cline").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to the Cline CLI binary.",
+        providerSettingsForm: {
+          placeholder: "cline",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    permissionMode: ClinePermissionMode.pipe(
+      Schema.withDecodingDefault(Effect.succeed("auto-accept" as const)),
+      Schema.annotateKey({
+        title: "Permission mode",
+        description:
+          "Auto-accept runs tools without prompts. Standard stops the run at tool approvals.",
+        providerSettingsForm: {
+          control: "select",
+          options: CLINE_PERMISSION_MODES,
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    thinkingLevel: ClineThinkingLevel.pipe(
+      Schema.withDecodingDefault(Effect.succeed("" as const)),
+      Schema.annotateKey({
+        title: "Reasoning effort",
+        description: "Reasoning budget passed as --thinking. Provider default omits the flag.",
+        providerSettingsForm: {
+          control: "select",
+          options: CLINE_THINKING_LEVELS,
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    launchArgs: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Launch arguments",
+        description: "Additional CLI arguments passed to Cline on every turn.",
+      }),
+    ),
+    customModels: Schema.Array(CustomModelSetting).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  {
+    order: ["binaryPath", "permissionMode", "thinkingLevel", "launchArgs"],
+  },
+);
+export type ClineSettings = typeof ClineSettings.Type;
+
+/**
  * A read-only quota source outside this environment's provider CLIs. The
  * only kind today is a CLIProxyAPI hub, whose management API reports the
  * windows of every pooled account. The key travels in settings for now, like
@@ -1286,6 +1378,7 @@ export const ServerSettings = Schema.Struct({
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     antigravity: AntigravitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     commandCode: CommandCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+    cline: ClineSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values
   // are `ProviderInstanceConfig` envelopes. The driver-specific config blob
@@ -1467,6 +1560,15 @@ const CommandCodeSettingsPatch = Schema.Struct({
   customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
 });
 
+const ClineSettingsPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  binaryPath: Schema.optionalKey(TrimmedString),
+  permissionMode: Schema.optionalKey(ClinePermissionMode),
+  thinkingLevel: Schema.optionalKey(ClineThinkingLevel),
+  launchArgs: Schema.optionalKey(TrimmedString),
+  customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
+});
+
 export const ServerSettingsPatch = Schema.Struct({
   worktreeCleanup: Schema.optionalKey(
     Schema.NullOr(
@@ -1569,6 +1671,7 @@ export const ServerSettingsPatch = Schema.Struct({
       opencode: Schema.optionalKey(OpenCodeSettingsPatch),
       antigravity: Schema.optionalKey(AntigravitySettingsPatch),
       commandCode: Schema.optionalKey(CommandCodeSettingsPatch),
+      cline: Schema.optionalKey(ClineSettingsPatch),
     }),
   ),
   // Whole-map replacement for the new instance config. Patching individual

@@ -4,7 +4,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import type { CommandCodeSettings, ProviderRuntimeEvent } from "@t3tools/contracts";
+import type { ClineSettings, ProviderRuntimeEvent } from "@t3tools/contracts";
 import { ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
@@ -12,23 +12,23 @@ import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import { expect, it } from "@effect/vitest";
 
-import { makeCommandCodeAdapter } from "./CommandCodeAdapter.ts";
+import { makeClineAdapter } from "./ClineAdapter.ts";
 
 const MOCK_AGENT_PATH = NodeURL.fileURLToPath(
-  new URL("../testFixtures/commandCodeHeadless/commandcode-mock-agent.cjs", import.meta.url),
+  new URL("../testFixtures/clineHeadless/cline-mock-agent.cjs", import.meta.url),
 );
 
-const CommandCodeAdapterTestLayer = NodeServices.layer;
+const ClineAdapterTestLayer = NodeServices.layer;
 
 function prepareMockHarness(): {
   readonly binaryPath: string;
   readonly argvLogPath: string;
   readonly cwd: string;
 } {
-  const cwd = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-cc-adapter-"));
+  const cwd = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-cline-adapter-"));
   const argvLogPath = NodePath.join(cwd, "argv.json");
   const isWindows = HostProcessPlatform.defaultValue() === "win32";
-  const binaryPath = NodePath.join(cwd, isWindows ? "command-code.cmd" : "command-code");
+  const binaryPath = NodePath.join(cwd, isWindows ? "cline.cmd" : "cline");
   NodeFS.writeFileSync(
     binaryPath,
     isWindows
@@ -45,14 +45,15 @@ function readArgvLog(path: string): { argv: string[]; prompt: string } {
   return JSON.parse(NodeFS.readFileSync(path, "utf8")) as { argv: string[]; prompt: string };
 }
 
-function makeConfig(binaryPath: string): CommandCodeSettings {
+function makeConfig(binaryPath: string): ClineSettings {
   return {
     enabled: true,
     binaryPath,
     permissionMode: "auto-accept",
+    thinkingLevel: "",
     launchArgs: "",
     customModels: [],
-  } as unknown as CommandCodeSettings;
+  } as unknown as ClineSettings;
 }
 
 /** Run a scenario to its terminal runtime event and return every event seen. */
@@ -65,30 +66,30 @@ function collectN(
   );
 }
 
-it.layer(CommandCodeAdapterTestLayer)("CommandCodeAdapter (mock CLI)", (it) => {
-  it.effect("runs a successful turn, streams events, and resumes with the session id", () =>
+it.layer(ClineAdapterTestLayer)("ClineAdapter (mock CLI)", (it) => {
+  it.effect("runs a successful turn with text, tools, and usage", () =>
     Effect.gen(function* () {
       const harness = prepareMockHarness();
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => NodeFS.rmSync(harness.cwd, { recursive: true, force: true })),
       );
-      const instanceId = ProviderInstanceId.make("commandCodeTest");
+      const instanceId = ProviderInstanceId.make("clineTest");
       const threadId = ThreadId.make("thread-1");
-      const adapter = yield* makeCommandCodeAdapter(makeConfig(harness.binaryPath), {
-        driverKind: ProviderDriverKind.make("commandCode"),
+      const adapter = yield* makeClineAdapter(makeConfig(harness.binaryPath), {
+        driverKind: ProviderDriverKind.make("cline"),
         instanceId,
         environment: { ...process.env, T3_MOCK_ARGV_LOG: harness.argvLogPath },
       });
       yield* adapter.startSession({ threadId, cwd: harness.cwd, runtimeMode: "full-access" });
 
-      const eventsFiber = yield* Effect.forkScoped(collectN(adapter.streamEvents, 6));
+      const eventsFiber = yield* Effect.forkScoped(collectN(adapter.streamEvents, 8));
       // Let the collector subscribe to the pubsub before the turn emits.
       yield* Effect.yieldNow;
       yield* Effect.yieldNow;
-      const first = yield* adapter.sendTurn({
+      yield* adapter.sendTurn({
         threadId,
         input: "hola",
-        modelSelection: { instanceId, model: "deepseek/deepseek-v4-flash" },
+        modelSelection: { instanceId, model: "poolside/laguna-s-2.1:free" },
       });
       const events = yield* Fiber.join(eventsFiber);
 
@@ -97,25 +98,23 @@ it.layer(CommandCodeAdapterTestLayer)("CommandCodeAdapter (mock CLI)", (it) => {
       expect(
         events.some((event) => event.type === "content.delta" && event.payload.delta === "Hola"),
       ).toBe(true);
-      expect(events.at(-1)?.type).toBe("turn.completed");
-      expect(first.resumeCursor).toEqual({ sessionId: "mock-session-1" });
+      expect(
+        events.some(
+          (event) =>
+            event.type === "item.completed" &&
+            typeof event.itemId === "string" &&
+            event.itemId.startsWith("tool-"),
+        ),
+      ).toBe(true);
+      expect(events.some((event) => event.type === "turn.completed")).toBe(true);
 
-      // First run carried --yolo and the requested model.
-      const firstArgv = readArgvLog(harness.argvLogPath);
-      expect(firstArgv.argv).toContain("--yolo");
-      expect(firstArgv.argv).toContain("--model");
-      expect(firstArgv.argv).toContain("deepseek/deepseek-v4-flash");
-
-      // A second turn resumes the same Command Code session.
-      const second = yield* adapter.sendTurn({
-        threadId,
-        input: "segundo",
-        continuation: true,
-      });
-      expect(second.resumeCursor).toEqual({ sessionId: "mock-session-1" });
-      const resumedArgv = readArgvLog(harness.argvLogPath);
-      expect(resumedArgv.argv).toContain("--resume");
-      expect(resumedArgv.argv).toContain("mock-session-1");
+      // Headless JSON with explicit auto-approve and the requested model.
+      const argv = readArgvLog(harness.argvLogPath);
+      expect(argv.argv).toContain("--json");
+      expect(argv.argv).toContain("--auto-approve");
+      expect(argv.argv).toContain("true");
+      expect(argv.argv).toContain("--model");
+      expect(argv.prompt).toBe("hola");
     }).pipe(Effect.scoped),
   );
 
@@ -125,10 +124,10 @@ it.layer(CommandCodeAdapterTestLayer)("CommandCodeAdapter (mock CLI)", (it) => {
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => NodeFS.rmSync(harness.cwd, { recursive: true, force: true })),
       );
-      const instanceId = ProviderInstanceId.make("commandCodeTest");
+      const instanceId = ProviderInstanceId.make("clineTest");
       const threadId = ThreadId.make("thread-interrupt");
-      const adapter = yield* makeCommandCodeAdapter(makeConfig(harness.binaryPath), {
-        driverKind: ProviderDriverKind.make("commandCode"),
+      const adapter = yield* makeClineAdapter(makeConfig(harness.binaryPath), {
+        driverKind: ProviderDriverKind.make("cline"),
         instanceId,
         environment: {
           ...process.env,
@@ -138,12 +137,12 @@ it.layer(CommandCodeAdapterTestLayer)("CommandCodeAdapter (mock CLI)", (it) => {
       });
       yield* adapter.startSession({ threadId, cwd: harness.cwd, runtimeMode: "full-access" });
 
-      const eventsFiber = yield* Effect.forkScoped(collectN(adapter.streamEvents, 4));
+      const eventsFiber = yield* Effect.forkScoped(collectN(adapter.streamEvents, 5));
       const sendFiber = yield* Effect.forkScoped(
         adapter.sendTurn({ threadId, input: "tarea larga" }),
       );
-      // Wait until the mock has emitted its first assistant chunk (the
-      // child is running and holding), then interrupt it.
+      // Wait until the mock has emitted its first text chunk (the child
+      // is running and holding), then interrupt it.
       yield* adapter.streamEvents.pipe(
         Stream.takeUntil(
           (event) => event.type === "content.delta" && event.payload.delta === "Hola",

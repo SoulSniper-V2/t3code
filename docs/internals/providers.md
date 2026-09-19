@@ -113,10 +113,27 @@ overrides. A native generic HTTP driver remains future work — see the closed
 OpenRouter attempt for why endpoint-per-driver shims were rejected.
 
 Command Code usage is read from its own transcripts
-(`~/.commandcode/projects/**\/*.jsonl`, never `*.checkpoints.jsonl`), one
+(`~/.commandcode/projects/*.jsonl`, never `*.checkpoints.jsonl`), one
 record per assistant message line with the session id carried forward from the
 leading `session` line. Token fields follow the Anthropic vocabulary and are
 treated as disjoint; `usage.costUsd` is authoritative when present.
+
+Cline runs one headless `--json` subprocess per turn ([ClineAdapter](../../apps/server/src/provider/Layers/ClineAdapter.ts)).
+`--id <session>` forces interactive mode (requires a TTY), so headless turns
+always start a fresh Cline session and the adapter never passes `--id` — a
+replacement for resume when the CLI learns it. The prompt travels over stdin;
+`--auto-approve true/false` carries the instance permission mode. Streamed
+text and reasoning arrive as `content_start` deltas, tools as
+`content_start/update/end` with the same ids, and the terminal `run_result`
+carries aggregate usage plus the resolved model. A signal-killed child
+reports its exit as a failure rather than a code, so the exit wait is
+neutralised like Command Code's. Auth-shaped failure text maps to
+`permission_error`. The snapshot reads the CLI's own `providers.json`
+credential markers (never key values) plus recent `cline history --json`
+models, since Cline has no catalog or auth-status command. Cline usage is
+read from whole `*.messages.json` session documents, one record per
+assistant message `metrics` delta; per-message cost is absent, so pricing
+falls back to the rate table by model id.
 
 ## Attachments and stored history
 

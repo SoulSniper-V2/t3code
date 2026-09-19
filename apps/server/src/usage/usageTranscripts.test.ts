@@ -5,6 +5,7 @@ import {
   initialCodexScanState,
   initialCommandCodeScanState,
   parseClaudeLine,
+  parseClineMessagesDocument,
   parseCodexLine,
   parseCommandCodeLine,
   parseGrokLine,
@@ -645,5 +646,96 @@ describe("parseCommandCodeLine", () => {
         state,
       ),
     ).toBeNull();
+  });
+});
+
+describe("parseClineMessagesDocument", () => {
+  /** Shaped after a real Cline session messages document. */
+  function document(overrides?: { messages?: ReadonlyArray<unknown> }): string {
+    return JSON.stringify({
+      version: 1,
+      sessionId: "1789835331913_58sqb",
+      messages: overrides?.messages ?? [
+        {
+          id: "msg_user",
+          role: "user",
+          content: [{ type: "text", text: "hi" }],
+          ts: 1789835332087,
+        },
+        {
+          id: "msg_asst_1",
+          role: "assistant",
+          content: [{ type: "text", text: "ok" }],
+          ts: 1789835336905,
+          modelInfo: { id: "poolside/laguna-s-2.1:free", provider: "cline" },
+          metrics: {
+            inputTokens: 5931,
+            outputTokens: 47,
+            cacheReadTokens: 192,
+            cacheWriteTokens: 0,
+          },
+        },
+        {
+          id: "msg_asst_2",
+          role: "assistant",
+          content: [{ type: "text", text: "done" }],
+          ts: 1789835340000,
+          modelInfo: { id: "moonshotai/kimi-k3", provider: "cline" },
+          metrics: {
+            inputTokens: 6010,
+            outputTokens: 19,
+            cacheReadTokens: 192,
+            cacheWriteTokens: 0,
+          },
+        },
+      ],
+    });
+  }
+
+  it("emits one record per assistant message with deltas and dedupe keys", () => {
+    const records = parseClineMessagesDocument(document());
+
+    expect(records).toHaveLength(2);
+    expect(records[0]).toMatchObject({
+      provider: "cline",
+      model: "poolside/laguna-s-2.1:free",
+      sessionId: "1789835331913_58sqb",
+      timestampMs: 1789835336905,
+      totals: {
+        uncachedInputTokens: 5931,
+        cachedInputTokens: 192,
+        cacheCreationTokens: 0,
+        outputTokens: 47,
+        reasoningTokens: 0,
+      },
+      reportedCostUsd: null,
+      dedupeKey: "1789835331913_58sqb:msg_asst_1",
+    });
+    expect(records[1]?.model).toBe("moonshotai/kimi-k3");
+  });
+
+  it("skips user messages, metric-less lines, and zero-token rows", () => {
+    const records = parseClineMessagesDocument(
+      document({
+        messages: [
+          { id: "u", role: "user", ts: 1 },
+          { id: "a", role: "assistant", ts: 2, modelInfo: { id: "m" } },
+          {
+            id: "z",
+            role: "assistant",
+            ts: 3,
+            modelInfo: { id: "m" },
+            metrics: { inputTokens: 0, outputTokens: 0 },
+          },
+        ],
+      }),
+    );
+
+    expect(records).toEqual([]);
+  });
+
+  it("returns empty for broken documents", () => {
+    expect(parseClineMessagesDocument("not json")).toEqual([]);
+    expect(parseClineMessagesDocument(JSON.stringify({ sessionId: "s" }))).toEqual([]);
   });
 });

@@ -103,6 +103,7 @@ const serviceLayers = (input: {
       Layer.succeed(HostProcessEnvironment, {
         GROK_HOME: NodePath.join(input.home, "grok"),
         COMMANDCODE_HOME: NodePath.join(input.home, "commandcode"),
+        CLINE_DATA_DIR: NodePath.join(input.home, "cline"),
         ...input.environment,
       }),
     ),
@@ -314,6 +315,86 @@ describe("UsageService", () => {
         NodeFSP.realpath(NodePath.join(commandCodeHome, "projects")),
       );
       assert.strictEqual(source?.fingerprint.resolvedHomePath, expectedProjects);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("reads Cline session documents while ignoring sibling metadata files", () =>
+    Effect.gen(function* () {
+      const { settings, home } = yield* setup;
+      const clineHome = NodePath.join(home, "cline");
+      const sessionId = "1789835331913_58sqb";
+      const messagesPath = NodePath.join(
+        clineHome,
+        "data",
+        "sessions",
+        sessionId,
+        `${sessionId}.messages.json`,
+      );
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(NodePath.join(clineHome, "data", "sessions", sessionId), {
+          recursive: true,
+        });
+        await NodeFSP.writeFile(
+          messagesPath,
+          encodeUnknownJsonString({
+            version: 1,
+            sessionId,
+            messages: [
+              { id: "u", role: "user", content: [], ts: Date.parse("2026-08-01T09:00:00Z") },
+              {
+                id: "a1",
+                role: "assistant",
+                content: [],
+                ts: Date.parse("2026-08-01T10:00:00Z"),
+                modelInfo: { id: "poolside/laguna-s-2.1:free", provider: "cline" },
+                metrics: {
+                  inputTokens: 200,
+                  outputTokens: 11,
+                  cacheReadTokens: 50,
+                  cacheWriteTokens: 0,
+                },
+              },
+            ],
+          }) + "\n",
+        );
+        // Sibling metadata shares the session directory but is not a
+        // messages document and must never be parsed for usage.
+        await NodeFSP.writeFile(
+          NodePath.join(clineHome, "data", "sessions", sessionId, `${sessionId}.json`),
+          encodeUnknownJsonString({ sessionId, usage: { inputTokens: 9999 } }) + "\n",
+        );
+      });
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-cline-test",
+            home,
+            settings: {
+              ...settings,
+              providerInstances: {
+                [ProviderInstanceId.make("cline")]: {
+                  driver: ProviderDriverKind.make("cline"),
+                  environment: [{ name: "CLINE_DATA_DIR", value: clineHome, sensitive: false }],
+                },
+              },
+            },
+          }),
+        ),
+      );
+      const summary = yield* service.readSummary(WINDOW);
+      const bucket = summary.buckets.find((entry) => entry.provider === "cline");
+      assert.isDefined(bucket);
+      assert.strictEqual(bucket?.model, "poolside/laguna-s-2.1:free");
+      assert.deepStrictEqual(bucket?.totals, {
+        uncachedInputTokens: 200,
+        cachedInputTokens: 50,
+        cacheCreationTokens: 0,
+        outputTokens: 11,
+        reasoningTokens: 0,
+      });
+      const source = summary.sources.find((entry) => entry.fingerprint.provider === "cline");
+      assert.strictEqual(source?.status, "ok");
+      assert.strictEqual(source?.scannedFiles, 1);
     }).pipe(Effect.scoped),
   );
 

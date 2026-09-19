@@ -259,9 +259,10 @@ export const make = Effect.gen(function* () {
       volumeId: string;
       fileName?: string;
       excludeSuffix?: string;
+      includeSuffix?: string;
     }> = [];
     const seen = new Set<string>();
-    for (const driver of ["claudeAgent", "codex", "grok", "commandCode"] as const) {
+    for (const driver of ["claudeAgent", "codex", "grok", "commandCode", "cline"] as const) {
       // Disabled accounts still have history. Explicit default slots replace
       // the legacy settings, just as they do in the provider registry.
       const instances: Array<Pick<ProviderInstanceConfig, "config" | "environment">> =
@@ -296,15 +297,23 @@ export const make = Effect.gen(function* () {
           home = expandHomePath(
             environment.COMMANDCODE_HOME?.trim() || path.join(NodeOS.homedir(), ".commandcode"),
           );
+        } else if (driver === "cline") {
+          home = expandHomePath(
+            environment.CLINE_DATA_DIR?.trim() || path.join(NodeOS.homedir(), ".cline"),
+          );
         } else {
           home = expandHomePath(
             environment.GROK_HOME?.trim() || path.join(NodeOS.homedir(), ".grok"),
           );
         }
-        const directory = path.resolve(
-          home,
-          provider === "claude" || provider === "commandcode" ? "projects" : "sessions",
-        );
+        // Cline sessions live one level deeper than the data-dir root.
+        const directory =
+          provider === "cline"
+            ? path.resolve(home, "data", "sessions")
+            : path.resolve(
+                home,
+                provider === "claude" || provider === "commandcode" ? "projects" : "sessions",
+              );
         const sourceKey = provider + "\0" + directory;
         const previous = sourceCache.get(sourceKey);
         // Keep canonical paths and source fingerprints stable after root cleanup,
@@ -340,6 +349,7 @@ export const make = Effect.gen(function* () {
           volumeId,
           ...(provider === "grok" ? { fileName: "updates.jsonl" } : {}),
           ...(provider === "commandcode" ? { excludeSuffix: ".checkpoints.jsonl" } : {}),
+          ...(provider === "cline" ? { includeSuffix: ".messages.json" } : {}),
         });
       }
     }
@@ -473,7 +483,7 @@ export const make = Effect.gen(function* () {
       Effect.provideService(Path.Path, path),
     );
     const scanned: ScannedDir[] = [];
-    for (const { provider, dir, volumeId, fileName, excludeSuffix } of dirs) {
+    for (const { provider, dir, volumeId, fileName, excludeSuffix, includeSuffix } of dirs) {
       const exists = yield* fileSystem
         .exists(dir)
         .pipe(Effect.catchCause(() => Effect.succeed(false)));
@@ -485,11 +495,12 @@ export const make = Effect.gen(function* () {
         listTranscriptFiles(
           dir,
           windowStartMs,
-          fileName === undefined && excludeSuffix === undefined
+          fileName === undefined && excludeSuffix === undefined && includeSuffix === undefined
             ? undefined
             : {
                 ...(fileName === undefined ? {} : { fileName }),
                 ...(excludeSuffix === undefined ? {} : { excludeSuffix }),
+                ...(includeSuffix === undefined ? {} : { includeSuffix }),
               },
         ),
       );

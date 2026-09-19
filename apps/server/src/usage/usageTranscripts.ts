@@ -580,4 +580,93 @@ export function parseCommandCodeLine(
   };
 }
 
+/* -------------------------------------------------------------------------- */
+/* Cline                                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Parses a whole Cline session messages document
+ * (`~/.cline/data/sessions/<id>/<id>.messages.json`).
+ *
+ * Unlike the JSONL transcripts, a Cline session is one JSON document: a
+ * `messages` array where each assistant message carries its own per-turn
+ * `metrics` delta (`inputTokens`, `outputTokens`, `cacheReadTokens`,
+ * `cacheWriteTokens`) and `modelInfo.id`. Deltas sum to the run totals, so
+ * every assistant message becomes its own record. Token fields mirror the
+ * Anthropic vocabulary and are treated as disjoint, like the Claude parser.
+ * Messages carry no cost figure, so pricing falls back to the rate table by
+ * model id.
+ *
+ * Returns every record in the document (0 or more). Callers read the file
+ * whole rather than streaming lines.
+ */
+export function parseClineMessagesDocument(text: string): readonly UsageRecord[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  if (typeof parsed !== "object" || parsed === null) return [];
+  const root = parsed as Record<string, unknown>;
+
+  const rawSessionId = root["sessionId"];
+  const docSessionId = typeof rawSessionId === "string" ? rawSessionId : "";
+
+  const messages = root["messages"];
+  if (!Array.isArray(messages)) return [];
+
+  const records: UsageRecord[] = [];
+  for (const entry of messages) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const message = entry as Record<string, unknown>;
+    if (message["role"] !== "assistant") continue;
+
+    const metrics = message["metrics"];
+    if (typeof metrics !== "object" || metrics === null) continue;
+    const metricsRecord = metrics as Record<string, unknown>;
+
+    const modelInfo = message["modelInfo"];
+    const modelId =
+      typeof modelInfo === "object" && modelInfo !== null
+        ? (modelInfo as Record<string, unknown>)["id"]
+        : undefined;
+    if (typeof modelId !== "string" || modelId.length === 0) continue;
+
+    const timestampMs =
+      typeof message["ts"] === "number" && Number.isFinite(message["ts"])
+        ? Math.trunc(message["ts"])
+        : null;
+    if (timestampMs === null) continue;
+
+    const totals: UsageTokenTotals = {
+      uncachedInputTokens: int(metricsRecord["inputTokens"]),
+      cachedInputTokens: int(metricsRecord["cacheReadTokens"]),
+      cacheCreationTokens: int(metricsRecord["cacheWriteTokens"]),
+      outputTokens: int(metricsRecord["outputTokens"]),
+      // Cline folds thinking into output and does not break it out.
+      reasoningTokens: 0,
+    };
+    if (totalTokens(totals) === 0) continue;
+
+    const messageId = typeof message["id"] === "string" ? message["id"] : null;
+    records.push({
+      provider: "cline",
+      timestampMs,
+      model: modelId,
+      sessionId: docSessionId,
+      totals,
+      // Per-message cost is not reported; the rate table prices by model id.
+      reportedCostUsd: null,
+      dedupeKey:
+        messageId === null
+          ? null
+          : docSessionId.length > 0
+            ? `${docSessionId}:${messageId}`
+            : messageId,
+    });
+  }
+  return records;
+}
+
 export { EMPTY_TOTALS };

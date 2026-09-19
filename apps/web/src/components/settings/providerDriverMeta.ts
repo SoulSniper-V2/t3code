@@ -1,6 +1,7 @@
 import {
   AntigravitySettings,
   ClaudeSettings,
+  ClineSettings,
   CodexSettings,
   CommandCodeSettings,
   CursorSettings,
@@ -12,6 +13,7 @@ import type * as Schema from "effect/Schema";
 import {
   AntigravityIcon,
   ClaudeAI,
+  ClineIcon,
   CommandCodeIcon,
   CursorIcon,
   GrokIcon,
@@ -89,6 +91,12 @@ const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = [
     label: "Command Code",
     icon: CommandCodeIcon,
     settingsSchema: CommandCodeSettings,
+  },
+  {
+    value: ProviderDriverKind.make("cline"),
+    label: "Cline",
+    icon: ClineIcon,
+    settingsSchema: ClineSettings,
   },
 ];
 

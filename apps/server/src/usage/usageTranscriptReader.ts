@@ -25,6 +25,7 @@ import {
   initialCommandCodeScanState,
   mightCarryUsage,
   parseClaudeLine,
+  parseClineMessagesDocument,
   parseCodexLine,
   parseCommandCodeLine,
   parseGrokLine,
@@ -103,16 +104,23 @@ function fnv1a(buffer: Buffer): number {
  * never carry usage, so the basename filter keeps a cold scan off those files.
  * `excludeSuffix` drops files ending in that suffix (Command Code's
  * `*.checkpoints.jsonl`, which shares the transcript directory but carries no
- * per-message usage).
+ * per-message usage). `includeSuffix` keeps only files ending in that suffix
+ * (Cline's `*.messages.json` session documents, which share their directory
+ * with session metadata files).
  */
 export async function listTranscriptFiles(
   root: string,
   sinceMs: number,
-  options?: { readonly fileName?: string; readonly excludeSuffix?: string },
+  options?: {
+    readonly fileName?: string;
+    readonly excludeSuffix?: string;
+    readonly includeSuffix?: string;
+  },
 ): Promise<readonly TranscriptFile[]> {
   const found: TranscriptFile[] = [];
   const fileName = options?.fileName;
   const excludeSuffix = options?.excludeSuffix;
+  const includeSuffix = options?.includeSuffix;
 
   const walk = async (dir: string): Promise<void> => {
     let entries;
@@ -129,6 +137,8 @@ export async function listTranscriptFiles(
       }
       if (fileName !== undefined) {
         if (entry.name !== fileName) continue;
+      } else if (includeSuffix !== undefined) {
+        if (!entry.name.endsWith(includeSuffix)) continue;
       } else if (!entry.name.endsWith(".jsonl")) {
         continue;
       }
@@ -183,6 +193,57 @@ async function guardMatches(
   }
 }
 
+/** Largest Cline session document parsed for usage; larger files are skipped. */
+const CLINE_DOCUMENT_SIZE_LIMIT = 32 * 1024 * 1024;
+
+/**
+ * Reads one Cline `*.messages.json` session document. Returns `null` when
+ * the file cannot be read (transient: never memoised as empty) and an empty
+ * record list when it parses to no usage or exceeds the size limit.
+ */
+async function readClineDocument(filePath: string): Promise<TranscriptParseResult | null> {
+  let stats: { size: number };
+  try {
+    stats = await NodeFSP.stat(filePath);
+  } catch {
+    return null;
+  }
+  if (stats.size > CLINE_DOCUMENT_SIZE_LIMIT) {
+    return {
+      records: [],
+      tailRecords: [],
+      position: {
+        resumeOffset: stats.size,
+        guardLength: 0,
+        guardHash: 0,
+        codexState: null,
+        commandCodeState: null,
+      },
+      resumed: false,
+    };
+  }
+  let raw: Buffer;
+  try {
+    raw = await NodeFSP.readFile(filePath);
+  } catch {
+    return null;
+  }
+  const guardLength = Math.min(GUARD_LENGTH, raw.length);
+  const guardWindow = guardLength > 0 ? raw.subarray(raw.length - guardLength) : Buffer.alloc(0);
+  return {
+    records: [...parseClineMessagesDocument(raw.toString("utf8"))],
+    tailRecords: [],
+    position: {
+      resumeOffset: stats.size,
+      guardLength,
+      guardHash: fnv1a(guardWindow),
+      codexState: null,
+      commandCodeState: null,
+    },
+    resumed: false,
+  };
+}
+
 /**
  * Streams one transcript and returns the usage records it contains, or `null`
  * when the file could not be read.
@@ -205,6 +266,14 @@ export async function readTranscriptRecords(
   provider: UsageProviderKind,
   resumeFrom?: TranscriptParsePosition,
 ): Promise<TranscriptParseResult | null> {
+  // Cline sessions are whole JSON documents, not JSONL streams: parse the
+  // file at once. Documents are rewritten on every run, so the byte-guard
+  // resume never applies — but the result still reports an exact position so
+  // the (size, mtime) cache memoises unchanged files like every provider.
+  if (provider === "cline") {
+    return readClineDocument(filePath);
+  }
+
   let handle: NodeFSP.FileHandle;
   try {
     handle = await NodeFSP.open(filePath, "r");

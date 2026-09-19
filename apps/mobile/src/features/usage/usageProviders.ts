@@ -10,6 +10,7 @@ export const PROVIDER_ORDER: readonly UsageProviderKind[] = [
   "claude",
   "grok",
   "commandcode",
+  "cline",
 ];
 
 export const PROVIDER_LABEL: Record<UsageProviderKind, string> = {
@@ -17,6 +18,7 @@ export const PROVIDER_LABEL: Record<UsageProviderKind, string> = {
   codex: "Codex",
   grok: "Grok Build",
   commandcode: "Command Code",
+  cline: "Cline",
 };
 
 /**
@@ -30,5 +32,6 @@ export function useProviderColors(): Record<UsageProviderKind, string> {
     codex: scheme === "dark" ? "#e6e6e6" : "#3c3c43",
     grok: scheme === "dark" ? "#a1a1aa" : "#52525b",
     commandcode: "#8b5cf6",
+    cline: "#14b8a6",
   };
 }

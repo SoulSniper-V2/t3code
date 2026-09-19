@@ -6,6 +6,7 @@ import {
   ClientSettingsSchema,
   ClientSettingsPatch,
   ClaudeSettings,
+  ClineSettings,
   CommandCodeSettings,
   DEFAULT_SERVER_SETTINGS,
   resolveProviderInstanceEnabled,
@@ -21,6 +22,7 @@ const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 const decodeCommandCodeSettings = Schema.decodeUnknownSync(CommandCodeSettings);
+const decodeClineSettings = Schema.decodeUnknownSync(ClineSettings);
 
 describe("storage cleanup settings", () => {
   it("keeps cleanup disabled for existing installations", () => {
@@ -218,6 +220,36 @@ describe("CommandCodeSettings", () => {
     expect(() =>
       decodeServerSettingsPatch({
         providers: { commandCode: { permissionMode: "yolo" as "standard" } },
+      }),
+    ).toThrow();
+  });
+});
+
+describe("ClineSettings", () => {
+  it("defaults to opt-in, cline binary, auto-accept, and provider-default thinking", () => {
+    const decoded = decodeClineSettings({});
+    expect(decoded.enabled).toBe(false);
+    expect(decoded.binaryPath).toBe("cline");
+    expect(decoded.permissionMode).toBe("auto-accept");
+    expect(decoded.thinkingLevel).toBe("");
+    expect(decoded.launchArgs).toBe("");
+    // The legacy mirror default stays disabled, like Cursor/Grok/OpenCode.
+    expect(decodeServerSettings({}).providers.cline.enabled).toBe(false);
+  });
+
+  it("falls back to the cline binary when the path is blank", () => {
+    expect(decodeClineSettings({ binaryPath: "  " }).binaryPath).toBe("cline");
+  });
+
+  it("accepts permission and thinking changes at the settings patch boundary", () => {
+    expect(
+      decodeServerSettingsPatch({
+        providers: { cline: { permissionMode: "standard", thinkingLevel: "high" } },
+      }).providers?.cline,
+    ).toMatchObject({ permissionMode: "standard", thinkingLevel: "high" });
+    expect(() =>
+      decodeServerSettingsPatch({
+        providers: { cline: { thinkingLevel: "ultra" as "high" } },
       }),
     ).toThrow();
   });
@@ -776,6 +808,7 @@ describe("provider enabled defaults", () => {
     expect(decoded.providers.grok.enabled).toBe(false);
     expect(decoded.providers.opencode.enabled).toBe(false);
     expect(decoded.providers.commandCode.enabled).toBe(false);
+    expect(decoded.providers.cline.enabled).toBe(false);
   });
 
   it("keeps Cursor enabled when an existing user explicitly opted in", () => {

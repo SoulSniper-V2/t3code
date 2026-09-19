@@ -1,6 +1,6 @@
 import type { UsageProviderKind } from "@t3tools/contracts";
 
-import { ClaudeAI, CommandCodeIcon, GrokIcon, type Icon, OpenAI } from "../Icons";
+import { ClaudeAI, ClineIcon, CommandCodeIcon, GrokIcon, type Icon, OpenAI } from "../Icons";
 
 type UsageProviderPresentation = {
   readonly label: string;
@@ -34,6 +34,11 @@ export const PROVIDER_PRESENTATION = {
     label: "Command Code",
     color: "#8b5cf6",
     mark: CommandCodeIcon,
+  },
+  cline: {
+    label: "Cline",
+    color: "#14b8a6",
+    mark: ClineIcon,
   },
 } satisfies Record<UsageProviderKind, UsageProviderPresentation>;
 

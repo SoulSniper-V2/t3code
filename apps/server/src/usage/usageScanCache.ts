@@ -224,7 +224,8 @@ export function decodeScanCache(document: unknown): ScanCache {
       entry.p !== "claude" &&
       entry.p !== "codex" &&
       entry.p !== "grok" &&
-      entry.p !== "commandcode"
+      entry.p !== "commandcode" &&
+      entry.p !== "cline"
     )
       continue;
     if (!isRecordArray(entry.r) || !isRecordArray(entry.t)) continue;
