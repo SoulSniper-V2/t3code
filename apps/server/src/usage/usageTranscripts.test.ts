@@ -574,7 +574,7 @@ describe("parseCommandCodeLine", () => {
     version: 3,
     id: "46429755-6739-42c0-8382-da7804bacd1e",
     timestamp: "2026-08-15T22:55:58.027Z",
-    cwd: "/Users/soulsniper/undmg",
+    cwd: "/home/user/project",
   });
 
   /** Shaped after a real Command Code assistant message line. */
