@@ -22,8 +22,16 @@ process.stdin.on("data", (chunk) => {
   prompt += chunk;
 });
 process.stdin.on("end", () => {
+  const dashIndex = process.argv.indexOf("--");
+  const effectivePrompt =
+    dashIndex >= 0 && dashIndex < process.argv.length - 1
+      ? process.argv[dashIndex + 1]
+      : prompt || process.argv[process.argv.length - 1] || "";
   if (argvLogPath) {
-    fs.writeFileSync(argvLogPath, JSON.stringify({ argv: process.argv.slice(2), prompt }));
+    fs.writeFileSync(
+      argvLogPath,
+      JSON.stringify({ argv: process.argv.slice(2), prompt: effectivePrompt }),
+    );
   }
 
   const usage = {

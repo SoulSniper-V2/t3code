@@ -346,6 +346,7 @@ export function makeClineAdapter(
           thinkingLevel: config.thinkingLevel,
           model: input.model,
           launchArgs: config.launchArgs,
+          prompt: input.prompt,
         });
         const resolved = yield* resolveSpawnCommand(config.binaryPath || "cline", [...args], {
           env: options.environment,
@@ -388,10 +389,9 @@ export function makeClineAdapter(
           return "interrupted" as const;
         }
 
-        // Stream the prompt over stdin; the CLI reads piped input as the task.
-        yield* Stream.run(Stream.encodeText(Stream.make(input.prompt)), child.stdin).pipe(
-          Effect.ignore,
-        );
+        // Close stdin so the subprocess does not wait on input; the prompt is
+        // passed as the positional CLI argument after `--`.
+        yield* Stream.run(Stream.empty, child.stdin).pipe(Effect.ignore);
 
         let buffer = "";
         let stderrTail = "";

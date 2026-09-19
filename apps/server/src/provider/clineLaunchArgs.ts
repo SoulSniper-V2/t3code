@@ -29,9 +29,11 @@ export interface ClineTurnArgsInput {
   readonly provider?: string | undefined;
   /** Extra user-provided CLI arguments, tokenized. */
   readonly launchArgs?: string | undefined;
+  /** Prompt text. Passed as a positional CLI argument after `--`. */
+  readonly prompt?: string | undefined;
 }
 
-/** Build the argv for one headless turn (prompt travels over stdin). */
+/** Build the argv for one headless turn. */
 export function clineTurnArgs(input: ClineTurnArgsInput): ReadonlyArray<string> {
   const args: string[] = [
     "--json",
@@ -49,5 +51,8 @@ export function clineTurnArgs(input: ClineTurnArgsInput): ReadonlyArray<string> 
     args.push("--provider", input.provider.trim());
   }
   args.push(...tokenizeCliArgs(input.launchArgs));
+  if (input.prompt !== undefined && input.prompt.length > 0) {
+    args.push("--", input.prompt);
+  }
   return args;
 }
