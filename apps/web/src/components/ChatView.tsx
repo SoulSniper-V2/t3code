@@ -254,6 +254,7 @@ import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { useBrowserHistoryStore } from "~/browserHistoryStore";
 import { registerFaviconProjectForThread } from "~/browserFaviconStore";
 import { getProviderModelCapabilities } from "../providerModels";
+import { getThreadGoal, formatGoalPromptHeader } from "~/threadGoalsStore";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
@@ -7123,6 +7124,23 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
 
+  const onForkActiveThread = useCallback(() => {
+    if (!activeThread) return;
+    const projectRef = scopeProjectRef(activeThread.environmentId, activeThread.projectId);
+    void handleNewThread(projectRef, {
+      branch: activeThread.branch,
+      worktreePath: activeThread.worktreePath,
+    }).then((res) => {
+      if (res) {
+        toastManager.add({
+          type: "success",
+          title: "Thread forked",
+          description: `Forked "${activeThread.title || "Thread"}" into a new session.`,
+        });
+      }
+    });
+  }, [activeThread, handleNewThread]);
+
   const onCompactContext = async () => {
     if (compactDisabled || !activeThread || !clientSettingsHydrated || sendInFlightRef.current) {
       return;
@@ -7706,12 +7724,17 @@ export default function ChatView(props: ChatViewProps) {
     const outgoingMessageContext = buildOutgoingMessageContext(
       composerAttachmentsSnapshot.map((attachment) => attachment.id),
     );
+    const activeGoalForSend = activeThread ? getThreadGoal(activeThread.id) : null;
+    const goalAugmentedMessageText =
+      activeGoalForSend && activeGoalForSend.status === "active" && messageTextForSend
+        ? `${formatGoalPromptHeader(activeGoalForSend.text)}\n\n${messageTextForSend}`
+        : messageTextForSend;
     const outgoingMessageText = formatOutgoingPrompt({
       provider: ctxSelectedProvider,
       model: ctxSelectedModel,
       models: ctxSelectedProviderModels,
       effort: ctxSelectedPromptEffort,
-      text: messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
+      text: goalAugmentedMessageText || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
     });
     if (composerRef.current?.validateProviderInput(outgoingMessageText) === false) {
       // A queued message that no longer fits is held at the head for the
@@ -10141,6 +10164,7 @@ export default function ChatView(props: ChatViewProps) {
                             onPageScrollKeyUp={onComposerPageScrollKeyUp}
                             onPageScrollRelease={onComposerPageScrollRelease}
                             onCompactContext={onCompactContext}
+                            onForkThread={onForkActiveThread}
                             onSend={onSend}
                             onInterrupt={onInterrupt}
                             onImplementPlanInNewThread={onImplementPlanInNewThread}

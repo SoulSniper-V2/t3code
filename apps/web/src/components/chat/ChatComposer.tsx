@@ -247,6 +247,10 @@ import { useEnvironmentQuery } from "~/state/query";
 import { useDebouncedValue } from "~/state/queries";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import { AccountSwitcher } from "./AccountSwitcher";
+import { ThreadGoalBanner } from "./ThreadGoalBanner";
+import { ProviderHandoffDialog } from "./ProviderHandoffDialog";
+import { useThreadGoal } from "~/hooks/useThreadGoal";
+import { formatGoalPromptHeader } from "~/threadGoalsStore";
 import { resolveModelPickerSelectedModel } from "./ModelPickerContent";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
@@ -1446,6 +1450,7 @@ export interface ChatComposerProps {
   setThreadError: (threadId: ThreadId | null, error: string | null) => void;
   onExpandImage: (preview: ExpandedImagePreview) => void;
   onFileOpen: (attachment: ChatFileAttachment) => void;
+  onForkThread?: () => void;
 }
 
 // --------------------------------------------------------------------------
@@ -1547,6 +1552,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     setThreadError,
     onExpandImage,
     onFileOpen,
+    onForkThread,
   } = props;
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const activeTasksProgress = props.threadSyncPhase === null ? props.activeTasksProgress : null;
@@ -1555,6 +1561,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Store subscriptions (prompt / images / terminal contexts)
   // ------------------------------------------------------------------
   const composerDraft = useComposerThreadDraft(composerDraftTarget);
+  const {
+    goal: activeGoal,
+    setGoal: setThreadGoalText,
+    pauseGoal: pauseActiveGoal,
+    resumeGoal: resumeActiveGoal,
+    clearGoal: clearActiveGoal,
+  } = useThreadGoal(activeThreadId);
+  const [isHandoffDialogOpen, setIsHandoffDialogOpen] = useState(false);
   // Live target key, for async flows that must notice a thread switch that
   // happened while they awaited.
   const composerDraftTargetKeyRef = useRef("");
@@ -2325,6 +2339,27 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           command: "model",
           label: "/model",
           description: "Switch response model for this thread",
+        },
+        {
+          id: "slash:goal",
+          type: "slash-command",
+          command: "goal",
+          label: "/goal",
+          description: "Set or manage persistent thread objective",
+        },
+        {
+          id: "slash:handoff",
+          type: "slash-command",
+          command: "handoff",
+          label: "/handoff",
+          description: "Hand off this task and workspace to another provider",
+        },
+        {
+          id: "slash:fork",
+          type: "slash-command",
+          command: "fork",
+          label: "/fork",
+          description: "Fork this conversation into a new thread",
         },
         ...(planModeUiEnabled
           ? ([
@@ -3436,6 +3471,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ],
   );
 
+  const setComposerPromptText = useCallback(
+    (text: string) => {
+      onPromptChange(text, text.length, text.length, false, []);
+    },
+    [onPromptChange],
+  );
+
   // ------------------------------------------------------------------
   // Callbacks: prompt replacement / menu
   // ------------------------------------------------------------------
@@ -3582,6 +3624,36 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           if (applied) {
             setComposerHighlightedItemId(null);
             setIsComposerModelPickerOpen(true);
+          }
+          return;
+        }
+        if (item.command === "goal") {
+          const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "/goal ", {
+            expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+          });
+          if (applied) {
+            setComposerHighlightedItemId(null);
+          }
+          return;
+        }
+        if (item.command === "handoff") {
+          const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+            expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+            focusEditorAfterReplace: false,
+          });
+          if (applied) {
+            setComposerHighlightedItemId(null);
+            setIsHandoffDialogOpen(true);
+          }
+          return;
+        }
+        if (item.command === "fork") {
+          const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+            expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+          });
+          if (applied) {
+            setComposerHighlightedItemId(null);
+            onForkThread?.();
           }
           return;
         }
@@ -3756,6 +3828,60 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     (event?: { preventDefault: () => void }, intent: ComposerSubmissionIntent = "foreground") => {
       if (noProviderAvailable || isSendDisabled) {
         event?.preventDefault();
+        return;
+      }
+      const currentPromptText = promptRef.current.trim();
+      if (currentPromptText.startsWith("/goal")) {
+        event?.preventDefault();
+        const rest = currentPromptText.slice(5).trim();
+        if (rest === "pause") {
+          pauseActiveGoal();
+          toastManager.add({
+            type: "info",
+            title: "Goal paused",
+            description: "Objective paused.",
+          });
+        } else if (rest === "resume") {
+          resumeActiveGoal();
+          toastManager.add({
+            type: "success",
+            title: "Goal resumed",
+            description: "Resumed goal pursuit.",
+          });
+        } else if (rest === "clear" || rest === "remove") {
+          clearActiveGoal();
+          toastManager.add({ type: "info", title: "Goal cleared" });
+        } else if (rest.length > 0) {
+          setThreadGoalText(rest);
+          toastManager.add({ type: "success", title: "Goal set", description: rest });
+        } else {
+          if (activeGoal) {
+            toastManager.add({
+              type: "info",
+              title: `Active Goal: ${activeGoal.text}`,
+              description: `Status: ${activeGoal.status}. Use '/goal pause', '/goal resume', or '/goal clear'.`,
+            });
+          } else {
+            toastManager.add({
+              type: "info",
+              title: "No goal set",
+              description: "Set an objective with: /goal <your objective>",
+            });
+          }
+        }
+        setComposerPromptText("");
+        return;
+      }
+      if (currentPromptText === "/handoff") {
+        event?.preventDefault();
+        setComposerPromptText("");
+        setIsHandoffDialogOpen(true);
+        return;
+      }
+      if (currentPromptText === "/fork") {
+        event?.preventDefault();
+        setComposerPromptText("");
+        onForkThread?.();
         return;
       }
       // A send while a pasted image is still compressing would strand that
@@ -6768,6 +6894,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   </div>
                 )}
 
+              {activeGoal && !isComposerResting ? (
+                <div className="mb-2">
+                  <ThreadGoalBanner
+                    goal={activeGoal}
+                    onPause={pauseActiveGoal}
+                    onResume={resumeActiveGoal}
+                    onClear={clearActiveGoal}
+                    onEdit={(text) => {
+                      setComposerPromptText(`/goal ${text}`);
+                      focusComposer();
+                    }}
+                  />
+                </div>
+              ) : null}
+
               <div
                 className={cn(
                   "relative",
@@ -7026,6 +7167,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           </div>
         </ComposerSurface.Main>
       </div>
+
+      <ProviderHandoffDialog
+        open={isHandoffDialogOpen}
+        onOpenChange={setIsHandoffDialogOpen}
+        currentInstanceId={selectedInstanceId}
+        currentModel={selectedModelForPickerWithCustomFallback}
+        instanceEntries={providerInstanceEntries}
+        modelOptionsByInstance={modelOptionsByInstance}
+        onCommitHandoff={(targetInstanceId, targetModel, handoffInstruction) => {
+          onProviderModelSelect(targetInstanceId, targetModel);
+          setComposerPromptText(handoffInstruction);
+          focusComposer();
+        }}
+      />
     </form>
   );
 });
