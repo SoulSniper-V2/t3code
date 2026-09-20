@@ -10,7 +10,14 @@ import {
 } from "./composer-editor-mentions";
 
 export type ComposerTriggerKind = "path" | "pull-request" | "slash-command" | "skill";
-export type ComposerSlashCommand = "model" | "plan" | "default" | "goal" | "fork" | "handoff";
+export type ComposerSlashCommand =
+  | "model"
+  | "plan"
+  | "default"
+  | "goal"
+  | "fork"
+  | "handoff"
+  | "pipeline";
 export type ComposerSubmissionIntent = "foreground" | "background" | "alternate";
 
 export interface ComposerTrigger {

@@ -53,6 +53,7 @@ import {
   MoonIcon,
   PaletteIcon,
   UsersIcon,
+  WorkflowIcon,
   SettingsIcon,
   SquarePenIcon,
   SunIcon,
@@ -1793,6 +1794,27 @@ function OpenCommandPaletteDialog(props: {
       icon: <UsersIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         composerHandleRef?.current?.openModelPicker();
+      },
+    });
+
+    actionItems.push({
+      kind: "action",
+      value: "action:multi-agent-pipeline",
+      searchTerms: [
+        "pipeline",
+        "multi-agent",
+        "blackboard",
+        "agtx",
+        "architect",
+        "plan",
+        "build",
+        "review",
+        "team",
+      ],
+      title: "Launch multi-agent pipeline (Plan → Build → Review)",
+      icon: <WorkflowIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        composerHandleRef?.current?.insertTextAtEnd("/pipeline");
       },
     });
   }

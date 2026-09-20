@@ -249,6 +249,7 @@ import { ProviderModelPicker } from "./ProviderModelPicker";
 import { AccountSwitcher } from "./AccountSwitcher";
 import { ThreadGoalBanner } from "./ThreadGoalBanner";
 import { ProviderHandoffDialog } from "./ProviderHandoffDialog";
+import { MultiAgentPipelineDialog } from "./MultiAgentPipelineDialog";
 import { useThreadGoal } from "~/hooks/useThreadGoal";
 import { formatGoalPromptHeader } from "~/threadGoalsStore";
 import { resolveModelPickerSelectedModel } from "./ModelPickerContent";
@@ -1569,6 +1570,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     clearGoal: clearActiveGoal,
   } = useThreadGoal(activeThreadId);
   const [isHandoffDialogOpen, setIsHandoffDialogOpen] = useState(false);
+  const [isPipelineDialogOpen, setIsPipelineDialogOpen] = useState(false);
   // Live target key, for async flows that must notice a thread switch that
   // happened while they awaited.
   const composerDraftTargetKeyRef = useRef("");
@@ -2360,6 +2362,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           command: "fork",
           label: "/fork",
           description: "Fork this conversation into a new thread",
+        },
+        {
+          id: "slash:pipeline",
+          type: "slash-command",
+          command: "pipeline",
+          label: "/pipeline",
+          description: "Configure a 3-stage multi-agent pipeline (Plan → Build → Review)",
         },
         ...(planModeUiEnabled
           ? ([
@@ -3657,6 +3666,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           }
           return;
         }
+        if (item.command === "pipeline") {
+          const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+            expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+            focusEditorAfterReplace: false,
+          });
+          if (applied) {
+            setComposerHighlightedItemId(null);
+            setIsPipelineDialogOpen(true);
+          }
+          return;
+        }
         if (!planModeUiEnabled) return;
         void handleInteractionModeChange(item.command === "plan" ? "plan" : "default");
         const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
@@ -3882,6 +3902,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         event?.preventDefault();
         setComposerPromptText("");
         onForkThread?.();
+        return;
+      }
+      if (currentPromptText === "/pipeline") {
+        event?.preventDefault();
+        setComposerPromptText("");
+        setIsPipelineDialogOpen(true);
         return;
       }
       // A send while a pasted image is still compressing would strand that
@@ -7178,6 +7204,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         onCommitHandoff={(targetInstanceId, targetModel, handoffInstruction) => {
           onProviderModelSelect(targetInstanceId, targetModel);
           setComposerPromptText(handoffInstruction);
+          focusComposer();
+        }}
+      />
+
+      <MultiAgentPipelineDialog
+        open={isPipelineDialogOpen}
+        onOpenChange={setIsPipelineDialogOpen}
+        activeInstanceId={selectedInstanceId}
+        activeModel={selectedModelForPickerWithCustomFallback}
+        instanceEntries={providerInstanceEntries}
+        modelOptionsByInstance={modelOptionsByInstance}
+        onLaunchPipeline={(pipelinePrompt, initialInstanceId, initialModel) => {
+          onProviderModelSelect(initialInstanceId, initialModel);
+          setComposerPromptText(pipelinePrompt);
           focusComposer();
         }}
       />
