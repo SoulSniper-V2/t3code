@@ -243,23 +243,35 @@ export function PreviewChromeRow({
               render={
                 <Button
                   variant={pickActive ? "secondary" : "ghost"}
-                  size="icon-xs"
+                  size={pickActive ? "xs" : "icon-xs"}
                   onClick={onPickElement}
                   disabled={pickDisabled}
-                  aria-label={pickActive ? "Cancel annotation" : "Annotate preview"}
+                  aria-label={
+                    pickActive ? "Exit Design Mode (Esc)" : "Design Mode (Pick element into prompt)"
+                  }
                   aria-pressed={pickActive ? "true" : "false"}
+                  className={cn(
+                    "transition-all",
+                    pickActive &&
+                      "gap-1.5 px-2 bg-primary/15 text-primary border border-primary/30",
+                  )}
                   type="button"
-                />
+                >
+                  <MousePointerClick
+                    className={cn("size-3.5", pickActive && "text-primary animate-pulse")}
+                  />
+                  {pickActive ? (
+                    <span className="text-[11px] font-semibold">Design Mode</span>
+                  ) : null}
+                </Button>
               }
-            >
-              <MousePointerClick className={cn(pickActive && "text-primary")} />
-            </TooltipTrigger>
+            />
             <TooltipPopup>
               {pickDisabled && pickDisabledReason
                 ? pickDisabledReason
                 : pickActive
-                  ? "Cancel annotation (Esc)"
-                  : "Annotate elements, regions, and drawings"}
+                  ? "Exit Design Mode (Esc)"
+                  : "Design Mode: Click any UI element to drop its HTML, CSS & screenshot into chat"}
             </TooltipPopup>
           </Tooltip>
         ) : null}

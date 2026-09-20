@@ -619,6 +619,18 @@ export function PreviewView({
               description: "The annotation was kept without the screenshot.",
             }),
           );
+        } else {
+          const elTitle =
+            picked.elements[0]?.element.componentName ||
+            picked.elements[0]?.element.tagName ||
+            "UI element";
+          toastManager.add(
+            stackedThreadToast({
+              type: "success",
+              title: `Design Mode: <${elTitle}> captured`,
+              description: "Element HTML, computed CSS, and screenshot attached to prompt.",
+            }),
+          );
         }
         const screenshotFile = capture.status === "captured" ? capture.file : null;
         const image =
