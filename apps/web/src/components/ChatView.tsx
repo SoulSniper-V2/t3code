@@ -256,6 +256,10 @@ import { registerFaviconProjectForThread } from "~/browserFaviconStore";
 import { getProviderModelCapabilities } from "../providerModels";
 import { getThreadGoal, formatGoalPromptHeader } from "~/threadGoalsStore";
 import {
+  extractIssueReferencesFromText,
+  formatIssueContextPrompt,
+} from "@t3tools/shared/issueReferences";
+import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
   NO_PROVIDER_MODEL_SELECTION,
@@ -7725,10 +7729,19 @@ export default function ChatView(props: ChatViewProps) {
       composerAttachmentsSnapshot.map((attachment) => attachment.id),
     );
     const activeGoalForSend = activeThread ? getThreadGoal(activeThread.id) : null;
-    const goalAugmentedMessageText =
-      activeGoalForSend && activeGoalForSend.status === "active" && messageTextForSend
-        ? `${formatGoalPromptHeader(activeGoalForSend.text)}\n\n${messageTextForSend}`
+    const detectedIssues = messageTextForSend
+      ? extractIssueReferencesFromText(messageTextForSend)
+      : [];
+    const issueContextText =
+      detectedIssues.length > 0 ? detectedIssues.map(formatIssueContextPrompt).join("\n\n") : "";
+    const issueAugmentedText =
+      issueContextText.length > 0 && messageTextForSend
+        ? `${issueContextText}\n\n${messageTextForSend}`
         : messageTextForSend;
+    const goalAugmentedMessageText =
+      activeGoalForSend && activeGoalForSend.status === "active" && issueAugmentedText
+        ? `${formatGoalPromptHeader(activeGoalForSend.text)}\n\n${issueAugmentedText}`
+        : issueAugmentedText;
     const outgoingMessageText = formatOutgoingPrompt({
       provider: ctxSelectedProvider,
       model: ctxSelectedModel,
