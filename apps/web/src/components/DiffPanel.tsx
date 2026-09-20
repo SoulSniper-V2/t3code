@@ -16,6 +16,7 @@ import {
   ChevronsDownUpIcon,
   ChevronsUpDownIcon,
   Columns2Icon,
+  CompassIcon,
   FolderTreeIcon,
   PilcrowIcon,
   Rows3Icon,
@@ -56,6 +57,7 @@ import { DiffPanelLoadingState, DiffPanelShell, type DiffPanelMode } from "./Dif
 import { DiffStatLabel } from "./chat/DiffStatLabel";
 import { AnnotatableCodeView, type AnnotatableCodeViewHandle } from "./diffs/AnnotatableCodeView";
 import { DiffFileTree } from "./diffs/DiffFileTree";
+import { DiffChangesWalkthrough } from "./diffs/DiffChangesWalkthrough";
 import { diffFileTreeEntries } from "./diffs/diffFileTree.logic";
 import { Button } from "./ui/button";
 import { ToggleGroup, Toggle } from "./ui/toggle-group";
@@ -140,6 +142,7 @@ export default function DiffPanel({
     false,
     Schema.Boolean,
   );
+  const [walkthroughOpen, setWalkthroughOpen] = useState(false);
   const [baseRefQuery, setBaseRefQuery] = useState("");
   const [collapsedDiffFiles, setCollapsedDiffFiles] = useState<CollapsedDiffFilesState>(() => ({
     scopeKey: null,
@@ -514,6 +517,14 @@ export default function DiffPanel({
     return getDiffLineStat(renderableFiles);
   }, [renderableFiles, selectedGitSource, selectedTurn]);
   const fileTreeEntries = useMemo(() => diffFileTreeEntries(renderableFiles), [renderableFiles]);
+  const walkthroughFiles = useMemo(
+    () =>
+      fileTreeEntries.map((entry) => ({
+        path: entry.path,
+        status: entry.status,
+      })),
+    [fileTreeEntries],
+  );
   const selectedDiffFileKey = selectedFilePath
     ? (codeViewFiles.find((candidate) => candidate.filePath === selectedFilePath)?.fileKey ?? null)
     : null;
@@ -949,24 +960,50 @@ export default function DiffPanel({
           </TooltipPopup>
         </Tooltip>
         {diffFileKeys.length > 0 && (
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Toggle
-                  aria-label={fileTreeOpen ? "Hide file tree" : "Show file tree"}
-                  variant="ghost"
-                  size="sm"
-                  pressed={fileTreeOpen}
-                  onPressedChange={(pressed) => setFileTreeOpen(Boolean(pressed))}
-                />
-              }
-            >
-              <FolderTreeIcon className="size-3.5" />
-            </TooltipTrigger>
-            <TooltipPopup side="top">
-              {fileTreeOpen ? "Hide file tree" : "Show file tree"}
-            </TooltipPopup>
-          </Tooltip>
+          <>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Toggle
+                    aria-label={walkthroughOpen ? "Hide walkthrough" : "Changes walkthrough"}
+                    variant="ghost"
+                    size="sm"
+                    pressed={walkthroughOpen}
+                    onPressedChange={(pressed) => {
+                      setWalkthroughOpen(Boolean(pressed));
+                      if (pressed) setFileTreeOpen(false);
+                    }}
+                  />
+                }
+              >
+                <CompassIcon className="size-3.5" />
+              </TooltipTrigger>
+              <TooltipPopup side="top">
+                {walkthroughOpen ? "Hide walkthrough" : "Changes walkthrough"}
+              </TooltipPopup>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Toggle
+                    aria-label={fileTreeOpen ? "Hide file tree" : "Show file tree"}
+                    variant="ghost"
+                    size="sm"
+                    pressed={fileTreeOpen}
+                    onPressedChange={(pressed) => {
+                      setFileTreeOpen(Boolean(pressed));
+                      if (pressed) setWalkthroughOpen(false);
+                    }}
+                  />
+                }
+              >
+                <FolderTreeIcon className="size-3.5" />
+              </TooltipTrigger>
+              <TooltipPopup side="top">
+                {fileTreeOpen ? "Hide file tree" : "Show file tree"}
+              </TooltipPopup>
+            </Tooltip>
+          </>
         )}
       </div>
     </>
@@ -1171,6 +1208,15 @@ export default function DiffPanel({
                       selectedPath={selectedFilePath}
                       revealRequestId={selectedFileRevealRequestId}
                       onSelectFile={revealDiffFile}
+                    />
+                  </aside>
+                ) : null}
+                {walkthroughOpen ? (
+                  <aside className="flex w-[min(22rem,50%)] min-w-48 shrink-0">
+                    <DiffChangesWalkthrough
+                      files={walkthroughFiles}
+                      onSelectFile={revealDiffFile}
+                      onClose={() => setWalkthroughOpen(false)}
                     />
                   </aside>
                 ) : null}
