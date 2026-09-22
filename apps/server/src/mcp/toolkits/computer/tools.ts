@@ -20,6 +20,10 @@ import { Tool, Toolkit } from "effect/unstable/ai";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 const dependencies = [McpInvocationContext.McpInvocationContext];
+// An empty Struct serializes to `{ "not": { "type": "null" } }` in Effect's
+// JSON Schema output. MCP requires parameter schemas to be objects, so model
+// a closed empty object as a record with no valid values instead.
+const EmptyParameters = Schema.Record(Schema.String, Schema.Never);
 
 export const ComputerScreenshotTool = Tool.make("computer_screenshot", {
   description:
@@ -38,7 +42,7 @@ export const ComputerScreenshotTool = Tool.make("computer_screenshot", {
 export const ComputerAppsTool = Tool.make("computer_apps", {
   description:
     "List running native GUI applications on the host desktop with their names, process IDs, and bundle IDs.",
-  parameters: Schema.Struct({}),
+  parameters: EmptyParameters,
   success: ComputerListAppsResult,
   failure: ComputerToolError,
   dependencies,
