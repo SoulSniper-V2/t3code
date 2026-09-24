@@ -828,7 +828,8 @@ export const ORCHESTRATOR_REPLAY_FIXTURES: ReadonlyArray<OrchestratorReplayFixtu
       {
         driver: ProviderDriverKind.make("codex"),
         transcriptFile: new URL("./thread_rollback/codex_transcript.ndjson", import.meta.url),
-        modelSelection: CODEX_MODEL_SELECTION,
+        // Recorded live on Codex 0.156.1, where gpt-5.4 is no longer served.
+        modelSelection: { ...CODEX_MODEL_SELECTION, model: "gpt-5.6-luna" },
         assertOutput: assertThreadRollbackOutput,
       },
       {
