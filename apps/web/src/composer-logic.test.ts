@@ -232,6 +232,28 @@ describe("detectComposerTrigger", () => {
     });
   });
 
+  it("uses inline slash text to search skills after existing prompt text", () => {
+    const text = "Review this with /rev";
+
+    expect(detectComposerTrigger(text, text.length)).toEqual({
+      kind: "slash-skill",
+      query: "rev",
+      rangeStart: "Review this with ".length,
+      rangeEnd: text.length,
+    });
+  });
+
+  it("keeps inline slash skill search active on later lines", () => {
+    const text = "Review this first\n/implement";
+
+    expect(detectComposerTrigger(text, text.length)).toEqual({
+      kind: "slash-skill",
+      query: "implement",
+      rangeStart: "Review this first\n".length,
+      rangeEnd: text.length,
+    });
+  });
+
   it.each(["$", "€", "£", "¥", "₹", "₩", "₿", "𑿝"])(
     "detects %sskill trigger at cursor",
     (prefix) => {

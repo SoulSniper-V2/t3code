@@ -108,6 +108,7 @@ function groupLabel(triggerKind: ComposerTriggerKind | null): string | null {
       return "Pull requests";
     case "slash-command":
       return "Commands";
+    case "slash-skill":
     case "skill":
       return "Skills";
     case "path":
@@ -127,6 +128,7 @@ function emptyText(triggerKind: ComposerTriggerKind | null, isLoading: boolean):
     case "path":
       return "No matching files or folders.";
     case "skill":
+    case "slash-skill":
       return "No skills found.";
     case "slash-command":
       return "No matching commands.";
@@ -205,7 +207,10 @@ export const ComposerCommandPopover = memo(function ComposerCommandPopover(
               item={item}
               onPress={() => props.onSelect(item)}
               isLast={index === props.items.length - 1}
-              isSlashSkill={props.triggerKind === "slash-command" && item.type === "skill"}
+              isSlashSkill={
+                (props.triggerKind === "slash-command" || props.triggerKind === "slash-skill") &&
+                item.type === "skill"
+              }
             />
           ))}
         </ScrollView>

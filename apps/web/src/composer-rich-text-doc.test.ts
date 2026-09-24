@@ -4,6 +4,7 @@ import { TaskList } from "@tiptap/extension-task-list";
 import { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { describe, expect, it } from "vite-plus/test";
 
+import { detectComposerTrigger, replaceTextRange } from "./composer-logic";
 import {
   buildDocJson,
   collapsedToFlat,
@@ -15,6 +16,7 @@ import {
   pmToFlat,
   serializeEditorDoc,
 } from "./composer-rich-text-doc";
+import { formatTerminalContextReference } from "./lib/terminalContext";
 
 function stubAtom(name: string, attrs: Record<string, { default: unknown }>) {
   return Node.create({
@@ -359,5 +361,24 @@ describe("composer rich text document model", () => {
     expect(flatToMarkdown(map, 6)).toBe(10);
     expect(collapsedToFlat(map, 3)).toBe(2);
     expect(collapsedToFlat(map, 9)).toBe(6);
+  });
+});
+
+describe("inline skill search with rich composer context", () => {
+  it("replaces an inline skill query without losing a preceding context chip", () => {
+    const context = formatTerminalContextReference({
+      id: "terminal-1",
+      terminalLabel: "Terminal 1",
+      lineStart: 1,
+      lineEnd: 2,
+    });
+    const map = roundTrip(`${context}\n/rev`);
+    const trigger = detectComposerTrigger(map.value, map.value.length);
+
+    expect(trigger?.kind).toBe("slash-skill");
+    if (!trigger) throw new Error("Expected an inline slash skill trigger");
+
+    const next = replaceTextRange(map.value, trigger.rangeStart, trigger.rangeEnd, "$review ");
+    expect(roundTrip(next.text).value).toBe(`${context}\n$review `);
   });
 });

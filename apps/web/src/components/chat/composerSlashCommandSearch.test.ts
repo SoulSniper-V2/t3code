@@ -210,14 +210,29 @@ describe("searchSlashCommandItems", () => {
       Extract<ComposerCommandItem, { type: "slash-command" | "provider-slash-command" | "skill" }>
     >;
 
-    expect(slashCommandItemsForPromptPosition(items, false).map((item) => item.id)).toEqual([
-      "slash:model",
-      "skill:claudeAgent:unslop",
-    ]);
-    expect(slashCommandItemsForPromptPosition(items, true).map((item) => item.id)).toEqual([
+    expect(
+      slashCommandItemsForPromptPosition(items, "Use /", "Use ".length).map((item) => item.id),
+    ).toEqual(["slash:model", "skill:claudeAgent:unslop"]);
+    expect(slashCommandItemsForPromptPosition(items, "/", 0).map((item) => item.id)).toEqual([
       "slash:model",
       "provider-slash-command:claudeAgent:compact",
       "skill:claudeAgent:unslop",
     ]);
+  });
+
+  it("keeps provider commands available after leading whitespace only", () => {
+    const items = [
+      {
+        id: "provider-slash-command:claudeAgent:compact",
+        type: "provider-slash-command",
+        provider: claudeDriver,
+        command: { name: "compact" },
+        label: "/compact",
+        description: "Compact the conversation",
+      },
+    ] satisfies Array<Extract<ComposerCommandItem, { type: "provider-slash-command" }>>;
+
+    const prompt = " \n/compact";
+    expect(slashCommandItemsForPromptPosition(items, prompt, " \n".length)).toEqual(items);
   });
 });

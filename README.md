@@ -6,6 +6,7 @@
 
 - **Cline and Command Code providers**, including usage reporting from their local transcripts.
 - **Cross-chat context:** type `@` in the composer to reference another thread, including archived threads. The current agent receives a bounded excerpt of that thread's recent conversation.
+- **Inline skill search:** invoke a skill with `/skill-name` anywhere in a prompt and repeat the trigger to add multiple skills to one draft.
 - **Thread workflows:** set persistent goals with `/goal`, hand a thread to another provider with `/handoff`, fork it with `/fork`, or start an independent thread through the `start_thread` MCP tool in the Synara Agent Gateway integration.
 - **Native computer-use tools over MCP:** agents can inspect the active app's accessibility tree, capture screenshots, list or activate desktop apps, click, type, and press keys.
 - **Multi-agent pipeline prompt builder:** `/pipeline` prepares a Plan → Build → Review prompt with provider and model choices for each stage, then loads it into the composer to send.

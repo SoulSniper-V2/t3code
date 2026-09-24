@@ -2567,7 +2567,7 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           {...searchableSetting("skills-in-slash-menu")}
-          description="Also include skills in the / command menu. Skills always appear when you type $."
+          description="Also include skills in the / command menu when the composer is empty. Inline slash skill search is always available. Skills always appear when you type $."
           resetAction={
             settings.showSkillsInSlashMenu !== DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu ? (
               <SettingResetButton

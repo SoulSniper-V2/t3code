@@ -132,17 +132,19 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
           <div className="px-5 pt-3.5 pb-7">
             <p className="text-secondary-label text-xs">
               {props.isLoading
-                ? props.triggerKind === "skill"
+                ? props.triggerKind === "skill" || props.triggerKind === "slash-skill"
                   ? "Searching workspace skills..."
                   : props.triggerKind === "pull-request"
                     ? "Finding pull request..."
                     : "Searching chats and workspace files..."
                 : (props.emptyStateText ??
-                  (props.triggerKind === "skill"
-                    ? "No skills found. Try / to browse provider commands."
-                    : props.triggerKind === "path"
-                      ? "No matching chats, files, or folders."
-                      : "No matching command."))}
+                  (props.triggerKind === "slash-skill"
+                    ? "No skills found."
+                    : props.triggerKind === "skill"
+                      ? "No skills found. Try / in an empty composer to browse provider commands."
+                      : props.triggerKind === "path"
+                        ? "No matching chats, files, or folders."
+                        : "No matching command."))}
             </p>
           </div>
         )}
@@ -162,7 +164,10 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
   const skillSourceKind =
     props.item.type === "skill" ? resolveProviderSkillSourceKind(props.item.skill) : null;
   const isSlashSkill =
-    props.triggerKind === "slash-command" && props.item.type === "skill" ? props.item.skill : null;
+    (props.triggerKind === "slash-command" || props.triggerKind === "slash-skill") &&
+    props.item.type === "skill"
+      ? props.item.skill
+      : null;
   const pullRequestPresentation =
     props.item.type === "pull-request" ? resolvePullRequestState(props.item.pullRequest) : null;
 
