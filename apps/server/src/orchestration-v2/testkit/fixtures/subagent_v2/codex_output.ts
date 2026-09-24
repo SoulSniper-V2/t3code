@@ -39,7 +39,7 @@ export function assertSubagentV2Output(
   assert.equal(subagent.origin, "provider_native");
   assert.equal(subagent.createdBy, "agent");
   assert.equal(subagent.driver, "codex");
-  assert.equal(subagent.title, "/root/hello_agent");
+  assert.equal(subagent.title, "/root/hello");
   assert.equal(subagent.prompt, "");
   assert.equal(subagent.status, "completed");
   assert.equal(subagent.result, "Hello.");

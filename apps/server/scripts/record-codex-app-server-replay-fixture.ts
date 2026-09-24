@@ -28,6 +28,8 @@ import {
   SUBAGENT_CONTINUE_PARENT_PROMPT,
   SUBAGENT_CONTINUE_PROMPT,
   SUBAGENT_PROMPT,
+  SUBAGENT_V2_PROMPT,
+  SUBAGENT_V2_NESTED_PROMPT,
   THREAD_ROLLBACK_AFTER_PROMPT,
   THREAD_ROLLBACK_FIRST_PROMPT,
   THREAD_ROLLBACK_SECOND_PROMPT,
@@ -79,6 +81,8 @@ const SCENARIO_NAMES = [
   "tool_call_restricted_granular",
   "subagent",
   "subagent_continue",
+  "subagent_v2",
+  "subagent_v2_nested",
   "multi_turn",
   "provider_thread_resume",
   "todo_list",
@@ -109,6 +113,8 @@ interface ReplayRun {
   readonly description: string;
   readonly steps: ReadonlyArray<ReplayStep>;
   readonly turnDefaults?: Omit<TurnStartParams, "input" | "threadId">;
+  /** Config overrides for `thread/start`; replay ignores them when matching frames. */
+  readonly threadConfig?: CodexSchema.V2ThreadStartParams["config"];
 }
 
 type ReplayStep =
@@ -423,6 +429,41 @@ function scenarios(): ReadonlyArray<ReplayScenario> {
             sandboxPolicy: readOnlyFullAccessSandbox(),
           },
           steps: [{ type: "turn", label: "spawn-two-subagents", prompt: SUBAGENT_PROMPT }],
+        },
+      ],
+    },
+    {
+      name: "subagent_v2",
+      fileName: "subagent_v2.ndjson",
+      description:
+        "One root turn on a multi-agent v2 model that spawns one native subagent and waits for it.",
+      runs: [
+        {
+          name: "spawn-v2-subagent",
+          description:
+            "Record with a v2 model (e.g. --model gpt-5.6-sol) so Codex emits subAgentActivity items.",
+          steps: [{ type: "turn", label: "spawn-v2-subagent", prompt: SUBAGENT_V2_PROMPT }],
+        },
+      ],
+    },
+    {
+      name: "subagent_v2_nested",
+      fileName: "subagent_v2_nested.ndjson",
+      description:
+        "One root turn on a multi-agent v2 model whose subagent spawns a subagent that spawns a leaf.",
+      runs: [
+        {
+          name: "spawn-nested-v2-subagents",
+          description:
+            "Record with a v2 model (e.g. --model gpt-5.6-sol); depth 3 lets each child spawn again.",
+          threadConfig: { "agents.max_depth": 3 },
+          steps: [
+            {
+              type: "turn",
+              label: "spawn-nested-v2-subagents",
+              prompt: SUBAGENT_V2_NESTED_PROMPT,
+            },
+          ],
         },
       ],
     },
@@ -1218,7 +1259,10 @@ function runReplaySession({
 
     yield* Effect.gen(function* () {
       const client = yield* initializeClient;
-      const thread = yield* client.request("thread/start", {});
+      const thread = yield* client.request(
+        "thread/start",
+        run.threadConfig === undefined ? {} : { config: run.threadConfig },
+      );
       let activeThreadId = thread.thread.id;
       const threadIds = new Map<string, string>([["source", thread.thread.id]]);
 

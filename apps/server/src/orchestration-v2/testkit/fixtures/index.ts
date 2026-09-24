@@ -46,7 +46,7 @@ import { assertCursorSubagentOutput } from "./subagent/cursor_output.ts";
 import { assertSubagentContinueOutput } from "./subagent_continue/codex_output.ts";
 import { subagentContinueInput } from "./subagent_continue/input.ts";
 import { assertSubagentV2Output } from "./subagent_v2/codex_output.ts";
-import { subagentV2Input } from "./subagent_v2/input.ts";
+import { subagentV2Input, subagentV2NestedInput } from "./subagent_v2/input.ts";
 import { assertSubagentV2NestedOutput } from "./subagent_v2_nested/codex_output.ts";
 import { assertClaudeThreadRollbackOutput } from "./thread_rollback/claude_output.ts";
 import { assertThreadRollbackOutput } from "./thread_rollback/codex_output.ts";
@@ -453,19 +453,21 @@ export const ORCHESTRATOR_REPLAY_FIXTURES: ReadonlyArray<OrchestratorReplayFixtu
       {
         driver: ProviderDriverKind.make("codex"),
         transcriptFile: new URL("./subagent_v2/codex_transcript.ndjson", import.meta.url),
-        modelSelection: CODEX_MODEL_SELECTION,
+        // Recorded live on Codex 0.156.1; gpt-5.6-sol runs multi-agent v2.
+        modelSelection: { ...CODEX_MODEL_SELECTION, model: "gpt-5.6-sol" },
         assertOutput: assertSubagentV2Output,
       },
     ],
   },
   {
     name: "subagent_v2_nested",
-    buildInput: subagentV2Input,
+    buildInput: subagentV2NestedInput,
     providers: [
       {
         driver: ProviderDriverKind.make("codex"),
         transcriptFile: new URL("./subagent_v2_nested/codex_transcript.ndjson", import.meta.url),
-        modelSelection: CODEX_MODEL_SELECTION,
+        // Recorded live on Codex 0.156.1; gpt-5.6-sol runs multi-agent v2.
+        modelSelection: { ...CODEX_MODEL_SELECTION, model: "gpt-5.6-sol" },
         assertOutput: assertSubagentV2NestedOutput,
       },
     ],
