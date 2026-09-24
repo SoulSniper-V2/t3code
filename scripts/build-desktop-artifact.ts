@@ -915,6 +915,7 @@ interface ResolvedBuildOptions {
   readonly skipBuild: boolean;
   readonly keepStage: boolean;
   readonly signed: boolean;
+  readonly macosPasskeysEnabled: boolean;
   readonly verbose: boolean;
   readonly mockUpdates: boolean;
   readonly mockUpdateServerPort: number | undefined;
@@ -1546,6 +1547,12 @@ const BuildEnvConfig = Config.all({
   skipBuild: Config.Boolean("T3CODE_DESKTOP_SKIP_BUILD").pipe(Config.withDefault(false)),
   keepStage: Config.Boolean("T3CODE_DESKTOP_KEEP_STAGE").pipe(Config.withDefault(false)),
   signed: Config.Boolean("T3CODE_DESKTOP_SIGNED").pipe(Config.withDefault(false)),
+  // Native macOS passkeys require an Associated Domains provisioning profile.
+  // Fork builds can keep Developer ID signing/notarization while opting out of
+  // that profile-bound capability.
+  macosPasskeysEnabled: Config.Boolean("T3CODE_DESKTOP_MACOS_PASSKEYS_ENABLED").pipe(
+    Config.withDefault(true),
+  ),
   verbose: Config.Boolean("T3CODE_DESKTOP_VERBOSE").pipe(Config.withDefault(false)),
   mockUpdates: Config.Boolean("T3CODE_DESKTOP_MOCK_UPDATES").pipe(Config.withDefault(false)),
   mockUpdateServerPort: Config.String("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
@@ -1656,6 +1663,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     skipBuild,
     keepStage,
     signed,
+    macosPasskeysEnabled: env.macosPasskeysEnabled,
     verbose,
     mockUpdates,
     mockUpdateServerPort,
@@ -3585,12 +3593,17 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* fs.copy(stageResourcesDir, stageProdResourcesDir);
 
   const configuredMacPasskeySigning =
-    options.platform === "mac" && options.signed
+    options.platform === "mac" && options.signed && options.macosPasskeysEnabled
       ? yield* Effect.try({
           try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
         })
       : undefined;
+  if (options.platform === "mac" && options.signed && !options.macosPasskeysEnabled) {
+    yield* Effect.log(
+      "[desktop-artifact] Warning: native macOS passkey sign-in is disabled for this build.",
+    );
+  }
   const macPasskeySigning = configuredMacPasskeySigning
     ? {
         ...configuredMacPasskeySigning,
