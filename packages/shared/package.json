@@ -199,6 +199,10 @@
       "types": "./src/threadReference.ts",
       "import": "./src/threadReference.ts"
     },
+    "./threadMentions": {
+      "types": "./src/threadMentions.ts",
+      "import": "./src/threadMentions.ts"
+    },
     "./threadPullRequests": {
       "types": "./src/threadPullRequests.ts",
       "import": "./src/threadPullRequests.ts"

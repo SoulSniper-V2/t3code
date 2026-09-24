@@ -9,6 +9,7 @@ import type {
   FileContextRecord,
   ImageContextRecord,
   KnownComposerContextRecord,
+  MentionContextRecord,
   MessageId,
   OrchestrationMessageContext,
   PreviewAnnotationContextRecord,
@@ -23,6 +24,11 @@ import {
   collectComposerContextReferences,
   sanitizeComposerContextLabel,
 } from "@t3tools/shared/composerContextReferences";
+import {
+  threadIdFromThreadMentionContextId,
+  threadMentionContextIdForThreadId,
+  threadMentionPathForThreadId,
+} from "@t3tools/shared/threadMentions";
 
 import {
   type ComposerContextReference,
@@ -123,6 +129,39 @@ export function terminalContextReference(context: TerminalContextDraft): Compose
     contextId: toKindScopedComposerContextId("terminal", context.id),
     label: formatTerminalContextLabel(context),
   };
+}
+
+export function threadMentionContextReference(
+  threadId: ThreadId,
+  title: string,
+): ComposerContextReference | null {
+  const contextId = threadMentionContextIdForThreadId(threadId);
+  if (contextId === null) return null;
+  return {
+    kind: "mention",
+    contextId,
+    label: sanitizeComposerContextLabel(title, "chat"),
+  };
+}
+
+/** Rebuilds thread mention payloads from their durable inline references in a saved draft. */
+export function threadMentionContextRecordsFromPrompt(
+  prompt: string,
+): ReadonlyArray<MentionContextRecord> {
+  const records = new Map<ComposerContextId, MentionContextRecord>();
+  for (const occurrence of collectComposerContextReferences(prompt)) {
+    if (occurrence.kind !== "mention") continue;
+    const threadId = threadIdFromThreadMentionContextId(occurrence.contextId);
+    if (threadId === null) continue;
+    records.set(occurrence.contextId, {
+      version: 1,
+      contextId: occurrence.contextId,
+      kind: "mention",
+      label: sanitizeComposerContextLabel(occurrence.label, "chat"),
+      path: threadMentionPathForThreadId(threadId),
+    });
+  }
+  return [...records.values()];
 }
 
 /** Review producers mint ids in their own grammars; the context id is a folded form of them. */
@@ -292,6 +331,7 @@ export function attachmentContextRecord(
 }
 
 export function buildMessageContext(input: {
+  prompt?: string;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
   reviewComments: ReadonlyArray<ReviewCommentContext>;
   previewAnnotations: ReadonlyArray<PreviewAnnotationPayload>;
@@ -304,6 +344,7 @@ export function buildMessageContext(input: {
     ),
   );
   const records: ComposerContextRecord[] = [
+    ...threadMentionContextRecordsFromPrompt(input.prompt ?? ""),
     ...input.terminalContexts.map(terminalContextRecord),
     ...input.reviewComments.map(reviewCommentContextRecord),
     ...input.previewAnnotations.map((annotation) =>

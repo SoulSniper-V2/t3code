@@ -43,6 +43,7 @@ import {
 } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
+import { resolveThreadMentionContext } from "../../provider/threadMentionContext.ts";
 import { ProviderAuthService } from "../../provider/Services/ProviderAuthService.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
@@ -1483,12 +1484,23 @@ const make = Effect.gen(function* () {
       turnsAfterCompaction.set(event.payload.threadId, queued);
       return;
     }
+    const projectedMessageText = projectComposerContextForProvider({
+      text: message.text,
+      records: message.context?.records ?? [],
+    });
+    const mentionedChatContext = yield* resolveThreadMentionContext({
+      query: projectionSnapshotQuery,
+      currentThreadId: event.payload.threadId,
+      text: message.text,
+      records: message.context?.records ?? [],
+    });
+    const messageText =
+      mentionedChatContext.length > 0
+        ? `${projectedMessageText}\n\n${mentionedChatContext}`
+        : projectedMessageText;
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
       threadId: event.payload.threadId,
-      messageText: projectComposerContextForProvider({
-        text: message.text,
-        records: message.context?.records ?? [],
-      }),
+      messageText,
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       ...(event.payload.modelSelection !== undefined
         ? { modelSelection: event.payload.modelSelection }

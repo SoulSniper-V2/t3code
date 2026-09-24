@@ -228,6 +228,7 @@ import {
   terminalContextDraftFromRecord,
   terminalContextReference,
   terminalContextRecord,
+  threadMentionContextReference,
 } from "~/lib/composerContextRecords";
 import { requestConfirmDialog } from "~/confirmDialog";
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
@@ -242,7 +243,8 @@ import {
   type EnvironmentQueryTarget,
 } from "~/state/pullRequests";
 import { useEnvironmentQuery } from "~/state/query";
-import { useDebouncedValue } from "~/state/queries";
+import { useDebouncedValue, useThreadSearch } from "~/state/queries";
+import { useProjects, useThreadShells } from "~/state/entities";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import { AccountSwitcher } from "./AccountSwitcher";
 import { ThreadGoalBanner } from "./ThreadGoalBanner";
@@ -1709,6 +1711,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerContextRecords = useMemo(
     () =>
       composerContextRecordsFromDraft({
+        prompt,
         terminalContexts: composerTerminalContexts,
         reviewComments: composerReviewComments,
         previewAnnotations: composerPreviewAnnotations,
@@ -1722,6 +1725,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       composerPreviewAnnotations,
       composerReviewComments,
       composerTerminalContexts,
+      prompt,
       uploadsByImageId,
     ],
   );
@@ -2275,11 +2279,70 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const settledPullRequestTextQuery =
     pullRequestTextQuery === debouncedPullRequestTextQuery ? pullRequestTextQuery : null;
   const isPathTrigger = composerTriggerKind === "path";
+  const threadShells = useThreadShells();
+  const projects = useProjects();
   const workspaceEntries = useComposerPathSearch({
     environmentId,
     cwd: isPathTrigger ? gitCwd : null,
     query: isPathTrigger ? pathTriggerQuery : null,
   });
+  const threadSearch = useThreadSearch([environmentId], pathTriggerQuery);
+  const mentionableThreadItems = useMemo<ComposerCommandItem[]>(() => {
+    const projectById = new Map(
+      projects
+        .filter((project) => project.environmentId === environmentId)
+        .map((project) => [project.id, project] as const),
+    );
+    const shellById = new Map(
+      threadShells
+        .filter(
+          (thread) =>
+            thread.environmentId === environmentId &&
+            thread.archivedAt === null &&
+            thread.id !== activeThreadId,
+        )
+        .map((thread) => [thread.id, thread] as const),
+    );
+    const query = pathTriggerQuery.trim().toLocaleLowerCase();
+    const candidates =
+      query.length >= 2
+        ? threadSearch.matches.flatMap((match) => {
+            if (match.environmentId !== environmentId) return [];
+            const thread = shellById.get(match.threadId);
+            return thread ? [thread] : [];
+          })
+        : [...shellById.values()]
+            .filter(
+              (thread) => query.length === 0 || thread.title.toLocaleLowerCase().includes(query),
+            )
+            .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    const seen = new Set<string>();
+    return candidates
+      .filter((thread) => {
+        if (seen.has(thread.id)) return false;
+        seen.add(thread.id);
+        return true;
+      })
+      .slice(0, 8)
+      .map((thread) => {
+        const project = projectById.get(thread.projectId);
+        const provider = thread.session?.providerName ?? thread.modelSelection.instanceId;
+        return {
+          id: `thread:${thread.id}`,
+          type: "thread",
+          threadId: thread.id,
+          label: thread.title,
+          description: `${project?.title ?? "Workspace"} · ${provider}`,
+        };
+      });
+  }, [
+    activeThreadId,
+    environmentId,
+    pathTriggerQuery,
+    projects,
+    threadSearch.matches,
+    threadShells,
+  ]);
   const compactSlashCommandAvailable =
     composerTrigger?.kind === "slash-command" &&
     prompt.slice(0, composerTrigger.rangeStart).trim() === "" &&
@@ -2356,14 +2419,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
     if (!composerTrigger) return [];
     if (composerTrigger.kind === "path") {
-      return workspaceEntries.entries.map((entry) => ({
-        id: `path:${entry.kind}:${entry.path}`,
-        type: "path",
-        path: entry.path,
-        pathKind: entry.kind,
-        label: basenameOfPath(entry.path),
-        description: entry.path.slice(0, Math.max(0, entry.path.lastIndexOf("/"))),
-      }));
+      return [
+        ...mentionableThreadItems,
+        ...workspaceEntries.entries.map((entry) => ({
+          id: `path:${entry.kind}:${entry.path}`,
+          type: "path" as const,
+          path: entry.path,
+          pathKind: entry.kind,
+          label: basenameOfPath(entry.path),
+          description: entry.path.slice(0, Math.max(0, entry.path.lastIndexOf("/"))),
+        })),
+      ];
     }
     if (composerTrigger.kind === "slash-command") {
       const builtInSlashCommandItems = [
@@ -2526,6 +2592,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     compactSlashCommandAvailable,
     composerTrigger,
     exactPullRequestLookup.data,
+    mentionableThreadItems,
     planModeUiEnabled,
     pullRequestLookup.data,
     pullRequestProjectId,
@@ -2607,7 +2674,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   ]);
 
   const isComposerMenuLoading =
-    (composerTriggerKind === "path" && pathTriggerQuery.length > 0 && workspaceEntries.isPending) ||
+    (composerTriggerKind === "path" &&
+      pathTriggerQuery.length > 0 &&
+      (workspaceEntries.isPending || threadSearch.isPending)) ||
     (composerTriggerKind === "pull-request" &&
       pullRequestProjectId !== null &&
       pullRequestRepository !== null &&
@@ -2634,7 +2703,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         : "No pull requests found in this repository.";
     }
     return composerTriggerKind === "path"
-      ? "No matching files or folders."
+      ? "No matching chats, files, or folders."
       : "No matching command.";
   }, [
     composerTrigger,
@@ -3649,6 +3718,30 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         if (applied) {
           setComposerHighlightedItemId(null);
         }
+        return;
+      }
+      if (item.type === "thread") {
+        if (
+          trigger.kind !== "path" ||
+          !composerMenuItemsRef.current.some((candidate) => candidate.id === item.id)
+        ) {
+          return;
+        }
+        const reference = threadMentionContextReference(item.threadId, item.label);
+        if (reference === null) return;
+        const replacement = `${formatInlineContextReference(reference)} `;
+        const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
+          snapshot.value,
+          trigger.rangeEnd,
+          replacement,
+        );
+        const applied = applyPromptReplacement(
+          trigger.rangeStart,
+          replacementRangeEnd,
+          replacement,
+          { expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd) },
+        );
+        if (applied) setComposerHighlightedItemId(null);
         return;
       }
       if (item.type === "slash-command") {

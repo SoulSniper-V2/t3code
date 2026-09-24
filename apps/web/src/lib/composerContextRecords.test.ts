@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { upgradeLegacyContextMessage } from "@t3tools/shared/composerContextLegacy";
+import { threadMentionPathForThreadId } from "@t3tools/shared/threadMentions";
 
 import {
   formatInlineContextReference,
@@ -35,6 +36,7 @@ import {
   terminalContextRecord,
   terminalContextReference,
   terminalContextDraftFromRecord,
+  threadMentionContextReference,
   uploadedAttachmentContextRecord,
 } from "./composerContextRecords";
 
@@ -703,6 +705,29 @@ describe("producer ids that do not fit the grammar", () => {
         context: { version: 1, records: [record] },
       }).recordsById.has(record.contextId),
     ).toBe(true);
+  });
+});
+
+describe("thread mention context", () => {
+  it("rebuilds a durable read-only chat record from the inline reference at send time", () => {
+    const referencedThreadId = ThreadId.make("thread-reference");
+    const reference = threadMentionContextReference(referencedThreadId, "Design notes");
+    expect(reference).not.toBeNull();
+
+    const context = buildMessageContext({
+      prompt: formatInlineContextReference(reference!),
+      terminalContexts: [],
+      reviewComments: [],
+      previewAnnotations: [],
+    });
+
+    expect(context?.records).toEqual([
+      expect.objectContaining({
+        kind: "mention",
+        label: "Design notes",
+        path: threadMentionPathForThreadId(referencedThreadId),
+      }),
+    ]);
   });
 });
 

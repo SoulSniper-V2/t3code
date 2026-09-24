@@ -9,10 +9,12 @@ import {
   type PullRequestContextMetadata,
   type ServerProviderSkill,
   type ServerProviderSlashCommand,
+  type ThreadId,
 } from "@t3tools/contracts";
 import {
   BlocksIcon,
   FolderIcon,
+  MessageCircleIcon,
   PackageIcon,
   SettingsIcon,
   UserRoundIcon,
@@ -34,6 +36,13 @@ export type ComposerCommandItem =
       type: "path";
       path: string;
       pathKind: ProjectEntry["kind"];
+      label: string;
+      description: string;
+    }
+  | {
+      id: string;
+      type: "thread";
+      threadId: ThreadId;
       label: string;
       description: string;
     }
@@ -127,12 +136,12 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
                   ? "Searching workspace skills..."
                   : props.triggerKind === "pull-request"
                     ? "Finding pull request..."
-                    : "Searching workspace files..."
+                    : "Searching chats and workspace files..."
                 : (props.emptyStateText ??
                   (props.triggerKind === "skill"
                     ? "No skills found. Try / to browse provider commands."
                     : props.triggerKind === "path"
-                      ? "No matching files or folders."
+                      ? "No matching chats, files, or folders."
                       : "No matching command."))}
             </p>
           </div>
@@ -178,6 +187,9 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
           kind={props.item.pathKind}
           theme={props.resolvedTheme}
         />
+      ) : null}
+      {props.item.type === "thread" ? (
+        <MessageCircleIcon aria-hidden="true" className="size-4 shrink-0 text-secondary-label" />
       ) : null}
       {pullRequestPresentation ? (
         <pullRequestPresentation.Icon

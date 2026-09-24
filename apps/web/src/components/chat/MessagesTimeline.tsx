@@ -24,6 +24,7 @@ import {
 } from "@t3tools/contracts";
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
+import { isThreadMentionPath } from "@t3tools/shared/threadMentions";
 import type { CodexArtifactTemplate } from "@t3tools/client-runtime/codex-artifact-templates";
 import {
   resolveWorkEntryToolPresentation,
@@ -3437,6 +3438,18 @@ function UserMessageMentionChip(props: {
   copyMarkdown: string;
 }) {
   const ctx = use(TimelineRowCtx);
+  if (isThreadMentionPath(props.record.path)) {
+    return (
+      <ContextChipShell
+        kind="mention"
+        icon={<MessageCircleIcon />}
+        label={props.record.label}
+        aria-label={`Referenced chat, ${props.record.label}`}
+        data-markdown-copy={props.copyMarkdown}
+        tooltip="Read-only conversation context"
+      />
+    );
+  }
   return (
     <Tooltip>
       <TooltipTrigger

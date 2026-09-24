@@ -1,8 +1,9 @@
 import ChatMarkdown from "./ChatMarkdown";
 import { ReadOnlySourcePreview } from "./files/AttachmentFilePreview";
-import type { PreviewAnnotationPayload } from "@t3tools/contracts";
+import type { MentionContextRecord, PreviewAnnotationPayload } from "@t3tools/contracts";
 import { formatAttachmentSize } from "@t3tools/client-runtime/state/attachments";
 import { videoMimeType } from "@t3tools/shared/video";
+import { isThreadMentionPath } from "@t3tools/shared/threadMentions";
 import { MessageCircleIcon, MousePointerClickIcon } from "lucide-react";
 import { createContext, type MouseEvent, type ReactElement, type ReactNode, use } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -25,6 +26,7 @@ import {
   previewAnnotationContextLabel,
   reviewCommentContextId,
   reviewCommentContextLabel,
+  threadMentionContextRecordsFromPrompt,
   terminalContextReference,
   uploadedAttachmentContextRecord,
 } from "~/lib/composerContextRecords";
@@ -52,6 +54,7 @@ import {
  * shape; the editor only needs a way to look one up by id.
  */
 export type ComposerDraftContextRecord =
+  | { kind: "mention"; record: MentionContextRecord }
   | { kind: "terminal"; record: TerminalContextDraft }
   | { kind: "review-comment"; record: ReviewCommentContext }
   | { kind: "preview-annotation"; record: PreviewAnnotationPayload }
@@ -91,6 +94,7 @@ export const ComposerContextRecordsContext = createContext<ComposerDraftContextR
 );
 
 export function composerContextRecordsFromDraft(input: {
+  prompt?: string;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
   reviewComments?: ReadonlyArray<ReviewCommentContext>;
   previewAnnotations?: ReadonlyArray<PreviewAnnotationPayload>;
@@ -99,6 +103,9 @@ export function composerContextRecordsFromDraft(input: {
   uploadsByImageId?: Readonly<Record<string, AttachmentUploadState>>;
 }): ComposerDraftContextRecords {
   const records = new Map<string, ComposerDraftContextRecord>();
+  for (const record of threadMentionContextRecordsFromPrompt(input.prompt ?? "")) {
+    records.set(record.contextId, { kind: "mention", record });
+  }
   for (const record of input.images ?? []) {
     records.set(imageContextReference(record).contextId, {
       kind: "image",
@@ -327,8 +334,25 @@ const composerContextPresentationRegistry = createContextPresentationRegistry<
   ComposerContextRenderContext,
   ReactElement
 >({
-  requiredKinds: ["image", "file", "terminal", "review-comment", "preview-annotation"],
+  requiredKinds: ["mention", "image", "file", "terminal", "review-comment", "preview-annotation"],
   handlers: [
+    {
+      kind: "mention",
+      canRender: (entry) => entry.kind === "mention" && isThreadMentionPath(entry.record.path),
+      render: (entry, context, definition) =>
+        entry.kind === "mention" && isThreadMentionPath(entry.record.path) ? (
+          <ContextChip
+            icon={<MessageCircleIcon />}
+            label={entry.record.label}
+            kindLabel="Referenced chat"
+            details={entry.record.path}
+            detailsMode={definition.capabilities.details}
+            kind="mention"
+          />
+        ) : (
+          <UnresolvedContextChip label={context.label} />
+        ),
+    },
     {
       kind: "terminal",
       canRender: (entry) => entry.kind === "terminal",

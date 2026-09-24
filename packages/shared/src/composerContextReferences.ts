@@ -6,6 +6,7 @@ import {
   type ElementContextDetails,
   type KnownComposerContextRecord,
 } from "@t3tools/contracts";
+import { isThreadMentionPath } from "./threadMentions.ts";
 
 /**
  * Canonical inline reference: `[label](t3-context://v1/<kind>/<contextId>)`, or the image
@@ -230,7 +231,9 @@ function formatComposerContextProviderPayload(record: KnownComposerContextRecord
       return lines.join("\n");
     }
     case "mention":
-      return `path: ${record.path}`;
+      return isThreadMentionPath(record.path)
+        ? `referenced chat: ${record.label}`
+        : `path: ${record.path}`;
     case "skill":
       return `name: ${record.name}`;
   }
