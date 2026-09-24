@@ -15,7 +15,7 @@
 - **Provider account switching:** hot-swap between multiple configured provider accounts from the chat composer.
 - **Nightly updater fix:** a newer installed nightly is not replaced by an older nightly release.
 
-> **Distribution:** The install commands and desktop release link below point to upstream T3 Code. See [this fork's releases](https://github.com/SoulSniper-V2/t3code/releases) for its published builds; the cross-chat and nightly-updater changes currently on `main` are not in the latest published nightly yet.
+> **Distribution:** The install commands below point to upstream T3 Code. Download this fork's signed macOS nightly and its update assets from [this fork's releases](https://github.com/SoulSniper-V2/t3code/releases).
 
 T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
 
@@ -58,7 +58,7 @@ To try it once without installing, run `npx t3@latest` instead.
 
 ### Desktop app
 
-Install the latest version of the desktop app from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), or from your favorite package registry:
+Install the latest upstream version of the desktop app from [T3 Code GitHub Releases](https://github.com/pingdotgg/t3code/releases), or from your favorite package registry. To use this fork's additions, download its [macOS nightly](https://github.com/SoulSniper-V2/t3code/releases) instead:
 
 #### Windows (`winget`)
 
