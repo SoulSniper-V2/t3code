@@ -6,7 +6,7 @@ import {
   CommandCodeIcon,
   CursorIcon,
   GrokIcon,
-  Icon,
+  type Icon,
   OpenAI,
   OpenCodeIcon,
 } from "../Icons";

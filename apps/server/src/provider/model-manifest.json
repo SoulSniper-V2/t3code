@@ -64,6 +64,15 @@
       "driver": "cline",
       "t3CodeRange": ">=0.0.42",
       "ranges": [{ "range": ">=0.0.0", "status": "unknown" }]
+    },
+    {
+      "driver": "pi",
+      "t3CodeRange": ">=0.0.42",
+      "recommendedRange": ">=0.80.5",
+      "ranges": [
+        { "range": ">=0.80.5", "status": "supported" },
+        { "range": "<0.80.5", "status": "unsupported" }
+      ]
     }
   ],
   "currentModels": {

@@ -7,14 +7,14 @@ import {
   type ProjectEntry,
   type ProviderDriverKind,
   type PullRequestContextMetadata,
+  type ScopedThreadRef,
   type ServerProviderSkill,
   type ServerProviderSlashCommand,
-  type ThreadId,
 } from "@t3tools/contracts";
 import {
   BlocksIcon,
   FolderIcon,
-  MessageCircleIcon,
+  MessagesSquareIcon,
   PackageIcon,
   SettingsIcon,
   UserRoundIcon,
@@ -42,7 +42,7 @@ export type ComposerCommandItem =
   | {
       id: string;
       type: "thread";
-      threadId: ThreadId;
+      thread: ScopedThreadRef;
       label: string;
       description: string;
     }
@@ -194,7 +194,7 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
         />
       ) : null}
       {props.item.type === "thread" ? (
-        <MessageCircleIcon aria-hidden="true" className="size-4 shrink-0 text-secondary-label" />
+        <MessagesSquareIcon aria-hidden="true" className="size-4 shrink-0 text-secondary-label" />
       ) : null}
       {pullRequestPresentation ? (
         <pullRequestPresentation.Icon
