@@ -195,8 +195,23 @@ NSIS is downloaded by electron-builder. WSL support additionally needs the Linux
 passed as `--wsl-runtime`; see the
 [release runbook](./release.md#windows-payload-topology-and-update-validation).
 
-### Signing and passkeys
+### macOS signing
 
-Add `--signed` after configuring the platform credentials in the
-[release runbook](./release.md). macOS passkeys need a signed, provisioned app; follow the
-[Connect setup](./connect-setup.md#desktop-passkeys) for local signing and renderer HMR.
+Add `--signed` after configuring the Developer ID certificate and App Store Connect notarization
+credentials in the [release runbook](./release.md). This fork's desktop build does not use an
+Associated Domains entitlement or provisioning profile.
+
+For renderer HMR, install a signed build, start `vp run dev:web`, and launch the installed executable
+with the actual web and server ports. With the default ports:
+
+```sh
+VITE_DEV_SERVER_URL=http://127.0.0.1:5733 \
+T3CODE_PORT=13773 \
+  "/Applications/T3 Code (Alpha).app/Contents/MacOS/T3 Code (Alpha)"
+```
+
+Verify the installed bundle before testing:
+
+```sh
+codesign --verify --deep --strict "/Applications/T3 Code (Alpha).app"
+```

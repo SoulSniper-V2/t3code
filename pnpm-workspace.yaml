@@ -25,7 +25,6 @@ catalog:
   "@clerk/backend": 3.18.1
   "@clerk/clerk-js": 6.32.1
   "@clerk/electron": 0.0.44
-  "@clerk/electron-passkeys": 0.0.3
   "@clerk/expo": 4.6.8
   "@clerk/react": 6.16.1
   "@clerk/shared": 4.33.0
@@ -131,8 +130,9 @@ overrides:
   "@clerk/clerk-js>@solana/wallet-standard": "-"
   "@clerk/clerk-js>@wallet-standard/core": "-"
   "@clerk/electron": "catalog:"
-  "@clerk/electron-passkeys": "catalog:"
+  "@clerk/electron>@clerk/electron-passkeys": "-"
   "@clerk/expo": "catalog:"
+  "@clerk/expo>@clerk/expo-passkeys": "-"
   "@clerk/react": "catalog:"
   "@clerk/shared": "catalog:"
   "@effect/atom-react": "catalog:"

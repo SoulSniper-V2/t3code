@@ -36,8 +36,8 @@ describe("provider auth state", () => {
         authorizationUrl: null,
         expiresAt: null,
         message: null,
-        methods: [method, { ...method, id: "passkey", type: "passkey" }],
-        interaction: { type: "passkey", id: "passkey" },
+        methods: [method, { ...method, id: "future", type: "future" }],
+        interaction: { type: "future", id: "future" },
         credentialOwner: "keychain",
       }),
     ).toEqual({

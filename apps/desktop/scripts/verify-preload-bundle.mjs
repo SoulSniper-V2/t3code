@@ -106,6 +106,9 @@ const executeBundle = (source, sandboxModules) => {
   NodeVM.runInNewContext(
     source,
     {
+      window: {
+        addEventListener: () => undefined,
+      },
       process: sandboxProcess,
       require: requireSandboxModule,
     },
@@ -132,13 +135,15 @@ export const verifyPreloadBundle = (source) => {
 
   executeBundle(source, sandboxModules);
 
+  if (exposedGlobals.has(clerkPasskeysGlobal)) {
+    throw new Error("Desktop preload bundle must not expose Clerk's native passkey bridge");
+  }
+
   const desktopBridge = exposedGlobals.get("desktopBridge");
   const missingApis = expectedDesktopBridgeApis.filter(
     (api) => typeof desktopBridge?.[api] !== "function",
   );
   if (!exposedGlobals.has("desktopBridge")) missingApis.unshift("desktopBridge exposure");
-  if (!exposedGlobals.has(clerkPasskeysGlobal)) missingApis.push(`${clerkPasskeysGlobal} exposure`);
-
   if (missingApis.length > 0) {
     throw new Error(`Desktop preload bundle is missing executable APIs: ${missingApis.join(", ")}`);
   }

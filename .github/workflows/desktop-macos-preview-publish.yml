@@ -193,9 +193,8 @@ jobs:
       # Same inputs as the build workflow, read from the built commit through
       # the contents API as data: the desktop manifest's base version plus the
       # build run's number reproduces the version baked into the bundle, and
-      # .env.example holds the public T3 Connect identifiers the bundle was
-      # compiled with, which the signed app's passkey entitlement must match.
-      # Both are validated before they reach a file name or an entitlement.
+      # .env.example holds the public T3 Connect identifiers compiled into the
+      # bundle. Both are validated before they reach a file name or build config.
       - id: version
         name: Resolve preview version and public configuration
         if: steps.gate.outputs.eligible == 'true'
@@ -291,7 +290,6 @@ jobs:
       APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
       APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
       APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-      MACOS_PROVISIONING_PROFILE: ${{ secrets.MACOS_PROVISIONING_PROFILE }}
     with:
       version: ${{ needs.resolve.outputs.version }}
       ref: ${{ github.sha }}
