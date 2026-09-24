@@ -245,6 +245,7 @@ import {
 import { useEnvironmentQuery } from "~/state/query";
 import { useDebouncedValue, useThreadSearch } from "~/state/queries";
 import { useProjects, useThreadShells } from "~/state/entities";
+import { useArchivedThreadSnapshots } from "~/lib/archivedThreadsState";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import { AccountSwitcher } from "./AccountSwitcher";
 import { ThreadGoalBanner } from "./ThreadGoalBanner";
@@ -2281,6 +2282,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const isPathTrigger = composerTriggerKind === "path";
   const threadShells = useThreadShells();
   const projects = useProjects();
+  const archivedThreadSnapshots = useArchivedThreadSnapshots(isPathTrigger ? [environmentId] : []);
   const workspaceEntries = useComposerPathSearch({
     environmentId,
     cwd: isPathTrigger ? gitCwd : null,
@@ -2288,34 +2290,38 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   });
   const threadSearch = useThreadSearch([environmentId], pathTriggerQuery);
   const mentionableThreadItems = useMemo<ComposerCommandItem[]>(() => {
-    const projectById = new Map(
-      projects
+    const archivedSnapshot = archivedThreadSnapshots.snapshots.find(
+      (entry) => entry.environmentId === environmentId,
+    )?.snapshot;
+    const projectById = new Map([
+      ...projects
         .filter((project) => project.environmentId === environmentId)
         .map((project) => [project.id, project] as const),
-    );
+      ...(archivedSnapshot?.projects.map((project) => [project.id, project] as const) ?? []),
+    ]);
     const shellById = new Map(
-      threadShells
-        .filter(
-          (thread) =>
-            thread.environmentId === environmentId &&
-            thread.archivedAt === null &&
-            thread.id !== activeThreadId,
-        )
-        .map((thread) => [thread.id, thread] as const),
+      [
+        ...threadShells.filter(
+          (thread) => thread.environmentId === environmentId && thread.id !== activeThreadId,
+        ),
+        ...(archivedSnapshot?.threads
+          .filter((thread) => thread.id !== activeThreadId)
+          .map((thread) => ({ ...thread, environmentId })) ?? []),
+      ].map((thread) => [thread.id, thread] as const),
     );
     const query = pathTriggerQuery.trim().toLocaleLowerCase();
-    const candidates =
+    const titleMatches = [...shellById.values()]
+      .filter((thread) => query.length === 0 || thread.title.toLocaleLowerCase().includes(query))
+      .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    const contentMatches =
       query.length >= 2
         ? threadSearch.matches.flatMap((match) => {
             if (match.environmentId !== environmentId) return [];
             const thread = shellById.get(match.threadId);
             return thread ? [thread] : [];
           })
-        : [...shellById.values()]
-            .filter(
-              (thread) => query.length === 0 || thread.title.toLocaleLowerCase().includes(query),
-            )
-            .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+        : [];
+    const candidates = [...contentMatches, ...titleMatches];
     const seen = new Set<string>();
     return candidates
       .filter((thread) => {
@@ -2332,11 +2338,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           type: "thread",
           threadId: thread.id,
           label: thread.title,
-          description: `${project?.title ?? "Workspace"} · ${provider}`,
+          description: `${project?.title ?? "Workspace"} · ${provider}${thread.archivedAt === null ? "" : " · Archived"}`,
         };
       });
   }, [
     activeThreadId,
+    archivedThreadSnapshots.snapshots,
     environmentId,
     pathTriggerQuery,
     projects,
