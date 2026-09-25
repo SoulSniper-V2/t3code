@@ -1,6 +1,6 @@
 # T3 Code
 
-> This is the [`SoulSniper-V2/t3code`](https://github.com/SoulSniper-V2/t3code) fork of [upstream T3 Code](https://github.com/pingdotgg/t3code). The list below calls out fork-specific additions; Orchestrator V2 itself is tracked from [upstream PR #2829](https://github.com/pingdotgg/t3code/pull/2829) and is not claimed as a fork-only feature.
+> This is the [`SoulSniper-V2/t3code`](https://github.com/SoulSniper-V2/t3code) fork of [upstream T3 Code](https://github.com/pingdotgg/t3code). This fork currently includes the Orchestrator V2 implementation proposed in [upstream PR #2829](https://github.com/pingdotgg/t3code/pull/2829); that upstream-authored work is not a fork-only feature. The list below names additions maintained specifically by this fork.
 
 ## What this fork adds
 
@@ -16,7 +16,7 @@
 - **Provider account switching:** hot-swap between multiple configured provider accounts from the chat composer.
 - **Nightly updater fix:** a newer installed nightly is not replaced by an older nightly release.
 
-> **Distribution:** The install commands below point to upstream T3 Code. Download this fork's macOS nightly and its update assets from [this fork's releases](https://github.com/SoulSniper-V2/t3code/releases).
+> **Desktop distribution:** The package-manager commands below install upstream T3 Code. For this fork's additions, download its macOS nightly from [this fork's releases](https://github.com/SoulSniper-V2/t3code/releases). The nightly is Developer ID signed and Apple notarized, and its in-app updater follows this fork's nightly channel.
 
 T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
 
@@ -59,7 +59,7 @@ To try it once without installing, run `npx t3@latest` instead.
 
 ### Desktop app
 
-Install the latest upstream version of the desktop app from [T3 Code GitHub Releases](https://github.com/pingdotgg/t3code/releases), or from your favorite package registry. To use this fork's additions, download its [macOS nightly](https://github.com/SoulSniper-V2/t3code/releases) instead:
+Install the upstream desktop app from [T3 Code GitHub Releases](https://github.com/pingdotgg/t3code/releases), or from your favorite package registry. To use this fork's additions on macOS, install the latest [T3 Code fork nightly](https://github.com/SoulSniper-V2/t3code/releases):
 
 #### Windows (`winget`)
 
