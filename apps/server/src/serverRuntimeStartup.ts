@@ -446,10 +446,12 @@ const make = (options?: StartupOptions) =>
         const reconciliation = yield* providerRuntimeRecovery.reconcile("shutdown");
         yield* Effect.logInfo("V2 orchestration shutdown reconciliation completed", reconciliation);
       }).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("V2 orchestration shutdown reconciliation failed", {
-            cause: Cause.pretty(cause),
-          }),
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterrupts(cause),
+          (cause) =>
+            Effect.logWarning("V2 orchestration shutdown reconciliation failed", {
+              cause: Cause.pretty(cause),
+            }),
         ),
       ),
     );

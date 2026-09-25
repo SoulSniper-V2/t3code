@@ -85,7 +85,7 @@ const makeDependencies = (
   Layer.mergeAll(
     Layer.mock(ProjectionSnapshotQuery)({
       getThreadShellById: () => Effect.succeed(Option.fromNullishOr(threadShell)),
-      getProjectShellById: () => Effect.succeed(Option.some(project)),
+      getProjectShellById: () => Effect.succeedSome(project),
     }),
     Layer.mock(OrchestratorV2)({
       getThreadShell: () => Effect.succeed(threadShell ? v2PullRequestThread(threadShell) : null),

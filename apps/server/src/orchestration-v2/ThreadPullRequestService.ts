@@ -27,7 +27,7 @@ import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSn
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import { forkParked } from "../serverActivation.ts";
-import { OrchestratorV2 } from "./Orchestrator.ts";
+import { OrchestratorDispatchError, OrchestratorV2 } from "./Orchestrator.ts";
 
 class ThreadPullRequestServiceV2 extends Context.Service<
   ThreadPullRequestServiceV2,
@@ -47,6 +47,15 @@ function samePullRequest(
     left.repository.toLowerCase() === right.repository.toLowerCase() &&
     left.number === right.number &&
     left.url === right.url
+  );
+}
+
+function isStalePullRequestSyncFailure(cause: Cause.Cause<unknown>, threadId: ThreadId): boolean {
+  const error = Cause.squash(cause);
+  return (
+    error instanceof OrchestratorDispatchError &&
+    error.commandType === "thread.pull-request.sync" &&
+    error.cause === `Thread ${threadId} changed before pull request discovery.`
   );
 }
 
@@ -226,16 +235,16 @@ export const make = Effect.gen(function* () {
               }
               return { thread, branchPullRequest, replacement };
             }).pipe(
-              Effect.catchCause((cause) =>
-                Cause.hasInterruptsOnly(cause)
-                  ? Effect.failCause(cause)
-                  : Effect.logWarning("thread pull request discovery failed", {
-                      threadId: thread.id,
-                      cause: Cause.pretty(cause),
-                    }).pipe(
-                      Effect.tap(() => Effect.sync(() => failBackfill([thread]))),
-                      Effect.as(null),
-                    ),
+              Effect.catchCauseIf(
+                (cause) => !Cause.hasInterruptsOnly(cause),
+                (cause) =>
+                  Effect.logWarning("thread pull request discovery failed", {
+                    threadId: thread.id,
+                    cause: Cause.pretty(cause),
+                  }).pipe(
+                    Effect.tap(() => Effect.sync(() => failBackfill([thread]))),
+                    Effect.as(null),
+                  ),
               ),
             ),
           );
@@ -295,22 +304,24 @@ export const make = Effect.gen(function* () {
                 Effect.catchCause((cause) =>
                   Cause.hasInterruptsOnly(cause)
                     ? Effect.failCause(cause)
-                    : Effect.logWarning("thread pull request update failed", {
-                        threadId: thread.id,
-                        cause: Cause.pretty(cause),
-                      }).pipe(Effect.tap(() => Effect.sync(() => failBackfill([thread])))),
+                    : isStalePullRequestSyncFailure(cause, thread.id)
+                      ? Effect.sync(() => finishBackfill([thread]))
+                      : Effect.logWarning("thread pull request update failed", {
+                          threadId: thread.id,
+                          cause: Cause.pretty(cause),
+                        }).pipe(Effect.tap(() => Effect.sync(() => failBackfill([thread])))),
                 ),
               ),
             { discard: true },
           );
         }).pipe(
-          Effect.catchCause((cause) =>
-            Cause.hasInterruptsOnly(cause)
-              ? Effect.failCause(cause)
-              : Effect.logWarning("thread branch pull request lookup failed", {
-                  threadIds: group.map((thread) => thread.id),
-                  cause: Cause.pretty(cause),
-                }).pipe(Effect.tap(() => Effect.sync(() => failBackfill(group)))),
+          Effect.catchCauseIf(
+            (cause) => !Cause.hasInterruptsOnly(cause),
+            (cause) =>
+              Effect.logWarning("thread branch pull request lookup failed", {
+                threadIds: group.map((thread) => thread.id),
+                cause: Cause.pretty(cause),
+              }).pipe(Effect.tap(() => Effect.sync(() => failBackfill(group)))),
           ),
         ),
       // Match a batched summary read so host lookups arrive together.
@@ -320,12 +331,12 @@ export const make = Effect.gen(function* () {
 
   const worker = yield* makeDrainableWorker((request: RefreshRequest) =>
     synchronize(request).pipe(
-      Effect.catchCause((cause) =>
-        Cause.hasInterruptsOnly(cause)
-          ? Effect.failCause(cause)
-          : Effect.logWarning("thread pull request refresh failed", {
-              cause: Cause.pretty(cause),
-            }),
+      Effect.catchCauseIf(
+        (cause) => !Cause.hasInterruptsOnly(cause),
+        (cause) =>
+          Effect.logWarning("thread pull request refresh failed", {
+            cause: Cause.pretty(cause),
+          }),
       ),
     ),
   );

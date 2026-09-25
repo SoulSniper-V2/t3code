@@ -2214,6 +2214,28 @@ export const make = (
       return activationOptions?.mcpServers ?? options.mcpServers ?? [];
     };
 
+    const runResumeSessionWithTimeout = (
+      payload: EffectAcpSchema.ResumeSessionRequest,
+    ): Effect.Effect<EffectAcpSchema.ResumeSessionResponse, EffectAcpErrors.AcpError> =>
+      runLoggedRequest(
+        "session/resume",
+        payload,
+        acp.agent.resumeSession(payload).pipe(
+          Effect.timeoutOption(options.sessionLoadTimeout ?? defaultSessionLoadTimeout),
+          Effect.flatMap(
+            Effect.fromOption(
+              () =>
+                new EffectAcpErrors.AcpTransportError({
+                  operation: "call-rpc",
+                  method: "session/resume",
+                  detail: "session/resume timed out waiting for the agent response.",
+                  cause: undefined,
+                }),
+            ),
+          ),
+        ),
+      );
+
     const startOnce = Effect.gen(function* () {
       const initializeResult = yield* initialize;
 
@@ -2291,11 +2313,7 @@ export const make = (
               ...additionalDirectories,
               mcpServers: sessionMcpServers(initializeResult),
             } satisfies EffectAcpSchema.ResumeSessionRequest;
-            sessionSetupResult = yield* runLoggedRequest(
-              "session/resume",
-              resumePayload,
-              acp.agent.resumeSession(resumePayload),
-            );
+            sessionSetupResult = yield* runResumeSessionWithTimeout(resumePayload);
           } else {
             return yield* new EffectAcpErrors.AcpRequestError({
               code: -32601,
@@ -2531,11 +2549,7 @@ export const make = (
               cwd: options.cwd,
               mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
             } satisfies EffectAcpSchema.ResumeSessionRequest;
-            return runLoggedRequest(
-              "session/resume",
-              requestPayload,
-              acp.agent.resumeSession(requestPayload),
-            );
+            return runResumeSessionWithTimeout(requestPayload);
           }),
           Effect.flatMap((response) => adoptSession(sessionId, response)),
         ),
@@ -2702,12 +2716,13 @@ export const make = (
             ),
             (activePrompt) =>
               Fiber.join(activePrompt.fiber).pipe(
-                Effect.catchCause((cause) =>
-                  options.cancelBehavior !== "wait-for-prompt" && Cause.hasInterruptsOnly(cause)
-                    ? Effect.succeed({
-                        stopReason: "cancelled",
-                      } satisfies EffectAcpSchema.PromptResponse)
-                    : Effect.failCause(cause),
+                Effect.catchCauseIf(
+                  (cause) =>
+                    options.cancelBehavior !== "wait-for-prompt" && Cause.hasInterruptsOnly(cause),
+                  () =>
+                    Effect.succeed({
+                      stopReason: "cancelled",
+                    } satisfies EffectAcpSchema.PromptResponse),
                 ),
                 Effect.tap(() =>
                   closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef }),
