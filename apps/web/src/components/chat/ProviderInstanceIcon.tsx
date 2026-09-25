@@ -6,6 +6,8 @@ import { ProviderDriverKind } from "@t3tools/contracts";
 import {
   AntigravityIcon,
   ClaudeAI,
+  ClineIcon,
+  CommandCodeIcon,
   CursorIcon,
   GrokIcon,
   Icon,
@@ -28,6 +30,8 @@ const PROVIDER_ICON_BY_PROVIDER: Partial<Record<ProviderDriverKind, Icon>> = {
   [ProviderDriverKind.make("cursor")]: CursorIcon,
   [ProviderDriverKind.make("grok")]: GrokIcon,
   [ProviderDriverKind.make("antigravity")]: AntigravityIcon,
+  [ProviderDriverKind.make("commandCode")]: CommandCodeIcon,
+  [ProviderDriverKind.make("cline")]: ClineIcon,
   [ProviderDriverKind.make("pi")]: PiAgentIcon,
 };
 
