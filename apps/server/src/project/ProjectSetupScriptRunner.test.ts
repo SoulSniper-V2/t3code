@@ -25,9 +25,11 @@ it.effect("resolves setup scripts through the standalone project service", () =>
       updatedAt: "2026-06-20T00:00:00.000Z",
     }),
   );
-  const write = vi.fn(
-    (_input: Parameters<TerminalManager.TerminalManager["Service"]["write"]>[0]) => Effect.void,
+  const writes: string[] = [];
+  const write = vi.fn((input: Parameters<TerminalManager.TerminalManager["Service"]["write"]>[0]) =>
+    Effect.sync(() => void writes.push(input.data)),
   );
+  const closeIdle = vi.fn(() => Effect.void);
   const listeners: Array<Parameters<TerminalManager.TerminalManager["Service"]["subscribe"]>[0]> =
     [];
   const subscribe: TerminalManager.TerminalManager["Service"]["subscribe"] = (listener) =>
@@ -62,7 +64,7 @@ it.effect("resolves setup scripts through the standalone project service", () =>
         Layer.mock(ProjectService.ProjectService)({
           getById: () => Effect.succeed(Option.some(project)),
         }),
-        Layer.mock(TerminalManager.TerminalManager)({ open, write, subscribe }),
+        Layer.mock(TerminalManager.TerminalManager)({ open, write, subscribe, closeIdle }),
         ServerSettings.layerTest(),
       ),
     ),
@@ -92,7 +94,7 @@ it.effect("resolves setup scripts through the standalone project service", () =>
       NO_COLOR: "1",
       FORCE_COLOR: "0",
     });
-    assert.equal(write.mock.calls[0]?.[0].data, "vp install\r");
+    assert.equal(writes[0], "vp install\r");
     const lines: string[] = [];
     const observed = yield* runner.runForThread({
       threadId: "thread-1",
@@ -106,14 +108,44 @@ it.effect("resolves setup scripts through the standalone project service", () =>
       },
     });
     assert.equal(observed.status, "started");
+    if (observed.status !== "started" || observed.completion === undefined) {
+      return yield* Effect.die("expected setup completion observation");
+    }
+    const sentinel = /__T3_SETUP_DONE___[0-9a-f]{32}:/.exec(writes[1] ?? "")?.[0];
+    assert.ok(sentinel);
     const listener = listeners[0]!;
     yield* listener({
       type: "output",
       threadId: "thread-1",
       terminalId: "setup-setup",
-      data: "Downloading 10%\rDownloading 20%\r\nDone\n",
+      data: `Downloading 10%\rDownloading 20%\r\nDone\n${sentinel}0\r\n`,
     });
     assert.deepEqual(lines, ["Downloading 10%", "Downloading 20%", "Done"]);
+    assert.equal((yield* observed.completion).exitCode, 0);
+    assert.deepEqual(closeIdle.mock.calls[0]?.[0], {
+      threadId: "thread-1",
+      terminalId: "setup-setup",
+    });
+
+    const failed = yield* runner.runForThread({
+      threadId: "thread-1",
+      projectId,
+      worktreePath: "/repo-worktree",
+      observeCompletion: {},
+    });
+    if (failed.status !== "started" || failed.completion === undefined) {
+      return yield* Effect.die("expected setup failure observation");
+    }
+    const failureSentinel = /__T3_SETUP_DONE___[0-9a-f]{32}:/.exec(writes[2] ?? "")?.[0];
+    assert.ok(failureSentinel);
+    yield* listeners[1]!({
+      type: "output",
+      threadId: "thread-1",
+      terminalId: "setup-setup",
+      data: `${failureSentinel}3\r\n`,
+    });
+    assert.equal((yield* failed.completion).exitCode, 3);
+    assert.equal(closeIdle.mock.calls.length, 1);
     yield* listener({ type: "closed", threadId: "thread-1", terminalId: "setup-setup" });
   }).pipe(Effect.provide(layer));
 });

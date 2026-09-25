@@ -182,8 +182,6 @@ Your active mode changes only when new developer instructions with a different \
 Use the \`request_user_input\` tool only when it is listed in the available tools for this turn.
 
 In Default mode, strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions. If you absolutely must ask a question because the answer cannot be discovered from local context and a reasonable assumption would be risky, ask the user directly with a concise plain-text question. Never write a multiple choice question as a textual assistant message.
-${browserToolInstructions(browserToolsAvailable)}
-${T3_CODE_ORCHESTRATION_INSTRUCTIONS}
 </collaboration_mode>`;
 
 export interface CodexRuntimeInfo {
@@ -192,11 +190,23 @@ export interface CodexRuntimeInfo {
   readonly reasoningEffort: string;
 }
 
-/** Mode prompt for `turn/start.collaborationMode.settings.developer_instructions`. */
-export function buildCodexDeveloperInstructions(interactionMode: ProviderInteractionMode): string {
-  return interactionMode === "plan"
-    ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
-    : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS;
+/** Prompt for `turn/start.collaborationMode.settings.developer_instructions`. */
+export function buildCodexDeveloperInstructions(
+  interactionMode: ProviderInteractionMode,
+  runtime: CodexRuntimeInfo,
+  toolsAvailable: boolean | T3CodeToolAvailability = true,
+): string {
+  const tools = toolInstructions(toolsAvailable);
+  return [
+    interactionMode === "plan"
+      ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
+      : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+    tools,
+    T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim(),
+    buildRuntimeInstructions({ harness: "Codex", ...runtime }),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 /**

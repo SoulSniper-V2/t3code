@@ -1,12 +1,15 @@
-import { assert, describe, expect, it } from "@effect/vitest";
+import { assert, describe, expect, it, vi } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import {
   DEFAULT_SERVER_SETTINGS,
+  EventId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
   type OrchestrationProjectShell,
+  type OrchestrationV2AppThread,
   type OrchestrationV2Command,
+  type OrchestrationV2DomainEvent,
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2ThreadShell,
   type PullRequestSummary,
@@ -32,6 +35,7 @@ import {
 } from "../pullRequest/PullRequestService.ts";
 import { ServerActivation } from "../serverActivation.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import * as TerminalManager from "../terminal/Manager.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestratorV2, type OrchestratorV2Shape } from "./Orchestrator.ts";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
@@ -405,6 +409,9 @@ function makeBranchPullRequest(state: "open" | "closed" | "merged") {
 
 interface HarnessOptions {
   readonly snapshot: OrchestrationV2ShellSnapshot;
+  readonly domainEvents?: Stream.Stream<OrchestrationV2DomainEvent>;
+  readonly threadShell?: OrchestrationV2ThreadShell | null;
+  readonly closeIdle?: TerminalManager.TerminalManager["Service"]["closeIdle"];
   readonly settings?: ServerSettings;
   readonly branchPullRequest?: GitManager["Service"]["branchPullRequest"];
   readonly pullRequestSummary?: PullRequestService["Service"]["summary"];
@@ -499,10 +506,15 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
           Effect.andThen(Ref.get(snapshots)),
           Effect.map((snapshot) => snapshot.threads),
         ),
+      getThreadShell: (threadId) =>
+        Effect.succeed(options.threadShell?.id === threadId ? options.threadShell : null),
     }),
     Layer.mock(OrchestratorV2)({
-      streamDomainEvents: Stream.empty,
+      streamDomainEvents: options.domainEvents ?? Stream.empty,
       dispatch,
+    }),
+    Layer.mock(TerminalManager.TerminalManager)({
+      closeIdle: options.closeIdle ?? (() => Effect.void),
     }),
     Layer.mock(GitManager)({
       branchPullRequest,
@@ -555,6 +567,38 @@ const startHarness = Effect.fn("startThreadSettlementHarness")(function* (
 });
 
 describe("ThreadSettlementServiceV2 worker", () => {
+  it.effect("closes idle terminal shells after a thread settles", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = makeThread("settled-with-idle-shell", { settledOverride: "settled" });
+        const terminalClosed = yield* Deferred.make<void>();
+        const closeIdle = vi.fn(() =>
+          Deferred.succeed(terminalClosed, undefined).pipe(Effect.asVoid),
+        );
+        const event = {
+          id: EventId.make("thread-settled-event"),
+          type: "thread.settled",
+          threadId: thread.id,
+          occurredAt: thread.updatedAt,
+          payload: {} as OrchestrationV2AppThread,
+        } satisfies OrchestrationV2DomainEvent;
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([]),
+          domainEvents: Stream.succeed(event),
+          threadShell: thread,
+          closeIdle,
+        });
+
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+          yield* Deferred.await(terminalClosed);
+          expect(closeIdle).toHaveBeenCalledWith({ threadId: thread.id });
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
   it.effect("settles a merged pull request stored only in the thread links", () =>
     Effect.scoped(
       Effect.gen(function* () {

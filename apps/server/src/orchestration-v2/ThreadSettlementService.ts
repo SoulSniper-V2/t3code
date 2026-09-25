@@ -23,6 +23,7 @@ import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as TerminalManager from "../terminal/Manager.ts";
 import { OrchestratorV2 } from "./Orchestrator.ts";
 import { ProjectionStoreV2, type ProjectionSettlementCandidate } from "./ProjectionStore.ts";
 
@@ -256,6 +257,7 @@ export const make = Effect.gen(function* () {
   const settingsService = yield* ServerSettings.ServerSettingsService;
   const git = yield* GitManager.GitManager;
   const pullRequests = yield* PullRequestService.PullRequestService;
+  const terminals = yield* TerminalManager.TerminalManager;
   const crypto = yield* Crypto.Crypto;
   const fileSystem = yield* FileSystem.FileSystem;
 
@@ -509,6 +511,22 @@ export const make = Effect.gen(function* () {
 
   const processEvent = (event: OrchestrationV2DomainEvent) => {
     switch (event.type) {
+      case "thread.settled":
+        return projections.getThreadShell(event.threadId).pipe(
+          Effect.flatMap((thread) =>
+            thread?.settledOverride === "settled"
+              ? terminals.closeIdle({ threadId: event.threadId })
+              : Effect.void,
+          ),
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.failCause(cause)
+              : Effect.logWarning("idle terminal cleanup skipped for settled thread", {
+                  threadId: event.threadId,
+                  cause: Cause.pretty(cause),
+                }),
+          ),
+        );
       case "thread.pull-request-synced":
       case "provider-session.detached":
         return worker.enqueue(event.threadId);
