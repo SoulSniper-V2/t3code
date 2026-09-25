@@ -38,9 +38,21 @@ export const PROVIDER_PRESENTATION = {
     color: "#14b8a6",
     driverKind: ProviderDriverKind.make("cline"),
   },
-  cursor: { label: "Cursor", color: "#8b8b8b", mark: CursorIcon },
-  opencode: { label: "OpenCode", color: "#5b9bbd", mark: OpenCodeIcon },
-  antigravity: { label: "Antigravity", color: "#8c7bd1", mark: AntigravityIcon },
+  cursor: {
+    label: "Cursor",
+    color: "#8b8b8b",
+    driverKind: ProviderDriverKind.make("cursor"),
+  },
+  opencode: {
+    label: "OpenCode",
+    color: "#5b9bbd",
+    driverKind: ProviderDriverKind.make("opencode"),
+  },
+  antigravity: {
+    label: "Antigravity",
+    color: "#8c7bd1",
+    driverKind: ProviderDriverKind.make("antigravity"),
+  },
 } satisfies Record<UsageProviderKind, UsageProviderPresentation>;
 
 /** Stable provider reading order across charts, summaries, tables, and hover rows. */

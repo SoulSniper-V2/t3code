@@ -109,6 +109,8 @@ const serviceLayers = (input: {
         GROK_HOME: NodePath.join(input.home, "grok"),
         COMMANDCODE_HOME: NodePath.join(input.home, "commandcode"),
         CLINE_DATA_DIR: NodePath.join(input.home, "cline"),
+        OPENCODE_DATA_DIR: NodePath.join(input.home, "opencode"),
+        ANTIGRAVITY_DATA_DIR: NodePath.join(input.home, "antigravity"),
         ...input.environment,
       }),
     ),
