@@ -7,15 +7,10 @@
  * shapes, and write the merged result to a short-lived private file.
  */
 import type { McpProviderSessionConfig } from "../mcp/McpProviderSession.ts";
-import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
-import * as Stream from "effect/Stream";
 import { parseCliArgs } from "@t3tools/shared/cliArgs";
-import { ProviderAdapterValidationError } from "./Errors.ts";
 
 export const CLINE_MCP_SETTINGS_FILE_NAME = "cline_mcp_settings.json";
 export const CLINE_MCP_SETTINGS_MAX_BYTES = 1_048_576;
-const CLINE_MCP_SETTINGS_READ_CHUNK_BYTES = 32 * 1024;
 
 export type ClineMcpSettingsMergeResult =
   | { readonly ok: true; readonly settings: string }
@@ -199,84 +194,4 @@ export function mergeClineMcpSettings(
     },
   };
   return { ok: true, settings: JSON.stringify(merged) };
-}
-
-/** Read and validate Cline's existing settings with a hard byte limit. */
-export function readAndMergeClineMcpSettings(
-  fileSystem: FileSystem.FileSystem,
-  settingsPath: string,
-  mcpSession: Pick<McpProviderSessionConfig, "endpoint" | "authorizationHeader">,
-  provider: string,
-): Effect.Effect<string, ProviderAdapterValidationError> {
-  return Effect.gen(function* () {
-    const exists = yield* fileSystem.exists(settingsPath).pipe(
-      Effect.mapError(
-        () =>
-          new ProviderAdapterValidationError({
-            provider,
-            operation: "sendTurn",
-            issue:
-              "Existing Cline MCP settings could not be checked safely; T3 tools were not injected.",
-          }),
-      ),
-    );
-    let existingSettings: string | undefined;
-    if (exists) {
-      const chunks = yield* Stream.runCollect(
-        fileSystem.stream(settingsPath, {
-          bytesToRead: CLINE_MCP_SETTINGS_MAX_BYTES + 1,
-          chunkSize: CLINE_MCP_SETTINGS_READ_CHUNK_BYTES,
-        }),
-      ).pipe(
-        Effect.mapError(
-          () =>
-            new ProviderAdapterValidationError({
-              provider,
-              operation: "sendTurn",
-              issue:
-                "Existing Cline MCP settings could not be read safely; T3 tools were not injected.",
-            }),
-        ),
-      );
-      let byteLength = 0;
-      for (const chunk of chunks) byteLength += chunk.byteLength;
-      if (byteLength > CLINE_MCP_SETTINGS_MAX_BYTES) {
-        return yield* new ProviderAdapterValidationError({
-          provider,
-          operation: "sendTurn",
-          issue:
-            "Existing Cline MCP settings exceed the 1 MiB safety limit; T3 tools were not injected.",
-        });
-      }
-      const bytes = new Uint8Array(byteLength);
-      let offset = 0;
-      for (const chunk of chunks) {
-        bytes.set(chunk, offset);
-        offset += chunk.byteLength;
-      }
-      existingSettings = yield* Effect.try({
-        try: () => new TextDecoder("utf-8", { fatal: true }).decode(bytes),
-        catch: () =>
-          new ProviderAdapterValidationError({
-            provider,
-            operation: "sendTurn",
-            issue: "Existing Cline MCP settings are not valid UTF-8; T3 tools were not injected.",
-          }),
-      });
-    }
-
-    const merged = mergeClineMcpSettings(existingSettings, mcpSession);
-    if (!merged.ok) {
-      const issue =
-        merged.reason === "too_large"
-          ? "Existing Cline MCP settings exceed the 1 MiB safety limit; T3 tools were not injected."
-          : "Existing Cline MCP settings are invalid or use an unsupported server shape; T3 tools were not injected.";
-      return yield* new ProviderAdapterValidationError({
-        provider,
-        operation: "sendTurn",
-        issue,
-      });
-    }
-    return merged.settings;
-  });
 }
