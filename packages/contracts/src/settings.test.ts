@@ -225,14 +225,14 @@ describe("custom model settings", () => {
 });
 
 describe("CommandCodeSettings", () => {
-  it("defaults to opt-in, command-code binary and auto-accept permissions", () => {
+  it("auto-detects the standard CLI but preserves opt-outs and auto-accept permissions", () => {
     const decoded = decodeCommandCodeSettings({});
-    expect(decoded.enabled).toBe(false);
+    expect(decoded.enabled).toBe(true);
+    expect(decodeCommandCodeSettings({ enabled: false }).enabled).toBe(false);
     expect(decoded.binaryPath).toBe("command-code");
     expect(decoded.permissionMode).toBe("auto-accept");
     expect(decoded.launchArgs).toBe("");
-    // The legacy mirror default stays disabled, like Cursor/Grok/OpenCode.
-    expect(decodeServerSettings({}).providers.commandCode.enabled).toBe(false);
+    expect(decodeServerSettings({}).providers.commandCode.enabled).toBe(true);
   });
 
   it("falls back to the command-code binary when the path is blank", () => {
@@ -254,15 +254,15 @@ describe("CommandCodeSettings", () => {
 });
 
 describe("ClineSettings", () => {
-  it("defaults to opt-in, cline binary, auto-accept, and provider-default thinking", () => {
+  it("auto-detects the standard CLI but keeps explicit opt-outs and provider defaults", () => {
     const decoded = decodeClineSettings({});
-    expect(decoded.enabled).toBe(false);
+    expect(decoded.enabled).toBe(true);
     expect(decoded.binaryPath).toBe("cline");
     expect(decoded.permissionMode).toBe("auto-accept");
     expect(decoded.thinkingLevel).toBe("");
     expect(decoded.launchArgs).toBe("");
-    // The legacy mirror default stays disabled, like Cursor/Grok/OpenCode.
-    expect(decodeServerSettings({}).providers.cline.enabled).toBe(false);
+    expect(decodeClineSettings({ enabled: false }).enabled).toBe(false);
+    expect(decodeServerSettings({}).providers.cline.enabled).toBe(true);
   });
 
   it("falls back to the cline binary when the path is blank", () => {
@@ -846,15 +846,15 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
 });
 
 describe("provider enabled defaults", () => {
-  it("enables only the stable bindings by default", () => {
+  it("enables stable bindings and auto-detectable CLIs by default", () => {
     const decoded = decodeServerSettings({});
     expect(decoded.providers.codex.enabled).toBe(true);
     expect(decoded.providers.claudeAgent.enabled).toBe(true);
     expect(decoded.providers.cursor.enabled).toBe(false);
     expect(decoded.providers.grok.enabled).toBe(false);
     expect(decoded.providers.opencode.enabled).toBe(false);
-    expect(decoded.providers.commandCode.enabled).toBe(false);
-    expect(decoded.providers.cline.enabled).toBe(false);
+    expect(decoded.providers.commandCode.enabled).toBe(true);
+    expect(decoded.providers.cline.enabled).toBe(true);
   });
 
   it("keeps Cursor enabled when an existing user explicitly opted in", () => {

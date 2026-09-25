@@ -972,10 +972,11 @@ export type CommandCodePermissionMode = typeof CommandCodePermissionMode.Type;
 
 export const CommandCodeSettings = makeProviderSettingsSchema(
   {
-    // Off by default like Cursor, Grok and OpenCode: headless Command Code
-    // is only useful on environments that already run the CLI. Users opt in.
+    // Probe the standard `command-code` executable by default so existing
+    // installs appear without manual path setup. An explicit false remains a
+    // per-user opt-out.
     enabled: Schema.Boolean.pipe(
-      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
     binaryPath: makeBinaryPathSetting("command-code").pipe(
@@ -1053,10 +1054,11 @@ export type ClineThinkingLevel = typeof ClineThinkingLevel.Type;
 
 export const ClineSettings = makeProviderSettingsSchema(
   {
-    // Off by default like Cursor, Grok, OpenCode, and Command Code: headless
-    // Cline is only useful on environments that already run the CLI.
+    // Probe the standard `cline` executable by default so existing Cline
+    // installs appear without manual path setup. An explicit false remains a
+    // per-user opt-out.
     enabled: Schema.Boolean.pipe(
-      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
     binaryPath: makeBinaryPathSetting("cline").pipe(

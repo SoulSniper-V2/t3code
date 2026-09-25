@@ -25,6 +25,11 @@ import {
   type ProviderTurnId,
   type ThreadId,
 } from "@t3tools/contracts";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -36,12 +41,19 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import * as Scope from "effect/Scope";
 
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   parseCommandCodeNdjsonLine,
   type CommandCodeEventFrame,
 } from "../../provider/CommandCodeProtocol.ts";
 import { ServerConfig } from "../../config.ts";
 import { commandCodeTurnArgs } from "../../provider/commandCodeLaunchArgs.ts";
+import {
+  COMMAND_CODE_MCP_AUTH_ENV,
+  COMMAND_CODE_MCP_ENDPOINT_ENV,
+  COMMAND_CODE_MCP_MOD_SOURCE,
+} from "../../provider/commandCodeMcpMod.ts";
+import { buildCommandCodePrompt } from "../../provider/commandCodePrompt.ts";
 import { providerMessageTextWithAttachmentPaths } from "../AttachmentPrompt.ts";
 import type { IdAllocatorV2Shape } from "../IdAllocator.ts";
 import {
@@ -66,6 +78,27 @@ import { turnScopedSelectionTransition } from "../ProviderSelectionTransition.ts
 
 const COMMAND_CODE_PROVIDER = ProviderDriverKind.make("commandCode");
 const ANSI_ESCAPE_REGEX = /\u001b\[[0-9;]*m/g;
+
+interface TemporaryCommandCodeMcpMod {
+  readonly directory: string;
+  readonly path: string;
+}
+
+async function createTemporaryCommandCodeMcpMod(): Promise<TemporaryCommandCodeMcpMod> {
+  const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-command-code-mcp-"));
+  try {
+    await NodeFSP.chmod(directory, 0o700);
+    const path = NodePath.join(directory, "t3-code-mcp.ts");
+    await NodeFSP.writeFile(path, COMMAND_CODE_MCP_MOD_SOURCE, {
+      flag: "wx",
+      mode: 0o600,
+    });
+    return { directory, path };
+  } catch (error) {
+    await NodeFSP.rm(directory, { recursive: true, force: true }).catch(() => {});
+    throw error;
+  }
+}
 
 export const CommandCodeProviderCapabilitiesV2 = {
   sessions: {
@@ -106,8 +139,8 @@ export const CommandCodeProviderCapabilitiesV2 = {
     emitsToolStarted: true,
     emitsToolCompleted: true,
     emitsToolOutput: false,
-    supportsMcpTools: false,
-    supportsDynamicToolCallbacks: false,
+    supportsMcpTools: true,
+    supportsDynamicToolCallbacks: true,
   },
   approvals: {
     supportsCommandApproval: false,
@@ -1053,32 +1086,56 @@ export function makeCommandCodeAdapterV2(
             yield* Deferred.succeed(active.completed, undefined);
           });
 
-        const runTurn = (active: ActiveCommandCodeTurn) =>
+        const runTurnBody = (
+          active: ActiveCommandCodeTurn,
+          mcpSession: McpProviderSession.McpProviderSessionConfig | undefined,
+          modPath: string | undefined,
+          reasoningEffort: string | undefined,
+        ) =>
           Effect.gen(function* () {
             const turnInput = active.input;
             const threadState = yield* findThread(turnInput.providerThread.id);
-            const prompt = providerMessageTextWithAttachmentPaths({
+            const userPrompt = providerMessageTextWithAttachmentPaths({
               text: turnInput.message.text,
               attachments: turnInput.message.attachments,
               attachmentsDir: options.serverConfig.attachmentsDir,
             });
-            if (prompt.trim().length === 0) {
+            if (userPrompt.trim().length === 0) {
               return yield* new ProviderAdapterProtocolError({
                 driver: COMMAND_CODE_PROVIDER,
                 detail: "Command Code turn requires non-empty text or an attachment.",
               });
             }
+            const prompt = buildCommandCodePrompt({
+              prompt: userPrompt,
+              model: turnInput.modelSelection.model,
+              reasoningEffort: reasoningEffort === "default" ? undefined : reasoningEffort,
+            });
             const args = commandCodeTurnArgs({
               permissionMode: permissionModeForTurn(settings, turnInput),
               model: turnInput.modelSelection.model,
+              reasoningEffort,
               resumeSessionId: providerThreadNativeId(threadState.providerThread),
+              modPath,
               launchArgs: settings.launchArgs,
             });
+            const baseEnvironment = McpProviderSession.withAgentDeviceEnvironment(
+              options.environment,
+              mcpSession,
+            );
+            const turnEnvironment =
+              mcpSession === undefined
+                ? baseEnvironment
+                : {
+                    ...baseEnvironment,
+                    [COMMAND_CODE_MCP_ENDPOINT_ENV]: mcpSession.endpoint,
+                    [COMMAND_CODE_MCP_AUTH_ENV]: mcpSession.authorizationHeader,
+                  };
             const resolved = yield* resolveSpawnCommand(
               settings.binaryPath || "command-code",
               [...args],
               {
-                env: options.environment,
+                env: turnEnvironment,
                 extendEnv: true,
               },
             );
@@ -1088,7 +1145,7 @@ export function makeCommandCodeAdapterV2(
                   ...(turnInput.runtimePolicy.cwd === null
                     ? {}
                     : { cwd: turnInput.runtimePolicy.cwd ?? undefined }),
-                  env: options.environment,
+                  env: turnEnvironment,
                   extendEnv: true,
                   shell: resolved.shell,
                   forceKillAfter: "2 seconds",
@@ -1234,7 +1291,37 @@ export function makeCommandCodeAdapterV2(
                 resultStopReason,
               });
             }
-          }).pipe(
+          });
+
+        const runTurn = (active: ActiveCommandCodeTurn) => {
+          const candidateMcpSession = McpProviderSession.readMcpProviderSession(
+            active.input.threadId,
+          );
+          const mcpSession =
+            candidateMcpSession?.providerInstanceId === options.instanceId
+              ? candidateMcpSession
+              : undefined;
+          const reasoningEffort = getModelSelectionStringOptionValue(
+            active.input.modelSelection,
+            "effort",
+          );
+          const runWithMod = (modPath: string | undefined) =>
+            runTurnBody(active, mcpSession, modPath, reasoningEffort);
+          const turn =
+            mcpSession === undefined
+              ? runWithMod(undefined)
+              : Effect.acquireUseRelease(
+                  Effect.promise(createTemporaryCommandCodeMcpMod),
+                  (temporaryMod) => runWithMod(temporaryMod.path),
+                  (temporaryMod) =>
+                    Effect.promise(() =>
+                      NodeFSP.rm(temporaryMod.directory, {
+                        recursive: true,
+                        force: true,
+                      }),
+                    ).pipe(Effect.ignoreCause),
+                );
+          return turn.pipe(
             Effect.catchCause((cause) =>
               terminalize(
                 active,
@@ -1258,6 +1345,7 @@ export function makeCommandCodeAdapterV2(
               })),
             ),
           );
+        };
 
         const startTurn = Effect.fn("CommandCodeAdapterV2.startTurn")(
           function* (turnInput: ProviderAdapterV2TurnInput) {

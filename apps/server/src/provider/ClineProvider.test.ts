@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   parseClineVersion,
   readClineCredentialSummary,
+  readClineProviderSettingsSummary,
   resolveClineDataDir,
 } from "./ClineProvider.ts";
 
@@ -15,11 +16,17 @@ describe("parseClineVersion", () => {
 });
 
 describe("resolveClineDataDir", () => {
-  it("prefers CLINE_DATA_DIR and falls back to ~/.cline", () => {
+  it("honors Cline's data-dir, Cline-dir, HOME, and default-home precedence", () => {
     expect(
       resolveClineDataDir({ CLINE_DATA_DIR: "  /tmp/isolated " } as NodeJS.ProcessEnv, "/home/u"),
     ).toBe("/tmp/isolated");
-    expect(resolveClineDataDir({}, "/home/u")).toBe("/home/u/.cline");
+    expect(
+      resolveClineDataDir({ CLINE_DIR: "/tmp/cline-home" } as NodeJS.ProcessEnv, "/home/u"),
+    ).toBe("/tmp/cline-home/data");
+    expect(resolveClineDataDir({ HOME: "/home/env" } as NodeJS.ProcessEnv, "/home/u")).toBe(
+      "/home/env/.cline/data",
+    );
+    expect(resolveClineDataDir({}, "/home/u")).toBe("/home/u/.cline/data");
   });
 });
 
@@ -60,5 +67,48 @@ describe("readClineCredentialSummary", () => {
         JSON.stringify({ lastUsedProvider: "cline", providers: { cline: { settings: {} } } }),
       ),
     ).toEqual({ authenticated: false, providerId: "cline" });
+  });
+
+  it("reads the current provider model without exposing its credentials", () => {
+    const summary = readClineProviderSettingsSummary(
+      JSON.stringify({
+        lastUsedProvider: "openrouter",
+        providers: {
+          openrouter: {
+            settings: {
+              provider: "openrouter",
+              model: "anthropic/claude-sonnet-4.6",
+              apiKey: "must-not-escape",
+            },
+            tokenSource: "manual",
+          },
+        },
+      }),
+    );
+
+    expect(summary).toEqual({
+      authenticated: true,
+      providerId: "openrouter",
+      configuredModel: {
+        providerId: "openrouter",
+        modelId: "anthropic/claude-sonnet-4.6",
+      },
+    });
+    expect(JSON.stringify(summary)).not.toContain("must-not-escape");
+  });
+
+  it("ignores absent or unresolved current models", () => {
+    expect(
+      readClineProviderSettingsSummary(
+        JSON.stringify({
+          lastUsedProvider: "cline",
+          providers: { cline: { settings: { model: "~not-resolved" }, tokenSource: "oauth" } },
+        }),
+      ),
+    ).toEqual({
+      authenticated: true,
+      providerId: "cline",
+      configuredModel: null,
+    });
   });
 });

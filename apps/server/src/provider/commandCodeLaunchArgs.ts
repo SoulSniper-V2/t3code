@@ -13,11 +13,16 @@ import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 
 export const COMMAND_CODE_VERSION_ARGS = ["--version"] as const;
 export const COMMAND_CODE_LIST_MODELS_ARGS = ["--list-models"] as const;
+export const COMMAND_CODE_STATUS_ARGS = ["status", "--json"] as const;
 
 export interface CommandCodeTurnArgsInput {
   readonly permissionMode: CommandCodePermissionMode;
   /** Model slug. Omitted when blank so the CLI uses its own persisted default. */
   readonly model?: string | undefined;
+  /** Reasoning effort. The provider default is omitted; unsupported values are rejected by the CLI. */
+  readonly reasoningEffort?: string | undefined;
+  /** Session-scoped Command Code mod; omitted when T3 MCP is unavailable. */
+  readonly modPath?: string | undefined;
   /** Command Code headless session id, used to carry context between turns. */
   readonly resumeSessionId?: string | undefined;
   /** Extra user-provided CLI arguments, tokenized. */
@@ -37,8 +42,15 @@ export function commandCodeTurnArgs(input: CommandCodeTurnArgsInput): ReadonlyAr
   if (input.model !== undefined && input.model.trim().length > 0) {
     args.push("--model", input.model.trim());
   }
+  const reasoningEffort = input.reasoningEffort?.trim();
+  if (reasoningEffort && reasoningEffort !== "default") {
+    args.push("--effort", reasoningEffort);
+  }
   if (input.resumeSessionId !== undefined && input.resumeSessionId.trim().length > 0) {
     args.push("--resume", input.resumeSessionId.trim());
+  }
+  if (input.modPath !== undefined && input.modPath.trim().length > 0) {
+    args.push("--mod", input.modPath.trim());
   }
   args.push(...tokenizeCliArgs(input.launchArgs));
   return args;

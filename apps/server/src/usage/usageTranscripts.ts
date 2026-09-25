@@ -579,6 +579,7 @@ export function parseCommandCodeLine(
     model,
     sessionId: state.sessionId,
     totals,
+    fast: false,
     reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
     dedupeKey:
       messageId === null
@@ -665,6 +666,7 @@ export function parseClineMessagesDocument(text: string): readonly UsageRecord[]
       model: modelId,
       sessionId: docSessionId,
       totals,
+      fast: false,
       // Per-message cost is not reported; the rate table prices by model id.
       reportedCostUsd: null,
       dedupeKey:

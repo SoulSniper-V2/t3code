@@ -5,11 +5,11 @@
  * Cline driver.
  * Three cheap local probes, no auth side effects:
  * - `cline --version` proves the binary answers (installed + version).
- * - `providers.json` under the Cline data dir reports the last-used provider
- *   and whether any credential marker (`tokenSource`, `apiKey`) is stored.
- *   Keys themselves are never read into logs or snapshots.
- * - `cline history --json --limit 50` advertises whatever the local CLI has
- *   actually run, since Cline has no model-catalog command.
+ * - `providers.json` under the Cline data dir reports the last-used provider,
+ *   configured model, and whether any credential marker (`tokenSource`,
+ *   `apiKey`) is stored. Keys themselves never leave the parser.
+ * - `cline history --json --limit 50` supplements the currently configured
+ *   model, since Cline has no model-catalog command.
  *
  * @module provider/ClineProvider
  */
@@ -33,7 +33,11 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import { CLINE_HISTORY_ARGS, CLINE_VERSION_ARGS } from "./clineLaunchArgs.ts";
-import { parseClineHistoryModels } from "./clineModels.ts";
+import {
+  isUnresolvedClineModel,
+  parseClineHistoryModels,
+  type ClineConfiguredModel,
+} from "./clineModels.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "./providerMaintenance.ts";
 import {
   buildServerProvider,
@@ -54,19 +58,29 @@ export function parseClineVersion(output: string): string | null {
 }
 
 /**
- * Resolve the Cline data dir: `CLINE_DATA_DIR` wins, mirroring the CLI's own
- * `--data-dir` default of `~/.cline`.
+ * Resolve Cline's data directory using the same precedence as its CLI:
+ * `CLINE_DATA_DIR`, then `CLINE_DIR/data`, then `HOME/.cline/data`.
  */
 export function resolveClineDataDir(env: NodeJS.ProcessEnv, homeDir: string): string {
   const configured = env["CLINE_DATA_DIR"]?.trim();
-  return configured !== undefined && configured.length > 0
-    ? configured
-    : NodePath.join(homeDir, ".cline");
+  if (configured !== undefined && configured.length > 0) return configured;
+  const configuredClineDir = env["CLINE_DIR"]?.trim();
+  const home = env["HOME"]?.trim() || env["USERPROFILE"]?.trim() || homeDir;
+  return NodePath.join(
+    configuredClineDir && configuredClineDir.length > 0
+      ? configuredClineDir
+      : NodePath.join(home, ".cline"),
+    "data",
+  );
 }
 
 export interface ClineCredentialSummary {
   readonly authenticated: boolean;
   readonly providerId: string | null;
+}
+
+export interface ClineProviderSettingsSummary extends ClineCredentialSummary {
+  readonly configuredModel: ClineConfiguredModel | null;
 }
 
 function hasCredentialMarker(value: unknown): boolean {
@@ -89,31 +103,57 @@ function hasCredentialMarker(value: unknown): boolean {
  * Read-only credential summary from the CLI's own `providers.json`. Never
  * throws: a missing or unparsable file simply reports unauthenticated.
  */
-export function readClineCredentialSummary(providersJson: string): ClineCredentialSummary {
+export function readClineProviderSettingsSummary(
+  providersJson: string,
+): ClineProviderSettingsSummary {
   let parsed: unknown;
   try {
     parsed = JSON.parse(providersJson);
   } catch {
-    return { authenticated: false, providerId: null };
+    return { authenticated: false, providerId: null, configuredModel: null };
   }
   if (typeof parsed !== "object" || parsed === null) {
-    return { authenticated: false, providerId: null };
+    return { authenticated: false, providerId: null, configuredModel: null };
   }
   const root = parsed as Record<string, unknown>;
   const providers = root["providers"];
   if (typeof providers !== "object" || providers === null) {
-    return { authenticated: false, providerId: null };
+    return { authenticated: false, providerId: null, configuredModel: null };
   }
   const lastUsed =
     typeof root["lastUsedProvider"] === "string" ? (root["lastUsedProvider"] as string) : null;
   const entries = providers as Record<string, unknown>;
-  if (lastUsed !== null && hasCredentialMarker(entries[lastUsed])) {
-    return { authenticated: true, providerId: lastUsed };
+  const lastUsedEntry = lastUsed === null ? undefined : entries[lastUsed];
+  const lastUsedSettings =
+    typeof lastUsedEntry === "object" && lastUsedEntry !== null
+      ? (lastUsedEntry as Record<string, unknown>)["settings"]
+      : undefined;
+  const modelValue =
+    typeof lastUsedSettings === "object" && lastUsedSettings !== null
+      ? ((lastUsedSettings as Record<string, unknown>)["model"] ??
+        (lastUsedSettings as Record<string, unknown>)["modelId"])
+      : undefined;
+  const configuredModel =
+    lastUsed !== null &&
+    typeof modelValue === "string" &&
+    modelValue.trim().length > 0 &&
+    !isUnresolvedClineModel(modelValue.trim())
+      ? { providerId: lastUsed, modelId: modelValue.trim() }
+      : null;
+
+  if (lastUsed !== null && hasCredentialMarker(lastUsedEntry)) {
+    return { authenticated: true, providerId: lastUsed, configuredModel };
   }
   for (const [providerId, entry] of Object.entries(entries)) {
-    if (hasCredentialMarker(entry)) return { authenticated: true, providerId };
+    if (hasCredentialMarker(entry)) return { authenticated: true, providerId, configuredModel };
   }
-  return { authenticated: false, providerId: lastUsed };
+  return { authenticated: false, providerId: lastUsed, configuredModel };
+}
+
+/** Read-only credential summary, kept as a small compatibility helper for callers/tests. */
+export function readClineCredentialSummary(providersJson: string): ClineCredentialSummary {
+  const { authenticated, providerId } = readClineProviderSettingsSummary(providersJson);
+  return { authenticated, providerId };
 }
 
 const runClineCli = (binaryPath: string, args: ReadonlyArray<string>, env: NodeJS.ProcessEnv) =>
@@ -177,7 +217,7 @@ function notInstalledDraft(input: {
       auth: UNKNOWN_AUTH,
       message:
         `Cline CLI could not be started (looked for ${input.binaryPath}). ` +
-        "Install it (`npm install -g cline`) or set the Binary path in this instance's settings.",
+        "Install the CLI so `cline` is available on PATH; setting a Binary path is optional.",
     },
   });
 }
@@ -225,21 +265,37 @@ export function checkClineProvider(input: ClineStatusCheckInput) {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const dataDir = resolveClineDataDir(input.env, input.homeDir);
-    const providersPath = path.join(dataDir, "data", "settings", "providers.json");
-    const credentialSummary = yield* fileSystem.readFileString(providersPath).pipe(
-      Effect.map(readClineCredentialSummary),
-      Effect.orElseSucceed(() => readClineCredentialSummary("")),
+    const providersPath = path.join(dataDir, "settings", "providers.json");
+    const providerSettings = yield* fileSystem.readFileString(providersPath).pipe(
+      Effect.map(readClineProviderSettingsSummary),
+      Effect.orElseSucceed(() => readClineProviderSettingsSummary("")),
     );
-    const auth: ServerProviderAuth = credentialSummary.authenticated
+    const auth: ServerProviderAuth = providerSettings.authenticated
       ? {
           status: "authenticated",
-          ...(credentialSummary.providerId !== null ? { label: credentialSummary.providerId } : {}),
+          ...(providerSettings.providerId !== null ? { label: providerSettings.providerId } : {}),
         }
       : { status: "unauthenticated" };
 
     const historyRun = yield* probeClineCli(binaryPath, [...CLINE_HISTORY_ARGS], input.env);
     const models: ReadonlyArray<ServerProviderModel> =
-      historyRun.code === 0 ? parseClineHistoryModels(historyRun.stdout) : [];
+      historyRun.code === 0
+        ? parseClineHistoryModels(
+            historyRun.stdout,
+            providerSettings.configuredModel ?? undefined,
+            input.config.thinkingLevel,
+          )
+        : parseClineHistoryModels(
+            "[]",
+            providerSettings.configuredModel ?? undefined,
+            input.config.thinkingLevel,
+          );
+
+    const setupMessage = !providerSettings.authenticated
+      ? "Cline is installed, but no saved provider sign-in was found. Sign in or configure a provider in Cline; T3 uses that account without changing its credentials."
+      : models.length === 0
+        ? "Cline is installed, but its saved provider settings and recent history do not identify a model yet. Configure a model in Cline to make it selectable here."
+        : undefined;
 
     return buildServerProvider({
       presentation: { displayName: "Cline" },
@@ -251,12 +307,7 @@ export function checkClineProvider(input: ClineStatusCheckInput) {
         version,
         status: "ready",
         auth,
-        ...(models.length === 0
-          ? {
-              message:
-                "Cline is installed but has no run history yet, so the model list is empty. Run the CLI once or add custom models.",
-            }
-          : {}),
+        ...(setupMessage !== undefined ? { message: setupMessage } : {}),
       },
     });
   });

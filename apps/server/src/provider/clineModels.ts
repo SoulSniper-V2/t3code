@@ -1,16 +1,54 @@
 /**
- * clineModels — parse `cline history --json` output into the snapshot's
- * model list.
+ * clineModels — combine the current provider/model setting and
+ * `cline history --json` into the snapshot's model list.
  *
- * Cline has no model-catalog command, so T3 advertises whatever the local
- * CLI has actually run: distinct `(provider, model)` pairs from recent
- * history entries, newest first. Entries with a `~`-prefixed model never
- * resolved a real model (failed runs); they are skipped. On a fresh machine
- * with no runs yet the list is empty and `customModels` carries the picker.
+ * Cline has no model-catalog command. The currently configured model from
+ * `providers.json` is therefore the default; recent history fills in other
+ * models. Entries with a `~`-prefixed model never resolved a real model and
+ * are skipped. Every advertised model carries the CLI-supported reasoning
+ * choices, while an unset per-thread choice still falls back to Cline's
+ * provider setting.
  *
  * @module provider/clineModels
  */
-import type { ServerProviderModel } from "@t3tools/contracts";
+import {
+  CLINE_THINKING_LEVELS,
+  type ProviderOptionDescriptor,
+  type ServerProviderModel,
+} from "@t3tools/contracts";
+
+export const CLINE_THINKING_OPTION_ID = "thinkingLevel";
+export const CLINE_PROVIDER_DEFAULT_THINKING_VALUE = "default";
+
+export interface ClineConfiguredModel {
+  readonly providerId: string;
+  readonly modelId: string;
+}
+
+/** The composer can override the CLI's provider-level thinking setting. */
+export function clineThinkingOptionDescriptor(
+  currentValue: string | undefined,
+): ProviderOptionDescriptor {
+  const effectiveValue =
+    currentValue !== undefined && currentValue.length > 0
+      ? currentValue
+      : CLINE_PROVIDER_DEFAULT_THINKING_VALUE;
+  const options = CLINE_THINKING_LEVELS.map(({ value, label }) => ({
+    id: value.length > 0 ? value : CLINE_PROVIDER_DEFAULT_THINKING_VALUE,
+    label,
+    ...(effectiveValue === (value.length > 0 ? value : CLINE_PROVIDER_DEFAULT_THINKING_VALUE)
+      ? { isDefault: true }
+      : {}),
+  }));
+  const descriptor: Extract<ProviderOptionDescriptor, { type: "select" }> = {
+    id: CLINE_THINKING_OPTION_ID,
+    label: "Reasoning effort",
+    type: "select",
+    options,
+    currentValue: effectiveValue,
+  };
+  return descriptor;
+}
 
 /** Unresolved fallback models are prefixed with `~` (failed runs). */
 export function isUnresolvedClineModel(model: string): boolean {
@@ -23,7 +61,11 @@ interface ClineHistoryEntry {
 }
 
 /** Parse one `cline history --json` document into advertised models. */
-export function parseClineHistoryModels(output: string): ReadonlyArray<ServerProviderModel> {
+export function parseClineHistoryModels(
+  output: string,
+  configuredModel?: ClineConfiguredModel | undefined,
+  thinkingLevel?: string | undefined,
+): ReadonlyArray<ServerProviderModel> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(output);
@@ -44,13 +86,44 @@ export function parseClineHistoryModels(output: string): ReadonlyArray<ServerPro
     models.push({
       slug,
       name: slug,
-      ...(typeof provider === "string" && provider.trim().length > 0
-        ? { subProvider: provider.trim() }
-        : {}),
+      ...(configuredModel?.modelId === slug
+        ? { subProvider: configuredModel.providerId }
+        : typeof provider === "string" && provider.trim().length > 0
+          ? { subProvider: provider.trim() }
+          : {}),
       isCustom: false,
-      capabilities: null,
-      ...(models.length === 0 ? { isDefault: true } : {}),
+      capabilities: { optionDescriptors: [clineThinkingOptionDescriptor(thinkingLevel)] },
+      ...(configuredModel !== undefined
+        ? configuredModel.modelId === slug
+          ? { isDefault: true }
+          : {}
+        : models.length === 0
+          ? { isDefault: true }
+          : {}),
     });
+  }
+
+  if (
+    configuredModel !== undefined &&
+    !isUnresolvedClineModel(configuredModel.modelId) &&
+    !seen.has(configuredModel.modelId)
+  ) {
+    models.unshift({
+      slug: configuredModel.modelId,
+      name: configuredModel.modelId,
+      subProvider: configuredModel.providerId,
+      isCustom: false,
+      isDefault: true,
+      capabilities: { optionDescriptors: [clineThinkingOptionDescriptor(thinkingLevel)] },
+    });
+  }
+
+  if (configuredModel !== undefined && !isUnresolvedClineModel(configuredModel.modelId)) {
+    // Preserve the selected model's default marker when it appears in history
+    // after another, more recent model.
+    return models.map((model) =>
+      model.slug === configuredModel.modelId ? { ...model, isDefault: true } : model,
+    );
   }
   return models;
 }

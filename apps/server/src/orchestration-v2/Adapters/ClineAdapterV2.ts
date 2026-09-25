@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - Cline MCP settings are materialized as a private same-user temp file.
 /**
  * Cline's headless JSON interface is deliberately adapted as a one-shot
  * runtime: `cline --id` switches back to its interactive TTY mode, so T3
@@ -6,6 +7,9 @@
  */
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import {
   CLINE_THINKING_LEVELS,
   type ClineThinkingLevel,
@@ -33,15 +37,24 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import type { McpProviderSessionConfig } from "../../mcp/McpProviderSession.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
 import { clineTurnArgs } from "../../provider/clineLaunchArgs.ts";
+import {
+  CLINE_MCP_SETTINGS_FILE_NAME,
+  CLINE_MCP_SETTINGS_MAX_BYTES,
+  mergeClineMcpSettings,
+  resolveClineMcpSettingsPath,
+} from "../../provider/clineMcpSettings.ts";
 import {
   parseClineNdjsonLine,
   renderClineToolOutput,
   type ClineUsageTotals,
 } from "../../provider/clineNdjson.ts";
 import { IdAllocatorV2, type IdAllocatorV2Shape } from "../IdAllocator.ts";
+import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
 import {
   ProviderAdapterDriverCreateError,
   type ProviderAdapterDriver,
@@ -51,6 +64,7 @@ import {
   ProviderAdapterEnsureThreadError,
   ProviderAdapterForkThreadError,
   ProviderAdapterInterruptError,
+  ProviderAdapterOpenSessionError,
   ProviderAdapterReadThreadSnapshotError,
   ProviderAdapterResumeThreadError,
   ProviderAdapterRollbackThreadError,
@@ -108,7 +122,7 @@ export const ClineProviderCapabilitiesV2 = {
     emitsToolStarted: true,
     emitsToolCompleted: true,
     emitsToolOutput: true,
-    supportsMcpTools: false,
+    supportsMcpTools: true,
     supportsDynamicToolCallbacks: false,
   },
   approvals: {
@@ -244,6 +258,70 @@ function createFailure(message: string): OrchestrationV2ProviderFailure {
   });
 }
 
+function nodeErrorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
+  return typeof error.code === "string" ? error.code : undefined;
+}
+
+function readExistingClineMcpSettings(settingsPath: string): string | undefined {
+  let descriptor: number;
+  try {
+    descriptor = NodeFS.openSync(
+      settingsPath,
+      NodeFS.constants.O_RDONLY | (NodeFS.constants.O_NONBLOCK ?? 0),
+    );
+  } catch (error) {
+    if (nodeErrorCode(error) === "ENOENT") return undefined;
+    throw new Error("Existing Cline MCP settings could not be read safely.", { cause: error });
+  }
+
+  try {
+    const metadata = NodeFS.fstatSync(descriptor);
+    if (!metadata.isFile() || metadata.size > CLINE_MCP_SETTINGS_MAX_BYTES) {
+      throw new Error("Existing Cline MCP settings exceed the supported safety bounds.");
+    }
+    const buffer = Buffer.alloc(CLINE_MCP_SETTINGS_MAX_BYTES + 1);
+    const bytesRead = NodeFS.readSync(descriptor, buffer, 0, buffer.byteLength, 0);
+    if (bytesRead > CLINE_MCP_SETTINGS_MAX_BYTES) {
+      throw new Error("Existing Cline MCP settings exceed the supported safety bounds.");
+    }
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } catch {
+    throw new Error("Existing Cline MCP settings could not be read safely.");
+  } finally {
+    NodeFS.closeSync(descriptor);
+  }
+}
+
+function materializeScopedClineMcpSettings(input: {
+  readonly settingsPath: string;
+  readonly mcpSession: Pick<McpProviderSessionConfig, "endpoint" | "authorizationHeader">;
+}): { readonly directory: string; readonly settingsPath: string } {
+  const existingSettings = readExistingClineMcpSettings(input.settingsPath);
+  const merged = mergeClineMcpSettings(existingSettings, input.mcpSession);
+  if (!merged.ok) {
+    throw new Error("Existing Cline MCP settings are invalid or exceed the supported size limit.");
+  }
+
+  let directory: string | undefined;
+  try {
+    directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-cline-mcp-"));
+    NodeFS.chmodSync(directory, 0o700);
+    const settingsPath = NodePath.join(directory, CLINE_MCP_SETTINGS_FILE_NAME);
+    NodeFS.writeFileSync(settingsPath, merged.settings, { flag: "wx", mode: 0o600 });
+    return { directory, settingsPath };
+  } catch {
+    if (directory !== undefined) {
+      try {
+        NodeFS.rmSync(directory, { recursive: true, force: true });
+      } catch {
+        // Do not replace the safe, generic preparation failure with a cleanup error.
+      }
+    }
+    throw new Error("A private Cline MCP settings file could not be prepared.");
+  }
+}
+
 /**
  * Native Orchestration V2 adapter for Cline's documented `--json` process
  * protocol. Each startTurn gets its own Cline process; there is no resume id
@@ -270,6 +348,61 @@ export function makeClineAdapterV2(options: ClineAdapterV2Options): ProviderAdap
       const createdAt = yield* DateTime.now;
       const sessionScope = yield* Effect.scope;
       const cwd = input.runtimePolicy.cwd ?? options.defaultCwd;
+      const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+      let sessionEnvironment = options.environment;
+      if (mcpSession !== undefined) {
+        const homeDir =
+          [options.environment.HOME, options.environment.USERPROFILE]
+            .map((candidate) => candidate?.trim())
+            .find(
+              (candidate) => candidate !== undefined && candidate.length > 0 && candidate !== "~",
+            ) ??
+          (options.environment.HOMEDRIVE?.trim() && options.environment.HOMEPATH?.trim()
+            ? `${options.environment.HOMEDRIVE.trim()}${options.environment.HOMEPATH.trim()}`
+            : NodeOS.homedir());
+        const originalSettingsPath = resolveClineMcpSettingsPath(
+          {
+            CLINE_MCP_SETTINGS_PATH: options.environment.CLINE_MCP_SETTINGS_PATH,
+            CLINE_DATA_DIR: options.environment.CLINE_DATA_DIR,
+            CLINE_DIR: options.environment.CLINE_DIR,
+          },
+          homeDir,
+          {
+            join: (...segments) => NodePath.join(...segments),
+            resolve: (...segments) => NodePath.resolve(...segments),
+          },
+          options.config.launchArgs,
+          cwd,
+        );
+        const scopedSettings = yield* Effect.try({
+          try: () =>
+            materializeScopedClineMcpSettings({
+              settingsPath: originalSettingsPath,
+              mcpSession,
+            }),
+          catch: () =>
+            new ProviderAdapterOpenSessionError({
+              driver: CLINE_PROVIDER,
+              providerSessionId: input.providerSessionId,
+              cause: new Error(
+                "Cline MCP settings could not be safely preserved and extended for this T3 session.",
+              ),
+            }),
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            try {
+              NodeFS.rmSync(scopedSettings.directory, { recursive: true, force: true });
+            } catch {
+              // Keep cleanup failures out of provider logs; the file is private and short-lived.
+            }
+          }),
+        );
+        sessionEnvironment = {
+          ...McpProviderSession.withAgentDeviceEnvironment(options.environment, mcpSession),
+          CLINE_MCP_SETTINGS_PATH: scopedSettings.settingsPath,
+        };
+      }
       let providerSession: OrchestrationV2ProviderSession = {
         id: input.providerSessionId,
         driver: CLINE_PROVIDER,
@@ -680,14 +813,18 @@ export function makeClineAdapterV2(options: ClineAdapterV2Options): ProviderAdap
             model: modelSelection.model,
             provider,
             launchArgs: options.config.launchArgs,
-            prompt: turnInput.message.text,
+            prompt: `${buildRuntimeInstructions({
+              harness: "Cline",
+              model: modelSelection.model,
+              reasoningEffort: thinking,
+            })}\n\n${turnInput.message.text}`,
           });
           const cwd = turnInput.runtimePolicy.cwd ?? options.defaultCwd;
           const resolved = yield* resolveSpawnCommand(
             options.config.binaryPath || "cline",
             [...args],
             {
-              env: options.environment,
+              env: sessionEnvironment,
               extendEnv: true,
             },
           );
@@ -695,7 +832,7 @@ export function makeClineAdapterV2(options: ClineAdapterV2Options): ProviderAdap
             .spawn(
               ChildProcess.make(resolved.command, resolved.args, {
                 cwd,
-                env: options.environment,
+                env: sessionEnvironment,
                 extendEnv: true,
                 shell: resolved.shell,
                 forceKillAfter: "2 seconds",
@@ -1025,10 +1162,12 @@ export type ClineAdapterV2DriverEnv =
   | IdAllocatorV2
   | ServerConfig;
 
+const decodeDefaultClineSettings = Schema.decodeSync(ClineSettings);
+
 export const ClineAdapterV2Driver: ProviderAdapterDriver<ClineSettings, ClineAdapterV2DriverEnv> = {
   driverKind: CLINE_PROVIDER,
   configSchema: ClineSettings,
-  defaultConfig: () => Schema.decodeSync(ClineSettings)({}),
+  defaultConfig: () => decodeDefaultClineSettings({}),
   create: Effect.fn("ClineAdapterV2Driver.create")(
     function* (input: ProviderAdapterDriverCreateInput<ClineSettings>) {
       const hostEnvironment = yield* HostProcessEnvironment;

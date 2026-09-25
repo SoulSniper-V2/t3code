@@ -20,7 +20,7 @@ export function buildRuntimeInstructions(runtime: {
     modelName && modelName !== model ? `${modelName} (model slug: ${model})` : model;
   const modelInfo = model && model !== "auto" && model !== "default" ? `, as ${modelLabel}` : "";
   const effortInfo = effort ? ` with ${effort} reasoning effort` : "";
-  return `<runtime_info>In case you're asked: you are running in T3 Code through the ${harness} harness${modelInfo}${effortInfo}. No need to mention this otherwise. You can embed images and videos in your response using Markdown with absolute file paths.</runtime_info>\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}`;
+  return `<runtime_info>You are running inside T3 Code through the ${harness} harness${modelInfo}${effortInfo}. T3 Code is the host application; ${harness} is the underlying agent harness. If asked where you are running, say you are in T3 Code through the ${harness} harness. Do not describe yourself as running in the standalone ${harness} app. Use only the tools actually exposed in this turn; do not assume other T3 Code capabilities or tools are available. No need to mention the host otherwise. You can embed images and videos in your response using Markdown with absolute file paths.</runtime_info>\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}`;
 }
 
 function toSingleLine(value: string): string {

@@ -2,6 +2,18 @@ import { describe, expect, it } from "vite-plus/test";
 import { buildRuntimeInstructions } from "./RuntimeInstructions.ts";
 
 describe("buildRuntimeInstructions", () => {
+  it("clearly separates the T3 Code host from the underlying provider harness", () => {
+    const instructions = buildRuntimeInstructions({ harness: "Codex" });
+    expect(instructions).toContain("You are running inside T3 Code through the Codex harness.");
+    expect(instructions).toContain(
+      "T3 Code is the host application; Codex is the underlying agent harness.",
+    );
+    expect(instructions).toContain(
+      "If asked where you are running, say you are in T3 Code through the Codex harness.",
+    );
+    expect(instructions).toContain("Use only the tools actually exposed in this turn");
+  });
+
   it("requires explicit registration of every PR and stack layer", () => {
     const instructions = buildRuntimeInstructions({ harness: "Codex" });
     expect(instructions).toContain("When the t3-code MCP server exposes link_pull_request");

@@ -2,11 +2,9 @@
  * CommandCodeProvider — status probes and the per-instance snapshot holder
  * for the Command Code driver.
  *
- * Command Code has no cheap auth-status endpoint: `--list-models` lists the
- * model catalog whether or not the account can call any of it, so the probe
- * reports `auth.status: "unknown"` and real auth failures surface as exit
- * code 3 on the first turn. The snapshot therefore mirrors what can be
- * probed cheaply: binary presence, version, and the live model catalog.
+ * The snapshot uses bounded, read-only CLI probes for installation/version,
+ * `status --json` authentication, the live model catalog, and public BYOK
+ * reasoning metadata. It never reads or returns credential values.
  *
  * @module provider/CommandCodeProvider
  */
@@ -19,19 +17,21 @@ import type {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
-import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import {
   COMMAND_CODE_LIST_MODELS_ARGS,
+  COMMAND_CODE_STATUS_ARGS,
   COMMAND_CODE_VERSION_ARGS,
 } from "./commandCodeLaunchArgs.ts";
-import { parseCommandCodeModelList } from "./commandCodeModels.ts";
+import { parseCommandCodeModelList, parseCommandCodeProvidersJson } from "./commandCodeModels.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "./providerMaintenance.ts";
 import {
   buildServerProvider,
@@ -51,13 +51,41 @@ export function parseCommandCodeVersion(output: string): string | null {
   return matches.length > 0 ? matches[matches.length - 1]![1]! : null;
 }
 
+/**
+ * `command-code status --json` is documented as the CLI's read-only auth
+ * status probe. Only consume its explicit top-level boolean; keep unknown
+ * output forward-compatible and never surface the raw identity/config data.
+ */
+export function parseCommandCodeAuthStatus(output: string): ServerProviderAuth {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    return UNKNOWN_AUTH;
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    Array.isArray(parsed) ||
+    typeof (parsed as Record<string, unknown>)["authenticated"] !== "boolean"
+  ) {
+    return UNKNOWN_AUTH;
+  }
+  return (parsed as Record<string, unknown>)["authenticated"] === true
+    ? { status: "authenticated", type: "command-code" }
+    : { status: "unauthenticated", type: "command-code" };
+}
+
+export function resolveCommandCodeHome(env: NodeJS.ProcessEnv, homeDir: string): string {
+  return env.HOME?.trim() || env.USERPROFILE?.trim() || homeDir;
+}
+
 const runCommandCodeCli = (
   binaryPath: string,
   args: ReadonlyArray<string>,
   env: NodeJS.ProcessEnv,
 ) =>
   Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const resolved = yield* resolveSpawnCommand(binaryPath, [...args], { env, extendEnv: true });
     return yield* spawnAndCollect(
       binaryPath,
@@ -97,6 +125,7 @@ const probeCommandCodeCli = (
 export interface CommandCodeStatusCheckInput {
   readonly config: CommandCodeSettings;
   readonly env: NodeJS.ProcessEnv;
+  readonly homeDir: string;
 }
 
 function notInstalledDraft(input: {
@@ -163,11 +192,20 @@ export function checkCommandCodeProvider(input: CommandCodeStatusCheckInput) {
       });
     }
 
-    const modelsRun = yield* probeCommandCodeCli(
-      binaryPath,
-      COMMAND_CODE_LIST_MODELS_ARGS,
-      input.env,
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const home = resolveCommandCodeHome(input.env, input.homeDir);
+    const [modelsRun, statusRun, providersJson] = yield* Effect.all(
+      [
+        probeCommandCodeCli(binaryPath, COMMAND_CODE_LIST_MODELS_ARGS, input.env),
+        probeCommandCodeCli(binaryPath, COMMAND_CODE_STATUS_ARGS, input.env),
+        fileSystem
+          .readFileString(path.join(home, ".commandcode", "providers.json"))
+          .pipe(Effect.orElseSucceed(() => "")),
+      ],
+      { concurrency: "unbounded" },
     );
+    const auth = parseCommandCodeAuthStatus(statusRun.stdout);
     if (modelsRun.code !== 0) {
       return buildServerProvider({
         presentation: { displayName: "Command Code" },
@@ -178,13 +216,19 @@ export function checkCommandCodeProvider(input: CommandCodeStatusCheckInput) {
           installed: true,
           version,
           status: "warning",
-          auth: UNKNOWN_AUTH,
-          message: "Command Code is installed but its model list could not be read.",
+          auth,
+          message:
+            auth.status === "unauthenticated"
+              ? "Command Code is installed, but no signed-in Command Code account was detected. Sign in there, or use a configured BYOK provider."
+              : "Command Code is installed but its model list could not be read.",
         },
       });
     }
 
-    const models: ReadonlyArray<ServerProviderModel> = parseCommandCodeModelList(modelsRun.stdout);
+    const models: ReadonlyArray<ServerProviderModel> = parseCommandCodeModelList(
+      modelsRun.stdout,
+      parseCommandCodeProvidersJson(providersJson),
+    );
     return buildServerProvider({
       presentation: { displayName: "Command Code" },
       enabled,
@@ -193,8 +237,14 @@ export function checkCommandCodeProvider(input: CommandCodeStatusCheckInput) {
       probe: {
         installed: true,
         version,
-        status: "ready",
-        auth: UNKNOWN_AUTH,
+        status: auth.status === "unauthenticated" ? "warning" : "ready",
+        auth,
+        ...(auth.status === "unauthenticated"
+          ? {
+              message:
+                "Command Code is installed, but no signed-in Command Code account was detected. Sign in there, or use a configured BYOK provider.",
+            }
+          : {}),
       },
     });
   });
@@ -223,6 +273,7 @@ function pendingCommandCodeProvider(input: {
 export interface CommandCodeSnapshotInput {
   readonly config: CommandCodeSettings;
   readonly env: NodeJS.ProcessEnv;
+  readonly homeDir: string;
   readonly stamp: (draft: ServerProviderDraft) => ServerProvider;
   readonly displayName: string;
   readonly driverKind: ServerProvider["driver"];
@@ -237,6 +288,8 @@ export interface CommandCodeSnapshotInput {
 export function makeCommandCodeSnapshotShape(input: CommandCodeSnapshotInput) {
   return Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const changes = yield* Effect.acquireRelease(
       PubSub.unbounded<ServerProvider>(),
       PubSub.shutdown,
@@ -264,8 +317,14 @@ export function makeCommandCodeSnapshotShape(input: CommandCodeSnapshotInput) {
       );
 
     const refresh = Effect.gen(function* () {
-      const draft = yield* checkCommandCodeProvider({ config: input.config, env: input.env }).pipe(
+      const draft = yield* checkCommandCodeProvider({
+        config: input.config,
+        env: input.env,
+        homeDir: input.homeDir,
+      }).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
       );
       const next = input.stamp(draft);
       yield* publish(next);
