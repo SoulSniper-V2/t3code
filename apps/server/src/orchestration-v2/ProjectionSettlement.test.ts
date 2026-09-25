@@ -162,6 +162,7 @@ for (const [name, testLayer] of [
           ["settled", { settledOverride: "settled" }],
           ["unsettled", { settledOverride: "active" }],
           ["pinned", { pinnedAt: old }],
+          ["auto-settle-disabled", { autoSettleDisabledAt: old }],
         ] satisfies ReadonlyArray<readonly [string, Partial<OrchestrationV2AppThread>]>) {
           yield* createRun(yield* createThread(name, overrides));
         }

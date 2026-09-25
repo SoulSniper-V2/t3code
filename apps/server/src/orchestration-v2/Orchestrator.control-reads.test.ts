@@ -67,6 +67,19 @@ it.effect(
         createdBy: "user",
         creationSource: "web",
       });
+      for (const enabled of [false, true]) {
+        yield* orchestrator.dispatch({
+          type: "thread.auto-settle.set",
+          commandId: CommandId.make(`auto-settle-${enabled}`),
+          threadId,
+          enabled,
+        });
+        const updated = yield* projections.getThreadProjection(threadId);
+        assert.equal(updated.thread.autoSettleDisabledAt == null, enabled);
+        const shell = yield* projections.getThreadShell(threadId);
+        assert.ok(shell);
+        assert.equal(shell.autoSettleDisabledAt == null, enabled);
+      }
       yield* sql`INSERT INTO orchestration_v2_projection_messages
       (message_id, thread_id, run_id, node_id, role, streaming, created_at, updated_at, payload_json)
       VALUES ('obsolete', ${threadId}, NULL, NULL, 'assistant', 0, ${DateTime.formatIso(now)}, ${DateTime.formatIso(now)}, '{"obsolete":true}')`;

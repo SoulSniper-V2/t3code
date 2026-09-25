@@ -137,3 +137,14 @@ describe("V2 assistant streaming", () => {
     },
   );
 });
+
+it("holds a streamed section heading until its content has a boundary", () => {
+  expect(splitBufferedAssistantText("Intro\n\n## Results\n\n")).toEqual({
+    ready: "Intro\n\n",
+    rest: "## Results\n\n",
+  });
+  expect(splitBufferedAssistantText("**Results**\n\nBody\n\nNext")).toEqual({
+    ready: "**Results**\n\nBody\n\n",
+    rest: "Next",
+  });
+});
