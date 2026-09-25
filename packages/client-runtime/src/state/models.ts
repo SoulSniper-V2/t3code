@@ -74,7 +74,7 @@ export function threadRuntimeCanArchive(runtime: ThreadRuntimeSummary | null | u
   );
 }
 
-function threadRunStatusIsActive(status: ThreadRuntimeSummary["status"]): boolean {
+export function threadRunStatusIsActive(status: ThreadRuntimeSummary["status"]): boolean {
   return (
     status === "preparing" ||
     status === "queued" ||

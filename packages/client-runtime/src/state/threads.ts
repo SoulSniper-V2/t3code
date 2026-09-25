@@ -1,6 +1,7 @@
 import {
   ORCHESTRATION_V2_WS_METHODS,
   type EnvironmentId as EnvironmentIdType,
+  type OrchestrationThreadShell,
   type OrchestrationV2ThreadDetailSnapshot,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadStreamItem,
@@ -57,6 +58,11 @@ function statusWithoutLiveData(
   data: Option.Option<OrchestrationV2ThreadProjection>,
 ): EnvironmentThreadStatus {
   return Option.isSome(data) ? "cached" : "empty";
+}
+
+/** A starting or running provider session is still producing thread updates. */
+export function isThreadSessionRunning(session: OrchestrationThreadShell["session"]): boolean {
+  return session?.status === "starting" || session?.status === "running";
 }
 
 function formatThreadError(cause: Cause.Cause<unknown>): string {

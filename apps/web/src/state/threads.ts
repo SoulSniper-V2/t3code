@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { enabledEnvironmentIds } from "@t3tools/client-runtime/state/connections";
 import { arrayElementsEqual } from "@t3tools/client-runtime/state/entities";
+import { threadRunStatusIsActive } from "@t3tools/client-runtime/state/models";
 import {
   createEnvironmentThreadDetailAtoms,
   createEnvironmentThreadShellAtoms,
@@ -61,7 +62,10 @@ function isDetailDone<E>(result: AsyncResult.AsyncResult<EnvironmentThreadState,
   const { status, data, error } = result.value;
   if (status === "deleted" || Option.isSome(error)) return true;
   return (
-    status === "live" && !Option.exists(data, (thread) => isThreadSessionRunning(thread.session))
+    status === "live" &&
+    !Option.exists(data, (projection) =>
+      projection.runs.some((run) => threadRunStatusIsActive(run.status)),
+    )
   );
 }
 

@@ -4,12 +4,12 @@ import {
 } from "@t3tools/client-runtime/state/threads";
 import {
   EnvironmentId,
-  ProjectId,
-  ProviderInstanceId,
   ThreadId,
   type OrchestrationSessionStatus,
   type OrchestrationThread,
   type OrchestrationThreadShell,
+  type OrchestrationV2RunStatus,
+  type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
@@ -44,31 +44,17 @@ function detail(
   id: string,
   status: OrchestrationSessionStatus,
   overrides: Partial<EnvironmentThreadState> = {},
+  runStatus: OrchestrationV2RunStatus = status === "running"
+    ? "running"
+    : status === "starting"
+      ? "starting"
+      : "completed",
 ) {
   const threadId = ThreadId.make(id);
-  const thread: OrchestrationThread = {
-    id: threadId,
-    projectId: ProjectId.make("project"),
-    title: id,
-    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-    runtimeMode: "full-access",
-    interactionMode: "default",
-    branch: null,
-    worktreePath: null,
-    latestTurn: null,
-    createdAt: "2026-09-24T00:00:00.000Z",
-    updatedAt: "2026-09-24T00:00:00.000Z",
-    archivedAt: null,
-    settledOverride: null,
-    settledAt: null,
-    pullRequests: [],
-    deletedAt: null,
-    messages: [],
-    proposedPlans: [],
-    activities: [],
-    checkpoints: [],
-    session: session(threadId, status),
-  };
+  const thread = {
+    thread: { id: threadId },
+    runs: [{ status: runStatus }],
+  } as unknown as OrchestrationV2ThreadProjection;
   return AsyncResult.success<EnvironmentThreadState>({
     ...EMPTY_ENVIRONMENT_THREAD_STATE,
     status: "live",
@@ -178,6 +164,22 @@ describe("createRunningThreadKeepAliveAtom", () => {
     h.registry.set(h.stateAtom(LOCAL, "b"), detail("b", "ready", { status: "synchronizing" }));
     expect(h.openStreams()).toEqual(["local:b"]);
     h.registry.set(h.stateAtom(LOCAL, "b"), detail("b", "ready"));
+    expect(h.openStreams()).toEqual([]);
+  });
+
+  it("keeps a settled shell mounted while the V2 run is queued or waiting", () => {
+    const h = makeHarness();
+    h.registry.set(h.threads(LOCAL), [shell("a", "running")]);
+    expect(h.openStreams()).toEqual(["local:a"]);
+
+    h.registry.set(h.stateAtom(LOCAL, "a"), detail("a", "ready", {}, "queued"));
+    h.registry.set(h.threads(LOCAL), [shell("a", "ready")]);
+    expect(h.openStreams()).toEqual(["local:a"]);
+
+    h.registry.set(h.stateAtom(LOCAL, "a"), detail("a", "ready", {}, "waiting"));
+    expect(h.openStreams()).toEqual(["local:a"]);
+
+    h.registry.set(h.stateAtom(LOCAL, "a"), detail("a", "ready", {}, "completed"));
     expect(h.openStreams()).toEqual([]);
   });
 
