@@ -21,7 +21,7 @@ it("preserves monotonic request ids across native Codex forks", () => {
     },
   ];
 
-  const output = codexReplayRecordingOutputRecords(records);
+  const output = codexReplayRecordingOutputRecords(records, { workspace: "/recording" });
 
   assert.deepEqual(output, records);
   assert.deepEqual(
@@ -31,5 +31,29 @@ it("preserves monotonic request ids across native Codex forks", () => {
   assert.deepEqual(
     output.map((record) => (record.frame as { readonly id: number }).id),
     [1, 4, 5],
+  );
+});
+
+it("names the recording cwd in outbound frames only", () => {
+  const output = codexReplayRecordingOutputRecords(
+    [
+      {
+        type: "expect_outbound",
+        frame: { id: 3, method: "turn/start", params: { cwd: "/recording", input: [] } },
+      },
+      {
+        type: "emit_inbound",
+        frame: { method: "thread/started", params: { thread: { cwd: "/recording" } } },
+      },
+    ],
+    { workspace: "/recording" },
+  );
+
+  assert.deepEqual(
+    output.map((record) => record.frame),
+    [
+      { id: 3, method: "turn/start", params: { cwd: "<workspace>", input: [] } },
+      { method: "thread/started", params: { thread: { cwd: "/recording" } } },
+    ],
   );
 });

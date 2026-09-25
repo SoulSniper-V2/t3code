@@ -14,7 +14,7 @@ import {
   assertTurnItemTypes,
   assertUserMessagesInclude,
   projectionFor,
-  SUBAGENT_V2_PROMPT,
+  SUBAGENT_V2_NESTED_PROMPT,
 } from "../shared.ts";
 
 function projectionById(
@@ -68,13 +68,13 @@ export function assertSubagentV2NestedOutput(
   assertTurnItemTypes(rootProjection, ["user_message", "subagent", "assistant_message"]);
   assertRunProviderTurnCardinality({ projection: rootProjection, rootRunCount: 1 });
   assertNoExtraAppRunsForProviderChildren({ projection: rootProjection, expectedAppRuns: 1 });
-  assertUserMessagesInclude(rootProjection, [SUBAGENT_V2_PROMPT]);
+  assertUserMessagesInclude(rootProjection, [SUBAGENT_V2_NESTED_PROMPT]);
   assert.lengthOf(result.shellSnapshot.threads, 4);
 
   const first = assertCompletedProviderNativeSubagent({
     projection: rootProjection,
-    title: "/root/hello_agent",
-    result: "Subagent says: “Hello.”",
+    title: "/root/relay_one",
+    result: "Hello.",
   });
   if (first.childThreadId === null) {
     throw new Error("first nested fixture subagent is missing its child thread");
@@ -90,8 +90,8 @@ export function assertSubagentV2NestedOutput(
 
   const second = assertCompletedProviderNativeSubagent({
     projection: firstProjection,
-    title: "/root/hello_agent/hello_agent",
-    result: "Subagent says: “Hello.”",
+    title: "/root/relay_one/relay_two",
+    result: "Hello",
   });
   if (second.childThreadId === null) {
     throw new Error("second nested fixture subagent is missing its child thread");
@@ -107,8 +107,8 @@ export function assertSubagentV2NestedOutput(
 
   const third = assertCompletedProviderNativeSubagent({
     projection: secondProjection,
-    title: "/root/hello_agent/hello_agent/hello_agent",
-    result: "Hello.",
+    title: "/root/relay_one/relay_two/hello_child",
+    result: "Hello",
   });
   if (third.childThreadId === null) {
     throw new Error("third nested fixture subagent is missing its child thread");
@@ -124,7 +124,7 @@ export function assertSubagentV2NestedOutput(
   assertTurnItemTypes(thirdProjection, ["assistant_message"]);
   assert.isTrue(
     thirdProjection.turnItems.some(
-      (item) => item.type === "assistant_message" && item.text === "Hello.",
+      (item) => item.type === "assistant_message" && item.text === "Hello",
     ),
     "leaf child thread must contain the final assistant message",
   );

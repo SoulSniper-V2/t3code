@@ -670,6 +670,7 @@ export const PullRequestsToolkitRegistrationLive = McpServer.toolkit(PullRequest
 
 const ThreadsToolkitRegistrationLive = McpServer.toolkit(ThreadsToolkit).pipe(
   Layer.provide(ThreadsToolkitHandlersLive),
+  Layer.provide(OrchestratorMcpService.layer),
 );
 
 const DeviceStandardToolkitRegistrationLive = McpServer.toolkit(DeviceStandardToolkit).pipe(
