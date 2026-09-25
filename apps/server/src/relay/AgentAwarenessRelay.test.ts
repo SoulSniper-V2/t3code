@@ -256,6 +256,7 @@ describe("AgentAwarenessRelay", () => {
       "provider-turn.updated",
       "thread.visited",
       "thread.pinned",
+      "thread.auto-settle-set",
     ] as const) {
       assert.isFalse(shouldPublishAgentAwarenessEvent({ type }));
     }

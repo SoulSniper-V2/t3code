@@ -159,6 +159,26 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
     expect(next?.updatedAt).toEqual(archivedAt);
   });
 
+  it("applies the fork's per-thread auto-settle preference", () => {
+    const changedAt = DateTime.makeUnsafe("2026-06-20T02:00:00.000Z");
+    const event = {
+      id: "event-auto-settle-set",
+      type: "thread.auto-settle-set",
+      threadId,
+      occurredAt: changedAt,
+      payload: {
+        ...emptyProjection.thread,
+        autoSettleDisabledAt: changedAt,
+        updatedAt: changedAt,
+      },
+    } as OrchestrationV2DomainEvent;
+
+    const next = applyOrchestrationV2ProjectionEvent(emptyProjection, event);
+
+    expect(next?.thread.autoSettleDisabledAt).toEqual(changedAt);
+    expect(next?.updatedAt).toEqual(changedAt);
+  });
+
   it("ignores events for another thread", () => {
     const event = {
       id: "event-other",

@@ -2,7 +2,7 @@
 import * as NodeFS from "node:fs";
 import { describe, expect, it } from "vite-plus/test";
 
-import { parseCommandCodeNdjsonLine } from "./Layers/CommandCodeAdapter.ts";
+import { parseCommandCodeNdjsonLine } from "./CommandCodeProtocol.ts";
 
 const fixtureLines = (name: string): ReadonlyArray<string> =>
   NodeFS.readFileSync(

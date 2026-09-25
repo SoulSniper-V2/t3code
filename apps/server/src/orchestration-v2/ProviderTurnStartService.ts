@@ -21,6 +21,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { GitWorkflowService } from "../git/GitWorkflowService.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { ProjectService } from "../project/ProjectService.ts";
 import { ProviderAuthService } from "../provider/Services/ProviderAuthService.ts";
 import { EventSinkV2 } from "./EventSink.ts";
@@ -49,6 +50,7 @@ import {
   selectInheritedBackgroundTurnItems,
 } from "./RunExecutionService.ts";
 import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
+import { loadAttachedThreadTranscript } from "./ThreadReferenceTranscript.ts";
 
 export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStartError>()(
   "ProviderTurnStartError",
@@ -91,6 +93,7 @@ export const layer: Layer.Layer<
   | ProjectionStoreV2
   | ProviderSessionManagerV2
   | RunExecutionServiceV2
+  | ServerEnvironment.ServerEnvironment
   | RuntimePolicyV2
 > = Layer.effect(
   ProviderTurnStartServiceV2,
@@ -105,6 +108,7 @@ export const layer: Layer.Layer<
     const projectionStore = yield* ProjectionStoreV2;
     const providerSessions = yield* ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionServiceV2;
+    const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
     const runtimePolicy = yield* RuntimePolicyV2;
 
     // These callbacks outlive startup while a run drains background work. Build
@@ -893,10 +897,28 @@ export const layer: Layer.Layer<
       const routableSubagents = projection.subagents.filter((subagent) =>
         canRouteRelatedSubagent(subagent.status),
       );
-      const userText = projectComposerContextForProvider({
+      const projectedUserText = projectComposerContextForProvider({
         text: message.text,
         records: message.context?.records ?? [],
       });
+      const attachedThreadTranscript = session.providerSession.capabilities.tools.supportsMcpTools
+        ? ""
+        : yield* serverEnvironment.getEnvironmentId.pipe(
+            Effect.flatMap((environmentId) =>
+              loadAttachedThreadTranscript({
+                supportsMcpTools: false,
+                currentThreadId: projection.thread.id,
+                currentProjectId: projection.thread.projectId,
+                environmentId,
+                message,
+                projectionStore,
+              }),
+            ),
+          );
+      const userText =
+        attachedThreadTranscript === ""
+          ? projectedUserText
+          : `${projectedUserText}\n\n${attachedThreadTranscript}`;
       const tokenCap = yield* handoffTokenCapConfig.pipe(
         Effect.orElseSucceed(() => DEFAULT_HANDOFF_TOKEN_CAP),
       );

@@ -1,5 +1,6 @@
 import {
   McpCapabilityUnavailableError,
+  OrchestratorMcpFailure,
   ProviderInteractionMode,
   RuntimeMode,
   ThreadId,
@@ -9,13 +10,11 @@ import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/unstable/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
-import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
-  OrchestrationEngine.OrchestrationEngineService,
-  ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+  OrchestratorMcpService.OrchestratorMcpService,
 ];
 
 export const StartThreadInput = Schema.Struct({
@@ -57,34 +56,15 @@ export const StartThreadResult = Schema.Struct({
 });
 export type StartThreadResult = typeof StartThreadResult.Type;
 
-export class StartThreadCallerNotFoundError extends Schema.TaggedError<StartThreadCallerNotFoundError>()(
-  "StartThreadCallerNotFoundError",
-  { threadId: Schema.String },
-) {
-  override get message(): string {
-    return `Thread ${this.threadId} was not found.`;
-  }
-}
-
-export class StartThreadFailedError extends Schema.TaggedError<StartThreadFailedError>()(
-  "StartThreadFailedError",
-  { cause: Schema.Defect() },
-) {
-  override get message(): string {
-    return "Could not start the thread.";
-  }
-}
-
 export const StartThreadToolError = Schema.Union([
   McpCapabilityUnavailableError,
-  StartThreadCallerNotFoundError,
-  StartThreadFailedError,
+  OrchestratorMcpFailure,
 ]);
 export type StartThreadToolError = typeof StartThreadToolError.Type;
 
 export const StartThreadTool = Tool.make("start_thread", {
   description:
-    "Start a new top-level T3 Code thread in this thread's project and send it a first message. The new thread runs on its own, in parallel, with the same provider, checkout, and worktree as this thread. It is not a subagent: it does not report back, and you cannot read it. Use it when the user asks for separate threads or wants work to continue after this turn ends. Two threads editing one checkout can collide, so split the work by files.",
+    "Start a new top-level T3 Code conversation in this thread's project and send it a first message. It inherits this thread's provider, checkout, and worktree; the model and modes can be overridden within the caller's permissions. This creates a separate conversation, not a delegated subagent. The new thread is linked to this run and can be inspected through the thread tools. Use it only when the user asks for a separate conversation or ongoing work. Two threads editing one checkout can collide, so split work by files.",
   parameters: StartThreadInput,
   success: StartThreadResult,
   failure: StartThreadToolError,

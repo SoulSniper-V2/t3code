@@ -16,9 +16,11 @@ import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeCommandCodeTextGeneration } from "../../textGeneration/CommandCodeTextGeneration.ts";
+import { makeCommandCodeAdapterV2 } from "../../orchestration-v2/Adapters/CommandCodeAdapterV2.ts";
+import { IdAllocatorV2 } from "../../orchestration-v2/IdAllocator.ts";
+import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { makeCommandCodeSnapshotShape } from "../CommandCodeProvider.ts";
-import { makeCommandCodeAdapter } from "../Layers/CommandCodeAdapter.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
   defaultProviderContinuationIdentity,
@@ -30,7 +32,10 @@ import { withInstanceIdentity } from "./instanceIdentity.ts";
 const DRIVER_KIND = ProviderDriverKind.make("commandCode");
 const decodeCommandCodeSettings = Schema.decodeSync(CommandCodeSettings);
 
-export type CommandCodeDriverEnv = ChildProcessSpawner.ChildProcessSpawner;
+export type CommandCodeDriverEnv =
+  | ChildProcessSpawner.ChildProcessSpawner
+  | IdAllocatorV2
+  | ServerConfig;
 
 export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeDriverEnv> = {
   driverKind: DRIVER_KIND,
@@ -49,6 +54,9 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
         binaryPath: expandHomePath(config.binaryPath),
       };
       const processEnv = mergeProviderInstanceEnvironment(environment);
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const idAllocator = yield* IdAllocatorV2;
+      const serverConfig = yield* ServerConfig;
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
         instanceId,
@@ -68,10 +76,12 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
         displayName: "Command Code",
         driverKind: DRIVER_KIND,
       });
-      const adapter = yield* makeCommandCodeAdapter(effectiveConfig, {
-        driverKind: DRIVER_KIND,
+      const orchestrationAdapter = makeCommandCodeAdapterV2(effectiveConfig, {
         instanceId,
         environment: processEnv,
+        spawner,
+        idAllocator,
+        serverConfig,
       });
       const textGeneration = makeCommandCodeTextGeneration(effectiveConfig);
 
@@ -86,7 +96,7 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
         accentColor,
         enabled,
         snapshot,
-        adapter,
+        orchestrationAdapter,
         textGeneration,
       } satisfies ProviderInstance;
     }),

@@ -391,6 +391,10 @@ export const OrchestrationV2AppThread = Schema.Struct({
   settledAt: Schema.NullOr(Schema.DateTimeUtc).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /** When set, automatic settlement stays disabled until explicitly re-enabled. */
+  autoSettleDisabledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   unsettledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   snoozedUntil: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   snoozedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
@@ -1328,6 +1332,7 @@ export const OrchestrationV2DomainEvent = Schema.Union([
       "thread.deleted",
       "thread.settled",
       "thread.unsettled",
+      "thread.auto-settle-set",
       "thread.snoozed",
       "thread.unsnoozed",
       "thread.pinned",
@@ -1549,6 +1554,9 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   archivedAt: Schema.NullOr(Schema.DateTimeUtc),
   settledOverride: Schema.NullOr(Schema.Literals(["settled", "active"])),
   settledAt: Schema.NullOr(Schema.DateTimeUtc),
+  autoSettleDisabledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   unsettledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   snoozedUntil: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   snoozedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
@@ -1643,6 +1651,9 @@ export const OrchestrationV2AppThreadJson = OrchestrationV2AppThread.mapFields((
   updatedAt: Schema.DateTimeUtcFromString,
   archivedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   settledAt: Schema.NullOr(Schema.DateTimeUtcFromString).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  autoSettleDisabledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
   unsettledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
@@ -2053,6 +2064,9 @@ export const OrchestrationV2ThreadShellJson = OrchestrationV2ThreadShell.mapFiel
   updatedAt: Schema.DateTimeUtcFromString,
   archivedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   settledAt: Schema.NullOr(Schema.DateTimeUtcFromString),
+  autoSettleDisabledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   unsettledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   snoozedUntil: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   snoozedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
@@ -2106,6 +2120,7 @@ export const OrchestrationV2DomainEventJson = Schema.Union([
       "thread.deleted",
       "thread.settled",
       "thread.unsettled",
+      "thread.auto-settle-set",
       "thread.snoozed",
       "thread.unsnoozed",
       "thread.pinned",
@@ -2277,6 +2292,12 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     settledAt: Schema.optional(Schema.DateTimeUtc),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.auto-settle.set"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    enabled: Schema.Boolean,
   }),
   /**
    * Server-internal settlement (#8600): dispatched by the settlement sweep,

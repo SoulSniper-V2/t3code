@@ -127,6 +127,7 @@ it.layer(TestLayer)("LegacyV1ThreadImporter", (it) => {
           archived_at,
           settled_override,
           settled_at,
+          auto_settle_disabled_at,
           unsettled_at,
           snoozed_until,
           snoozed_at,
@@ -149,6 +150,7 @@ it.layer(TestLayer)("LegacyV1ThreadImporter", (it) => {
           NULL,
           NULL,
           NULL,
+          '2026-01-03T10:00:00.000Z',
           '2026-01-03T12:00:00.000Z',
           '2026-02-01T00:00:00.000Z',
           '2026-01-04T00:00:00.000Z',
@@ -263,6 +265,10 @@ it.layer(TestLayer)("LegacyV1ThreadImporter", (it) => {
         shellProjection.thread.unsettledAt,
         DateTime.makeUnsafe("2026-01-03T12:00:00.000Z"),
       );
+      assert.deepEqual(
+        shellProjection.thread.autoSettleDisabledAt,
+        DateTime.makeUnsafe("2026-01-03T10:00:00.000Z"),
+      );
       assert.equal(shellProjection.thread.linkedPullRequest?.number, 9000);
       assert.deepStrictEqual(
         (shellProjection.thread.pullRequests ?? []).map((link) => link.number),
@@ -365,6 +371,7 @@ it.layer(TestLayer)("LegacyV1ThreadImporter", (it) => {
           '$.snoozedUntil',
           '$.snoozedAt',
           '$.unsettledAt',
+          '$.autoSettleDisabledAt',
           '$.linkedPullRequest',
           '$.pullRequests'
         )
@@ -460,6 +467,11 @@ it.layer(TestLayer)("LegacyV1ThreadImporter", (it) => {
           'az'
         )
       `;
+      yield* sql`
+        UPDATE projection_threads
+        SET auto_settle_disabled_at = '2026-01-03T10:00:00.000Z'
+        WHERE thread_id = ${threadId}
+      `;
       yield* importer.reconcileShells;
       yield* maintenance.rebuild;
       const shellProjection = yield* projections.getThreadProjection(threadId);
@@ -477,6 +489,7 @@ it.layer(TestLayer)("LegacyV1ThreadImporter", (it) => {
       };
       delete previousRepairThread.branchPullRequest;
       delete previousRepairThread.activeOrderKey;
+      delete previousRepairThread.autoSettleDisabledAt;
       yield* eventSink.write({
         events: [
           {
@@ -489,6 +502,11 @@ it.layer(TestLayer)("LegacyV1ThreadImporter", (it) => {
           },
         ],
       });
+      yield* sql`
+        UPDATE orchestration_v2_projection_threads
+        SET payload_json = json_remove(payload_json, '$.autoSettleDisabledAt')
+        WHERE thread_id = ${threadId}
+      `;
 
       assert.deepStrictEqual(yield* importer.reconcileShells, {
         importedThreadCount: 1,
@@ -502,6 +520,10 @@ it.layer(TestLayer)("LegacyV1ThreadImporter", (it) => {
       assert.deepStrictEqual(repaired.thread.pullRequests, []);
       assert.equal(repaired.thread.branchPullRequest?.number, 9001);
       assert.equal(repaired.thread.activeOrderKey, "az");
+      assert.deepEqual(
+        repaired.thread.autoSettleDisabledAt,
+        DateTime.makeUnsafe("2026-01-03T10:00:00.000Z"),
+      );
 
       const eventsBeforeRetry = yield* sql<{ readonly event_id: string }>`
         SELECT event_id

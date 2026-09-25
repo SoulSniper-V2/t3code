@@ -60,6 +60,7 @@ import {
 import { layer as turnItemPositionStoreLayer } from "../TurnItemPositionStore.ts";
 import { layer as runtimeRequestServiceLayer } from "../RuntimeRequestService.ts";
 import { layer as threadForkServiceLayer } from "../ThreadForkService.ts";
+import { layer as serverEnvironmentTestLayer } from "./ServerEnvironment.testkit.ts";
 import {
   runOrchestratorV2Scenario,
   type OrchestratorV2ScenarioStepError,
@@ -450,7 +451,11 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
     effectWorkerProvided,
     eventSinkProvided,
     continuationWorkerProvided,
-  ).pipe(Layer.provide(worktreeRepairDependenciesTestLayer), Layer.provide(NodeServices.layer));
+  ).pipe(
+    Layer.provide(worktreeRepairDependenciesTestLayer),
+    Layer.provide(NodeServices.layer),
+    Layer.provide(serverEnvironmentTestLayer),
+  );
 
   // Build the daemon from the exact worker instance exposed alongside the
   // orchestrator. Keeping this acquisition in the replay layer makes the

@@ -296,6 +296,7 @@ function commandThreadId(command: OrchestrationV2Command): ThreadId {
     case "thread.unarchive":
     case "thread.delete":
     case "thread.settle":
+    case "thread.auto-settle.set":
     case "thread.auto-settle":
     case "thread.unsettle":
     case "thread.snooze":
@@ -1989,6 +1990,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       archivedAt: null,
       settledOverride: null,
       settledAt: null,
+      autoSettleDisabledAt: null,
       snoozedUntil: null,
       snoozedAt: null,
       lastVisitedAt: null,
@@ -2087,6 +2089,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           | "thread.archive"
           | "thread.unarchive"
           | "thread.settle"
+          | "thread.auto-settle.set"
           | "thread.unsettle"
           | "thread.snooze"
           | "thread.unsnooze"
@@ -2167,6 +2170,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     if (
       (command.type === "thread.settle" ||
+        command.type === "thread.auto-settle.set" ||
         command.type === "thread.unsettle" ||
         command.type === "thread.snooze" ||
         command.type === "thread.unsnooze" ||
@@ -2460,6 +2464,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             settledAt: null,
             unsettledAt: alreadyPinnedActive ? (thread.unsettledAt ?? null) : now,
             updatedAt: alreadyPinnedActive ? thread.updatedAt : now,
+          };
+        }
+        case "thread.auto-settle.set": {
+          const currentDisabledAt = thread.autoSettleDisabledAt ?? null;
+          const unchanged = command.enabled
+            ? currentDisabledAt === null
+            : currentDisabledAt !== null;
+          return {
+            ...thread,
+            // This preference gates automatic settlement only; manual settle
+            // and un-settle actions remain independent of it.
+            autoSettleDisabledAt: command.enabled ? null : (currentDisabledAt ?? now),
+            updatedAt: unchanged ? thread.updatedAt : now,
           };
         }
         case "thread.snooze": {
@@ -2789,6 +2806,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return "thread.settled" as const;
         case "thread.unsettle":
           return "thread.unsettled" as const;
+        case "thread.auto-settle.set":
+          return "thread.auto-settle-set" as const;
         case "thread.snooze":
           return "thread.snoozed" as const;
         case "thread.unsnooze":
@@ -8680,6 +8699,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           );
         if (
           thread.settledOverride !== null ||
+          thread.autoSettleDisabledAt != null ||
           DateTime.toEpochMillis(thread.updatedAt) > DateTime.toEpochMillis(command.snapshotAt)
         ) {
           return yield* new OrchestratorDispatchError({
@@ -8730,6 +8750,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.archive":
       case "thread.unarchive":
       case "thread.settle":
+      case "thread.auto-settle.set":
       case "thread.unsettle":
       case "thread.snooze":
       case "thread.unsnooze":

@@ -35,6 +35,9 @@ export function v2PullRequestThread(thread: OrchestrationThreadShell): Orchestra
     archivedAt: thread.archivedAt ? DateTime.makeUnsafe(thread.archivedAt) : null,
     settledOverride: thread.settledOverride,
     settledAt: thread.settledAt ? DateTime.makeUnsafe(thread.settledAt) : null,
+    autoSettleDisabledAt: thread.autoSettleDisabledAt
+      ? DateTime.makeUnsafe(thread.autoSettleDisabledAt)
+      : null,
     deletedAt: null,
   };
 }

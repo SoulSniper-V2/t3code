@@ -17,10 +17,12 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
+import { ServerConfig } from "../../config.ts";
+import { makeClineAdapterV2 } from "../../orchestration-v2/Adapters/ClineAdapterV2.ts";
+import { IdAllocatorV2 } from "../../orchestration-v2/IdAllocator.ts";
 import { makeClineTextGeneration } from "../../textGeneration/ClineTextGeneration.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { makeClineSnapshotShape } from "../ClineProvider.ts";
-import { makeClineAdapter } from "../Layers/ClineAdapter.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
   defaultProviderContinuationIdentity,
@@ -35,7 +37,9 @@ const decodeClineSettings = Schema.decodeSync(ClineSettings);
 export type ClineDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
-  | Path.Path;
+  | IdAllocatorV2
+  | Path.Path
+  | ServerConfig;
 
 export const ClineDriver: ProviderDriver<ClineSettings, ClineDriverEnv> = {
   driverKind: DRIVER_KIND,
@@ -74,10 +78,16 @@ export const ClineDriver: ProviderDriver<ClineSettings, ClineDriverEnv> = {
         displayName: "Cline",
         driverKind: DRIVER_KIND,
       });
-      const adapter = yield* makeClineAdapter(effectiveConfig, {
-        driverKind: DRIVER_KIND,
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const idAllocator = yield* IdAllocatorV2;
+      const { cwd } = yield* ServerConfig;
+      const orchestrationAdapter = makeClineAdapterV2({
         instanceId,
+        config: effectiveConfig,
         environment: processEnv,
+        spawner,
+        idAllocator,
+        defaultCwd: cwd,
       });
       const textGeneration = makeClineTextGeneration(effectiveConfig);
 
@@ -92,7 +102,7 @@ export const ClineDriver: ProviderDriver<ClineSettings, ClineDriverEnv> = {
         accentColor,
         enabled,
         snapshot,
-        adapter,
+        orchestrationAdapter,
         textGeneration,
       } satisfies ProviderInstance;
     }),

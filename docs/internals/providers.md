@@ -129,7 +129,7 @@ record per assistant message line with the session id carried forward from the
 leading `session` line. Token fields follow the Anthropic vocabulary and are
 treated as disjoint; `usage.costUsd` is authoritative when present.
 
-Cline runs one headless `--json` subprocess per turn ([ClineAdapter](../../apps/server/src/provider/Layers/ClineAdapter.ts)).
+Cline runs one headless `--json` subprocess per turn ([ClineAdapterV2](../../apps/server/src/orchestration-v2/Adapters/ClineAdapterV2.ts)).
 `--id <session>` forces interactive mode (requires a TTY), so headless turns
 always start a fresh Cline session and the adapter never passes `--id` — a
 replacement for resume when the CLI learns it. The prompt travels over stdin;

@@ -15,6 +15,7 @@ const fs = require("node:fs");
 
 const argvLogPath = process.env.T3_MOCK_ARGV_LOG;
 const hang = process.env.T3_MOCK_HANG === "1";
+const fail = process.env.T3_MOCK_ERROR === "1";
 
 let prompt = "";
 process.stdin.setEncoding("utf8");
@@ -28,10 +29,17 @@ process.stdin.on("end", () => {
       ? process.argv[dashIndex + 1]
       : prompt || process.argv[process.argv.length - 1] || "";
   if (argvLogPath) {
-    fs.writeFileSync(
+    fs.appendFileSync(
       argvLogPath,
-      JSON.stringify({ argv: process.argv.slice(2), prompt: effectivePrompt }),
+      `${JSON.stringify({ argv: process.argv.slice(2), prompt: effectivePrompt })}\n`,
     );
+  }
+  if (fail) {
+    process.stderr.write(
+      `${JSON.stringify({ type: "error", message: "mock Cline provider failure" })}\n`,
+    );
+    process.exitCode = 1;
+    return;
   }
 
   const usage = {

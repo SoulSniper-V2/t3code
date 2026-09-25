@@ -1,11 +1,11 @@
 # T3 Code
 
-> This is the [`SoulSniper-V2/t3code`](https://github.com/SoulSniper-V2/t3code) fork of [upstream T3 Code](https://github.com/pingdotgg/t3code). The additions below are maintained in this fork's source; they are not features of the upstream project.
+> This is the [`SoulSniper-V2/t3code`](https://github.com/SoulSniper-V2/t3code) fork of [upstream T3 Code](https://github.com/pingdotgg/t3code). The list below calls out fork-specific additions; Orchestrator V2 itself is tracked from [upstream PR #2829](https://github.com/pingdotgg/t3code/pull/2829) and is not claimed as a fork-only feature.
 
 ## What this fork adds
 
-- **Cline and Command Code providers**, including usage reporting from their local transcripts.
-- **Cross-chat context:** type `@` in the composer to reference another thread, including archived threads. The current agent receives a bounded excerpt of that thread's recent conversation.
+- **Cline and Command Code providers**, with V2 adapters and usage reporting from their local transcripts.
+- **Cross-chat compatibility for local CLI providers:** when a provider cannot use T3's MCP tools, an `@thread` reference supplies a bounded, recent excerpt; other V2 providers read attached threads on demand.
 - **Inline skill search:** invoke a skill with `/skill-name` anywhere in a prompt and repeat the trigger to add multiple skills to one draft.
 - **Thread workflows:** set persistent goals with `/goal`, hand a thread to another provider with `/handoff`, fork it with `/fork`, or start an independent thread through the `start_thread` MCP tool in the Synara Agent Gateway integration.
 - **Native computer-use tools over MCP:** agents can inspect the active app's accessibility tree, capture screenshots, list or activate desktop apps, click, type, and press keys.
@@ -16,7 +16,7 @@
 - **Provider account switching:** hot-swap between multiple configured provider accounts from the chat composer.
 - **Nightly updater fix:** a newer installed nightly is not replaced by an older nightly release.
 
-> **Distribution:** The install commands below point to upstream T3 Code. Download this fork's signed macOS nightly and its update assets from [this fork's releases](https://github.com/SoulSniper-V2/t3code/releases).
+> **Distribution:** The install commands below point to upstream T3 Code. Download this fork's macOS nightly and its update assets from [this fork's releases](https://github.com/SoulSniper-V2/t3code/releases).
 
 T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
 

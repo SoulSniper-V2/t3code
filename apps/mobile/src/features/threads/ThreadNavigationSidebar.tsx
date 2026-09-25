@@ -4,6 +4,7 @@ import type {
   EnvironmentProject,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
+import type { EnvironmentId } from "@t3tools/contracts";
 import {
   threadSearchMatchKey,
   type EnvironmentThreadSearchMatch,

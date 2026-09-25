@@ -38,6 +38,7 @@ import { OrchestratorV2 } from "./Orchestrator.ts";
 import { worktreeRepairDependenciesTestLayer } from "./ProviderTurnStartService.testkit.ts";
 import { OrchestrationV2LayerLive } from "./runtimeLayer.ts";
 import { layer as mcpSessionRegistryTestLayer } from "../mcp/McpSessionRegistry.testkit.ts";
+import { layer as serverEnvironmentTestLayer } from "./testkit/ServerEnvironment.testkit.ts";
 
 // The Antigravity switch is a durable, named conformance fixture for Google's
 // official Registry distribution. It uses credentials already owned by the
@@ -118,6 +119,7 @@ const liveLayer = OrchestrationV2LayerLive.pipe(
   Layer.provide(SqlitePersistenceMemory),
   Layer.provide(checkpointStoreLayer),
   Layer.provide(serverConfigLayer),
+  Layer.provide(serverEnvironmentTestLayer),
   Layer.provide(serverSettingsLayer),
   Layer.provide(providerInstanceRegistryLayer),
   Layer.provide(ResetCreditCoordinator.layer),

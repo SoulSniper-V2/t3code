@@ -74,6 +74,16 @@ describe("V2 client presentation", () => {
     expect(shell.source).toBe(v2ThreadShell);
   });
 
+  it("preserves the fork's per-thread auto-settle preference in compact shells", () => {
+    const disabledAt = DateTime.makeUnsafe("2026-06-20T01:00:00.000Z");
+    const shell = presentThreadShell(environmentId, {
+      ...v2ThreadShell,
+      autoSettleDisabledAt: disabledAt,
+    });
+
+    expect(shell.autoSettleDisabledAt).toBe("2026-06-20T01:00:00.000Z");
+  });
+
   it("preserves active ordering and both pull-request sources", () => {
     const linkedPullRequest = {
       projectId: v2ThreadShell.projectId,

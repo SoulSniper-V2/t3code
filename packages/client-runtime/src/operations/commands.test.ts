@@ -50,6 +50,7 @@ import {
   reorderQueuedRun,
   revertThreadCheckpoint,
   settleThread,
+  setThreadAutoSettle,
   startThreadTurn,
   unsettleThread,
   updateProject,
@@ -860,6 +861,40 @@ describe("V2 environment commands", () => {
           commandId: "unsettle-command",
           threadId: "thread-1",
           reason: "user",
+        },
+      ]);
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
+  it.effect("dispatches per-thread automatic settlement preference changes", () =>
+    Effect.gen(function* () {
+      const dispatched: OrchestrationV2Command[] = [];
+      const supervisor = yield* makeSupervisor({ commands: dispatched, projects: [] });
+      const threadId = ThreadId.make("thread-auto-settle");
+
+      yield* setThreadAutoSettle({
+        commandId: CommandId.make("disable-auto-settle"),
+        threadId,
+        enabled: false,
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+      yield* setThreadAutoSettle({
+        commandId: CommandId.make("enable-auto-settle"),
+        threadId,
+        enabled: true,
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+
+      expect(dispatched).toEqual([
+        {
+          type: "thread.auto-settle.set",
+          commandId: "disable-auto-settle",
+          threadId,
+          enabled: false,
+        },
+        {
+          type: "thread.auto-settle.set",
+          commandId: "enable-auto-settle",
+          threadId,
+          enabled: true,
         },
       ]);
     }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),

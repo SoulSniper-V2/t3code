@@ -366,6 +366,22 @@ describe("orchestration V2 contracts", () => {
     expect(event.payload.id).toBe(RunId.make("run-1"));
   });
 
+  it("decodes the per-thread automatic-settlement preference command", () => {
+    const command = decodeOrchestrationV2Command({
+      type: "thread.auto-settle.set",
+      commandId: "command-auto-settle-pref-1",
+      threadId: "thread-1",
+      enabled: false,
+    });
+
+    expect(command.type).toBe("thread.auto-settle.set");
+    if (command.type !== "thread.auto-settle.set") {
+      throw new Error("expected thread.auto-settle.set");
+    }
+    expect(command.threadId).toBe(ThreadId.make("thread-1"));
+    expect(command.enabled).toBe(false);
+  });
+
   it("decodes app-owned delegated task commands", () => {
     const command = decodeOrchestrationV2Command({
       type: "delegated_task.request",
@@ -790,6 +806,7 @@ describe("orchestration V2 contracts", () => {
     });
 
     expect(projection.turnItems.map((item) => item.type)).toEqual(["command_execution"]);
+    expect(projection.thread.autoSettleDisabledAt).toBeNull();
 
     const boundedSnapshot = decodeOrchestrationV2ThreadStreamItem({
       kind: "snapshot",
@@ -983,6 +1000,7 @@ describe("orchestration V2 contracts", () => {
     });
 
     expect(shell.pendingBackgroundTasks).toEqual([]);
+    expect(shell.autoSettleDisabledAt).toBeNull();
   });
 });
 

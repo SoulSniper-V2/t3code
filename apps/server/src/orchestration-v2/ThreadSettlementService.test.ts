@@ -107,6 +107,7 @@ describe("isAutoSettlementCandidate", () => {
     expect(isAutoSettlementCandidate(shell({ archivedAt: at(-1) }), NOW_MS)).toBe(false);
     expect(isAutoSettlementCandidate(shell({ settledOverride: "settled" }), NOW_MS)).toBe(false);
     expect(isAutoSettlementCandidate(shell({ settledOverride: "active" }), NOW_MS)).toBe(false);
+    expect(isAutoSettlementCandidate(shell({ autoSettleDisabledAt: at(-1) }), NOW_MS)).toBe(false);
     expect(isAutoSettlementCandidate(shell({ pinnedAt: at(-1) }), NOW_MS)).toBe(false);
     expect(isAutoSettlementCandidate(shell({ activityRunStatus: "running" }), NOW_MS)).toBe(false);
     expect(

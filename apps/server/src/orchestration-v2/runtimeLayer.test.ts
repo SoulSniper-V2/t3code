@@ -9,6 +9,7 @@ import {
   CheckpointRef,
   CommandId,
   ContextTransferId,
+  EnvironmentId,
   EventId,
   MessageId,
   NodeId,
@@ -37,6 +38,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import { ServerConfig } from "../config.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationLayerLive } from "../orchestration/runtimeLayer.ts";
@@ -86,6 +88,11 @@ const PlatformTestLayer = Layer.merge(
 
 const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-orchestration-v2-runtime-layer-",
+});
+
+const ServerEnvironmentTestLayer = Layer.mock(ServerEnvironment.ServerEnvironment)({
+  getEnvironmentId: Effect.succeed(EnvironmentId.make("t3-orchestration-v2-runtime-layer-test")),
+  getDescriptor: Effect.succeed({} as never),
 });
 
 const modelSelection = {
@@ -169,6 +176,7 @@ const TestLayer = Layer.mergeAll(
   Layer.provide(SqlitePersistenceMemory),
   Layer.provide(CheckpointStoreTestLayer),
   Layer.provide(ServerConfigLayer),
+  Layer.provide(ServerEnvironmentTestLayer),
   Layer.provide(ServerSettingsService.layerTest()),
   Layer.provide(TestProviderInstanceRegistry),
   Layer.provide(GitWorkflowTestLayer),
@@ -181,6 +189,7 @@ const LegacyImportTestLayer = OrchestrationV2LayerLive.pipe(
   Layer.provideMerge(SqlitePersistenceMemory),
   Layer.provide(CheckpointStoreTestLayer),
   Layer.provide(ServerConfigLayer),
+  Layer.provide(ServerEnvironmentTestLayer),
   Layer.provide(ServerSettingsService.layerTest()),
   Layer.provide(TestProviderInstanceRegistry),
   Layer.provide(GitWorkflowTestLayer),
@@ -220,6 +229,7 @@ const ProjectDeletionTestLayer = Layer.mergeAll(
   Layer.provide(SqlitePersistenceMemory),
   Layer.provide(CheckpointStoreTestLayer),
   Layer.provide(ServerConfigLayer),
+  Layer.provide(ServerEnvironmentTestLayer),
   Layer.provide(ServerSettingsService.layerTest()),
   Layer.provide(TestProviderInstanceRegistry),
   Layer.provide(GitWorkflowTestLayer),
@@ -354,6 +364,7 @@ const SharedApplicationDataPlaneTestLayer = Layer.merge(
   Layer.provideMerge(SqlitePersistenceMemory),
   Layer.provide(CheckpointStoreTestLayer),
   Layer.provide(ServerConfigLayer),
+  Layer.provide(ServerEnvironmentTestLayer),
   Layer.provide(ServerSettingsService.layerTest()),
   Layer.provide(TestProviderInstanceRegistry),
   Layer.provide(GitWorkflowTestLayer),
@@ -1531,6 +1542,58 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
         orderKey: "a0",
       });
       assert.equal((yield* orchestrator.getThreadProjection(threadId)).thread.activeOrderKey, "a0");
+
+      // A per-thread opt-out survives in both the projection and shell, and
+      // wins over an otherwise fresh automatic-settlement snapshot.
+      yield* orchestrator.dispatch({
+        type: "thread.auto-settle.set",
+        commandId: CommandId.make("runtime-layer-lifecycle-auto-settle-disable"),
+        threadId,
+        enabled: false,
+      });
+      const initiallyDisabledProjection = yield* orchestrator.getThreadProjection(threadId);
+      assert.isNotNull(initiallyDisabledProjection.thread.autoSettleDisabledAt);
+      yield* orchestrator.dispatch({
+        type: "thread.auto-settle.set",
+        commandId: CommandId.make("runtime-layer-lifecycle-auto-settle-disable-again"),
+        threadId,
+        enabled: false,
+      });
+      const disabledProjection = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(
+        disabledProjection.thread.autoSettleDisabledAt,
+        initiallyDisabledProjection.thread.autoSettleDisabledAt,
+      );
+      assert.deepEqual(
+        disabledProjection.thread.updatedAt,
+        initiallyDisabledProjection.thread.updatedAt,
+      );
+      assert.isNotNull(disabledProjection.thread.autoSettleDisabledAt);
+      const disabledShell = (yield* orchestrator.getShellSnapshot()).threads.find(
+        (thread) => thread.id === threadId,
+      );
+      assert.deepEqual(
+        disabledShell?.autoSettleDisabledAt,
+        disabledProjection.thread.autoSettleDisabledAt,
+      );
+      const optedOutAutoSettle = yield* orchestrator
+        .dispatch({
+          type: "thread.auto-settle",
+          commandId: CommandId.make("runtime-layer-lifecycle-auto-settle-opted-out"),
+          threadId,
+          snapshotAt: disabledProjection.thread.updatedAt,
+        })
+        .pipe(Effect.flip);
+      assert.instanceOf(optedOutAutoSettle, OrchestratorDispatchError);
+      yield* orchestrator.dispatch({
+        type: "thread.auto-settle.set",
+        commandId: CommandId.make("runtime-layer-lifecycle-auto-settle-enable"),
+        threadId,
+        enabled: true,
+      });
+      assert.isNull(
+        (yield* orchestrator.getThreadProjection(threadId)).thread.autoSettleDisabledAt,
+      );
 
       // Automatic settlement (#8600): a stale snapshot loses to any change
       // made after it, and a fresh one settles like a user settle would.

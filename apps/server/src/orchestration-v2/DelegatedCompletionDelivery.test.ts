@@ -37,6 +37,7 @@ import { OrchestratorV2 } from "./Orchestrator.ts";
 import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
 import { OrchestrationV2EventSinkLayerLive, OrchestrationV2LayerLive } from "./runtimeLayer.ts";
 import { worktreeRepairDependenciesTestLayer } from "./ProviderTurnStartService.testkit.ts";
+import { layer as serverEnvironmentTestLayer } from "./testkit/ServerEnvironment.testkit.ts";
 
 const PlatformTestLayer = Layer.merge(
   NodeServices.layer,
@@ -122,6 +123,7 @@ const TestLayer = Layer.mergeAll(
   Layer.provide(SqlitePersistenceMemory),
   Layer.provide(CheckpointStoreTestLayer),
   Layer.provide(ServerConfigLayer),
+  Layer.provide(serverEnvironmentTestLayer),
   Layer.provide(ServerSettingsService.layerTest()),
   Layer.provide(TestProviderInstanceRegistry),
   Layer.provide(PlatformTestLayer),

@@ -37,6 +37,7 @@ import { worktreeRepairDependenciesTestLayer } from "./ProviderTurnStartService.
 import { OrchestrationV2LayerLive } from "./runtimeLayer.ts";
 import { layer as mcpSessionRegistryTestLayer } from "../mcp/McpSessionRegistry.testkit.ts";
 import { GROK_MODEL_SELECTION } from "./testkit/fixtures/shared.ts";
+import { layer as serverEnvironmentTestLayer } from "./testkit/ServerEnvironment.testkit.ts";
 
 const PlatformTestLayer = Layer.merge(
   NodeServices.layer,
@@ -93,6 +94,7 @@ const liveLayer = OrchestrationV2LayerLive.pipe(
   Layer.provide(SqlitePersistenceMemory),
   Layer.provide(checkpointStoreLayer),
   Layer.provide(serverConfigLayer),
+  Layer.provide(serverEnvironmentTestLayer),
   Layer.provide(serverSettingsLayer),
   Layer.provide(providerInstanceRegistryLayer),
   Layer.provide(ResetCreditCoordinator.layer),

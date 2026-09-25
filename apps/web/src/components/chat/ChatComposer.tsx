@@ -44,6 +44,7 @@ import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import type { EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
 import {
   isPasteAsTextShortcut,
@@ -235,7 +236,7 @@ import {
 } from "~/lib/composerContextRecords";
 import { matchComposerThreadItems } from "@t3tools/client-runtime/composerThreadItems";
 import { THREAD_CONTEXT_DROP_EVENT, threadContextDropTargetProps } from "./threadContextDrag";
-import { readThreadShell, useThreadShells } from "~/state/entities";
+import { readThreadShell, useProjects, useThreadShells } from "~/state/entities";
 import { requestConfirmDialog } from "~/confirmDialog";
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
 import type { ComposerContextClipboardFragment, ComposerContextRecord } from "@t3tools/contracts";
@@ -250,7 +251,6 @@ import {
 } from "~/state/pullRequests";
 import { useEnvironmentQuery } from "~/state/query";
 import { useDebouncedValue, useThreadSearch } from "~/state/queries";
-import { useProjects, useThreadShells } from "~/state/entities";
 import { useArchivedThreadSnapshots } from "~/lib/archivedThreadsState";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import { AccountSwitcher } from "./AccountSwitcher";
@@ -2513,9 +2513,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     );
     const query = pathTriggerQuery.trim().toLocaleLowerCase();
     if (query.length === 0) return [];
+    const updatedAtIso = (value: string | DateTime.Utc) =>
+      typeof value === "string" ? value : DateTime.formatIso(value);
     const titleMatches = [...shellById.values()]
       .filter((thread) => thread.title.toLocaleLowerCase().includes(query))
-      .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+      .toSorted((left, right) =>
+        updatedAtIso(right.updatedAt).localeCompare(updatedAtIso(left.updatedAt)),
+      );
     const contentMatches =
       query.length >= 2
         ? threadSearch.matches.flatMap((match) => {
@@ -2535,7 +2539,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       .slice(0, 8)
       .map((thread) => {
         const project = projectById.get(thread.projectId);
-        const provider = thread.session?.providerName ?? thread.modelSelection.instanceId;
+        const session =
+          "session" in thread && typeof thread.session === "object" && thread.session !== null
+            ? thread.session
+            : null;
+        const providerName =
+          session !== null && "providerName" in session && typeof session.providerName === "string"
+            ? session.providerName
+            : undefined;
+        const provider = providerName ?? thread.modelSelection.instanceId;
         return {
           id: `thread:${environmentId}:${thread.id}`,
           type: "thread",
@@ -5506,7 +5518,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const iconOnlyBlockCount = composerControlsCollapsed
     ? restingControlsIconOnlyBlockCount
     : expandedControlsLayout.iconOnlyBlockCount;
-  const composerControlsCompact = !composerControlsInStrip && isComposerFooterCompact;
+  const composerControlsCompact = !composerControlsVisibleInStrip && isComposerFooterCompact;
   const restingProviderTraitsPicker = renderProviderTraitsPicker({
     ...providerTraitsPickerInput,
     size: composerControlsCollapsed ? "xs" : "sm",
@@ -5664,7 +5676,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         <AccountSwitcher
           activeInstanceId={selectedInstanceId}
           instanceEntries={providerInstanceEntries}
-          size={composerControlsInStrip ? "xs" : "sm"}
+          size={composerControlsVisibleInStrip ? "xs" : "sm"}
           onSelectInstance={(instanceId) => {
             const defaultModel = modelOptionsByInstance.get(instanceId)?.[0]?.slug ?? "default";
             onProviderModelSelect(instanceId, defaultModel);
