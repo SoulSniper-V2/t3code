@@ -22,6 +22,9 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   resolveProviderInstanceEnabled,
+  ClineSettings,
+  CommandCodeSettings,
+  type AgentSessionSelection,
   type AgentSessionImportSource,
   type AgentSessionProjectCandidate,
   type AgentSessionProjectGit,
@@ -49,9 +52,14 @@ import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 
 import * as ServerConfig from "../config.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { expandHomePath } from "../pathExpansion.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ClineSessionReader from "./ClineSessionReader.ts";
+import * as CommandCodeSessionReader from "./CommandCodeSessionReader.ts";
+import * as OpenCodeSessionCli from "./OpenCodeSessionCli.ts";
+import type { OpenCodeSessionListEntry } from "./OpenCodeSessionReader.ts";
 import {
   createTranscriptJsonReader,
   createTranscriptJsonSelector,
@@ -94,6 +102,11 @@ const MAX_IMPORT_HISTORY_BYTES = 32 * 1024 * 1024;
 const MAX_IMPORT_BYTES = 4 * 1024 * 1024 * 1024;
 const MAX_IMPORT_TRANSCRIPTS = 100;
 const MAX_IMPORT_RECORDS = 100_000;
+/** Keep local-provider history fanout bounded when several accounts are configured. */
+const MAX_LOCAL_PROVIDER_HOMES = 8;
+const MAX_LOCAL_PROVIDER_SESSIONS = 500;
+const MAX_COMMAND_CODE_HISTORY_BYTES = 64 * 1024 * 1024;
+const MAX_COMMAND_CODE_HISTORY_RECORDS = 100_000;
 
 const TranscriptContentBlock = Schema.Struct({
   type: Schema.optional(Schema.String),
@@ -137,6 +150,8 @@ const TranscriptRecord = Schema.Struct({
 
 const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
 const decodeCodexSettings = Schema.decodeUnknownOption(CodexSettings);
+const decodeClineSettings = Schema.decodeUnknownOption(ClineSettings);
+const decodeCommandCodeSettings = Schema.decodeUnknownOption(CommandCodeSettings);
 const decodeTranscriptRecord = Schema.decodeUnknownOption(Schema.fromJsonString(TranscriptRecord));
 const decodeTranscriptValue = Schema.decodeUnknownOption(TranscriptRecord);
 const selectTranscriptPath = createTranscriptJsonSelector(TranscriptRecord);
@@ -166,6 +181,8 @@ export interface AgentSessionThread {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly messages: ReadonlyArray<AgentSessionThreadMessage>;
+  /** False when the source can be imported as history but cannot be resumed natively. */
+  readonly resumable?: boolean;
 }
 
 export type AgentSessionRecentThread =
@@ -177,6 +194,10 @@ export type AgentSessionRecentThread =
   | { readonly _tag: "AlreadyImported"; readonly source: AgentSessionImportSource }
   | { readonly _tag: "Duplicate"; readonly source: AgentSessionImportSource }
   | { readonly _tag: "Skipped" };
+
+export type AgentSessionRecentThreadMode =
+  | { readonly mode: "preview" }
+  | { readonly mode: "import"; readonly selectedSessions?: ReadonlyArray<AgentSessionSelection> };
 
 /** Service tag for agent session discovery. */
 export class AgentSessionScanner extends Context.Service<
@@ -192,6 +213,7 @@ export class AgentSessionScanner extends Context.Service<
     readonly recentThreads: (
       workspaceRoot: string,
       completedSources?: ReadonlyArray<AgentSessionImportSource>,
+      mode?: AgentSessionRecentThreadMode,
     ) => Stream.Stream<AgentSessionRecentThread, AgentSessionScanError>;
   }
 >()("t3/project/AgentSessionScanner") {}
@@ -208,7 +230,23 @@ interface RawCandidate {
   readonly transcripts: ReadonlyArray<{
     readonly filePath: string;
     readonly mtimeMs: number | null;
+    /** Read from bounded discovery metadata, before any full transcript import. */
+    readonly providerSessionId?: string | null;
   }>;
+}
+
+interface LocalThreadCandidate {
+  readonly thread: AgentSessionThread;
+  readonly source: AgentSessionImportSource;
+  readonly workspaceRoot: string;
+  readonly lastActiveAtMs: number | null;
+}
+
+interface OpenCodeSessionCandidate {
+  readonly listedSession: OpenCodeSessionListEntry;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly source: AgentSessionImportSource;
+  readonly lastActiveAtMs: number | null;
 }
 
 interface TranscriptCandidate {
@@ -562,29 +600,57 @@ function isT3ManagedWorktree(
   );
 }
 
-/** Extract `cwd` from a session-meta record, tolerating the shapes each CLI writes. */
-function extractCwd(line: string): string | null {
+/** Extract the workspace and native session ID when present in one metadata record. */
+function extractTranscriptMetadata(
+  line: string,
+  source?: AgentSessionSource,
+): { readonly cwd: string | null; readonly providerSessionId: string | null } {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
   } catch {
-    return null;
+    return { cwd: null, providerSessionId: null };
   }
-  if (typeof parsed !== "object" || parsed === null) return null;
+  if (typeof parsed !== "object" || parsed === null) {
+    return { cwd: null, providerSessionId: null };
+  }
 
   const record = parsed as Record<string, unknown>;
+  let cwd: string | null = null;
   if (typeof record.cwd === "string" && record.cwd.trim().length > 0) {
-    return record.cwd;
+    cwd = record.cwd;
   }
-  // Codex nests session metadata under `payload`.
   const payload = record.payload;
   if (typeof payload === "object" && payload !== null) {
-    const nested = (payload as Record<string, unknown>).cwd;
-    if (typeof nested === "string" && nested.trim().length > 0) {
-      return nested;
+    const nestedPayload = payload as Record<string, unknown>;
+    if (
+      cwd === null &&
+      typeof nestedPayload.cwd === "string" &&
+      nestedPayload.cwd.trim().length > 0
+    ) {
+      cwd = nestedPayload.cwd;
     }
   }
-  return null;
+
+  let providerSessionId: string | null = null;
+  if (source === "claudeAgent" && typeof record.sessionId === "string") {
+    providerSessionId = record.sessionId.trim() || null;
+  } else if (
+    source === "codex" &&
+    record.type === "session_meta" &&
+    typeof payload === "object" &&
+    payload !== null
+  ) {
+    const nestedPayload = payload as Record<string, unknown>;
+    const sessionId =
+      typeof nestedPayload.id === "string"
+        ? nestedPayload.id
+        : typeof nestedPayload.session_id === "string"
+          ? nestedPayload.session_id
+          : "";
+    providerSessionId = sessionId.trim() || null;
+  }
+  return { cwd, providerSessionId };
 }
 
 function transcriptIdentity(filePath: string, stats: FileSystem.File.Info) {
@@ -615,6 +681,10 @@ function sameTranscriptIdentity(
   );
 }
 
+function agentSessionSelectionKey(selection: AgentSessionSelection): string {
+  return `${selection.provider}\0${selection.providerInstanceId}\0${selection.providerSessionId}`;
+}
+
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -625,8 +695,15 @@ export const make = Effect.gen(function* () {
   const serverConfig = yield* ServerConfig.ServerConfig;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+  const processRunner = yield* ProcessRunner.ProcessRunner;
   const baseDir = path.resolve(serverConfig.baseDir);
   const worktreesDir = path.resolve(serverConfig.worktreesDir);
+  // `realPath` may resolve a system alias such as macOS `/var` to
+  // `/private/var`. Compare real candidate paths against a real configured
+  // worktrees root so symlinks into that directory remain excluded.
+  const realWorktreesDir = yield* fileSystem
+    .realPath(worktreesDir)
+    .pipe(Effect.orElseSucceed(() => worktreesDir));
   // Windows filesystems are case-insensitive, so path prefix checks there
   // must case fold.
   const foldWorktreeCase = (yield* HostProcessPlatform) === "win32";
@@ -656,7 +733,8 @@ export const make = Effect.gen(function* () {
     normalizeForWorktreeMatch(candidatePath, foldWorktreeCase).startsWith(
       normalizeForWorktreeMatch(baseDir, foldWorktreeCase),
     ) ||
-    isT3ManagedWorktree(candidatePath, worktreesDir, foldWorktreeCase);
+    isT3ManagedWorktree(candidatePath, worktreesDir, foldWorktreeCase) ||
+    isT3ManagedWorktree(candidatePath, realWorktreesDir, foldWorktreeCase);
 
   const listDirectory = (directory: string) =>
     fileSystem.readDirectory(directory).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
@@ -730,6 +808,7 @@ export const make = Effect.gen(function* () {
   // A large history snapshot can precede session metadata. Read bounded
   // chunks until a complete record names its cwd or the safety budget ends.
   const readCwd = Effect.fn("AgentSessionScanner.readCwd")(function* (
+    source: AgentSessionSource,
     transcript: TranscriptCandidate,
     budget: MetadataReadBudget,
   ) {
@@ -751,6 +830,11 @@ export const make = Effect.gen(function* () {
             let remaining = "";
             let bytesRead = 0;
             let recordsRead = 0;
+            // Claude transcript filenames are their stable session IDs. Codex
+            // rollout filenames are not, so its ID must come from session_meta.
+            const fallbackProviderSessionId =
+              source === "claudeAgent" ? path.basename(transcript.filePath, ".jsonl") : null;
+            let providerSessionId: string | null = null;
             const maxBytes = Math.min(MAX_TRANSCRIPT_SCAN_BYTES, transcript.size);
             const reserveRecord = () => {
               if (
@@ -766,7 +850,15 @@ export const make = Effect.gen(function* () {
             };
             const readLastRecord = () => {
               const record = remaining + decoder.decode();
-              return record.length === 0 || !reserveRecord() ? null : extractCwd(record.trim());
+              if (record.length === 0 || !reserveRecord()) return null;
+              const metadata = extractTranscriptMetadata(record.trim(), source);
+              providerSessionId ??= metadata.providerSessionId;
+              return metadata.cwd === null
+                ? null
+                : {
+                    cwd: metadata.cwd,
+                    providerSessionId: providerSessionId ?? fallbackProviderSessionId,
+                  };
             };
 
             while (bytesRead < maxBytes) {
@@ -793,8 +885,14 @@ export const make = Effect.gen(function* () {
 
               for (const line of lines) {
                 if (!reserveRecord()) return null;
-                const cwd = extractCwd(line.trim());
-                if (cwd !== null) return cwd;
+                const metadata = extractTranscriptMetadata(line.trim(), source);
+                providerSessionId ??= metadata.providerSessionId;
+                if (metadata.cwd !== null) {
+                  return {
+                    cwd: metadata.cwd,
+                    providerSessionId: providerSessionId ?? fallbackProviderSessionId,
+                  };
+                }
               }
             }
 
@@ -1050,24 +1148,38 @@ export const make = Effect.gen(function* () {
         cwd: string;
         providerInstanceId: ProviderInstanceId;
         lastActiveAtMs: number;
-        transcripts: Array<{ filePath: string; mtimeMs: number }>;
+        transcripts: Array<{
+          filePath: string;
+          mtimeMs: number;
+          providerSessionId: string | null;
+        }>;
       }
     >();
 
     for (const transcript of transcripts) {
-      const cwd = yield* readCwd(transcript, budget);
-      if (cwd === null) continue;
-      const key = `${transcript.providerInstanceId}\0${cwd}`;
+      const metadata = yield* readCwd(source, transcript, budget);
+      if (metadata === null) continue;
+      const key = `${transcript.providerInstanceId}\0${metadata.cwd}`;
       const existing = byOwnerAndCwd.get(key);
       if (existing) {
         existing.lastActiveAtMs = Math.max(existing.lastActiveAtMs, transcript.mtimeMs);
-        existing.transcripts.push(transcript);
+        existing.transcripts.push({
+          filePath: transcript.filePath,
+          mtimeMs: transcript.mtimeMs,
+          providerSessionId: metadata.providerSessionId,
+        });
       } else {
         byOwnerAndCwd.set(key, {
-          cwd,
+          cwd: metadata.cwd,
           providerInstanceId: transcript.providerInstanceId,
           lastActiveAtMs: transcript.mtimeMs,
-          transcripts: [transcript],
+          transcripts: [
+            {
+              filePath: transcript.filePath,
+              mtimeMs: transcript.mtimeMs,
+              providerSessionId: metadata.providerSessionId,
+            },
+          ],
         });
       }
     }
@@ -1088,7 +1200,264 @@ export const make = Effect.gen(function* () {
     );
 
     const raw: Array<RawCandidate> = [];
+    const localThreads: Array<LocalThreadCandidate> = [];
+    const openCodeSessions: Array<OpenCodeSessionCandidate> = [];
+    const localSessionCounts: Record<"cline" | "commandCode", number> = {
+      cline: 0,
+      commandCode: 0,
+    };
     let truncated = false;
+
+    const providerInstancesFor = (source: "cline" | "commandCode") => {
+      const instances: Array<{
+        readonly instanceId: ProviderInstanceId;
+        readonly config: ProviderInstanceConfig;
+      }> = Object.entries(settings.providerInstances)
+        .filter(
+          ([, instance]) => instance.driver === source && resolveProviderInstanceEnabled(instance),
+        )
+        .map(([instanceId, config]) => ({
+          instanceId: ProviderInstanceId.make(instanceId),
+          config,
+        }));
+      // Preserve legacy built-in auto-discovery unless its ID is explicitly
+      // configured (including an explicit disabled entry).
+      if (!Object.hasOwn(settings.providerInstances, source)) {
+        const legacyInstance = {
+          instanceId: ProviderInstanceId.make(source),
+          config: {
+            driver: ProviderDriverKind.make(source),
+            config: settings.providers[source],
+          },
+        };
+        if (resolveProviderInstanceEnabled(legacyInstance.config)) instances.push(legacyInstance);
+      }
+      instances.sort(
+        (left, right) => Number(left.instanceId !== source) - Number(right.instanceId !== source),
+      );
+      return instances;
+    };
+
+    const absoluteConfiguredPath = (value: string | undefined): string | undefined => {
+      if (value === undefined || value.trim().length === 0) return undefined;
+      const expanded = expandHomePath(value.trim());
+      return path.isAbsolute(expanded) ? path.resolve(expanded) : undefined;
+    };
+
+    const appendLocalSessions = (
+      source: "cline" | "commandCode",
+      providerInstanceId: ProviderInstanceId,
+      sessions: ReadonlyArray<{
+        readonly providerSessionId: string;
+        readonly title: string;
+        readonly model: string | null;
+        readonly workspaceRoot: string;
+        readonly createdAt: string;
+        readonly updatedAt: string;
+        readonly messages: ReadonlyArray<AgentSessionThreadMessage>;
+        readonly fileIdentity:
+          | ClineSessionReader.ClineSessionFileIdentity
+          | CommandCodeSessionReader.CommandCodeSessionFileIdentity;
+      }>,
+    ) => {
+      for (const session of sessions) {
+        if (localSessionCounts[source] >= MAX_LOCAL_PROVIDER_SESSIONS) {
+          truncated = true;
+          break;
+        }
+        localSessionCounts[source] += 1;
+        const thread: AgentSessionThread = {
+          source,
+          providerInstanceId,
+          providerSessionId: session.providerSessionId,
+          title: session.title,
+          model: session.model,
+          createdAt: session.createdAt,
+          updatedAt: session.updatedAt,
+          messages: session.messages,
+          // Both imports are read-only previews; neither exposes a stable
+          // headless resume operation to T3.
+          resumable: false,
+        };
+        const importSource: AgentSessionImportSource = {
+          ...session.fileIdentity,
+          provider: source,
+          providerInstanceId,
+          providerSessionId: session.providerSessionId,
+        };
+        const lastActiveAtMs = session.fileIdentity.mtimeMs ?? Date.parse(session.updatedAt);
+        localThreads.push({
+          thread,
+          source: importSource,
+          workspaceRoot: session.workspaceRoot,
+          lastActiveAtMs: Number.isFinite(lastActiveAtMs) ? lastActiveAtMs : null,
+        });
+        raw.push({
+          cwd: session.workspaceRoot,
+          source,
+          providerInstanceId,
+          threadCount: 1,
+          lastActiveAtMs: Number.isFinite(lastActiveAtMs) ? lastActiveAtMs : null,
+          transcripts: [
+            { filePath: session.fileIdentity.filePath, mtimeMs: session.fileIdentity.mtimeMs },
+          ],
+        });
+      }
+    };
+
+    // Cline and Command Code are read-only transcript sources. Their history
+    // readers use standard per-user homes by default, while provider instance
+    // environment overrides keep separately configured accounts discoverable.
+    for (const source of ["cline", "commandCode"] as const) {
+      const allInstances = providerInstancesFor(source);
+      const homes: Array<{
+        readonly homePath: string;
+        readonly providerInstanceId: ProviderInstanceId;
+        readonly environment: NodeJS.ProcessEnv;
+      }> = [];
+      const seenRoots = new Set<string>();
+      for (const { instanceId, config: instance } of allInstances) {
+        const decodedSettings =
+          source === "cline"
+            ? decodeClineSettings(instance.config ?? {})
+            : decodeCommandCodeSettings(instance.config ?? {});
+        if (Option.isNone(decodedSettings)) continue;
+
+        const configuredValue = (name: string): string | undefined => {
+          const override = instance.environment?.findLast((variable) => variable.name === name);
+          return override?.value ?? hostEnvironment[name];
+        };
+        const homePath =
+          absoluteConfiguredPath(configuredValue("HOME")) ??
+          absoluteConfiguredPath(configuredValue("USERPROFILE")) ??
+          absoluteConfiguredPath(NodeOS.homedir());
+        if (homePath === undefined) continue;
+
+        const environment: NodeJS.ProcessEnv = { HOME: homePath };
+        if (source === "cline") {
+          for (const name of [
+            "USERPROFILE",
+            "CLINE_DATA_DIR",
+            "CLINE_DIR",
+            "CLINE_SESSION_DATA_DIR",
+          ]) {
+            const value = absoluteConfiguredPath(configuredValue(name));
+            if (value !== undefined) environment[name] = value;
+          }
+        }
+        const sessionsRoot =
+          source === "cline"
+            ? ClineSessionReader.resolveClineSessionsDir(
+                environment,
+                ClineSessionReader.resolveClineDataDir(environment, homePath),
+              )
+            : path.join(homePath, ".commandcode", "projects");
+        const dataRootIdentity = yield* directoryIdentity(sessionsRoot);
+        const rootKey = `${source}\0${dataRootIdentity}`;
+        if (seenRoots.has(rootKey)) continue;
+        seenRoots.add(rootKey);
+        homes.push({ homePath, providerInstanceId: instanceId, environment });
+      }
+
+      if (homes.length > MAX_LOCAL_PROVIDER_HOMES) {
+        truncated = true;
+        homes.length = MAX_LOCAL_PROVIDER_HOMES;
+      }
+      const totalHomes = homes.length;
+      const sessionLimitPerHome = Math.max(
+        1,
+        Math.floor(MAX_LOCAL_PROVIDER_SESSIONS / Math.max(1, totalHomes)),
+      );
+      for (const home of homes) {
+        if (source === "cline") {
+          const sessions = yield* ClineSessionReader.readClineSessionHistory({
+            env: home.environment,
+            homeDir: home.homePath,
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+            Effect.orElseSucceed(() => []),
+          );
+          if (sessions.length > sessionLimitPerHome) truncated = true;
+          appendLocalSessions(
+            source,
+            home.providerInstanceId,
+            sessions.slice(0, sessionLimitPerHome),
+          );
+          continue;
+        }
+
+        const sessions = yield* CommandCodeSessionReader.discoverCommandCodeSessions({
+          homePath: home.homePath,
+          maxTranscripts: sessionLimitPerHome,
+          maxTranscriptBytes: 8 * 1024 * 1024,
+          maxTotalBytes: Math.floor(MAX_COMMAND_CODE_HISTORY_BYTES / Math.max(1, totalHomes)),
+          maxTotalRecords: Math.floor(MAX_COMMAND_CODE_HISTORY_RECORDS / Math.max(1, totalHomes)),
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        );
+        truncated ||= sessions.truncated;
+        appendLocalSessions(
+          source,
+          home.providerInstanceId,
+          sessions.sessions.map((session) => ({
+            providerSessionId: session.sessionId,
+            title: session.title,
+            model: session.model,
+            workspaceRoot: session.workspaceRoot,
+            createdAt: session.createdAt,
+            updatedAt: session.updatedAt,
+            messages: session.messages,
+            fileIdentity: session.fileIdentity,
+          })),
+        );
+      }
+    }
+
+    // OpenCode exposes session metadata through its ordinary CLI. Listing is
+    // metadata-only; the transcript is exported later only for selected IDs.
+    const openCodeListing = yield* OpenCodeSessionCli.listOpenCodeSessions({
+      runner: processRunner,
+      environment: hostEnvironment,
+      cwd: homeDir,
+    });
+    if (!openCodeListing.ok) {
+      if (openCodeListing.error !== "command-unavailable") truncated = true;
+    } else {
+      if (openCodeListing.value.skippedCount > 0 || openCodeListing.value.truncated) {
+        truncated = true;
+      }
+      const providerInstanceId = ProviderInstanceId.make("opencode");
+      for (const listedSession of openCodeListing.value.sessions) {
+        const parsedUpdatedAt =
+          listedSession.updatedAt === null ? null : Date.parse(listedSession.updatedAt);
+        const lastActiveAtMs =
+          parsedUpdatedAt !== null && Number.isFinite(parsedUpdatedAt) ? parsedUpdatedAt : null;
+        const source: AgentSessionImportSource = {
+          provider: "opencode",
+          providerInstanceId,
+          providerSessionId: listedSession.sessionId,
+          // OpenCode owns this history in its local store, not a public file
+          // path. A stable provider URI keeps the import cursor deterministic.
+          filePath: `opencode-session:${listedSession.sessionId}`,
+          size: 0,
+          mtimeMs: lastActiveAtMs,
+          device: 0,
+          inode: null,
+          birthtimeMs: null,
+        };
+        openCodeSessions.push({ listedSession, providerInstanceId, source, lastActiveAtMs });
+        raw.push({
+          cwd: listedSession.directory,
+          source: "opencode",
+          providerInstanceId,
+          threadCount: 1,
+          lastActiveAtMs,
+          transcripts: [],
+        });
+      }
+    }
 
     for (const source of ["claudeAgent", "codex"] as const) {
       const instances: Array<{
@@ -1193,14 +1562,23 @@ export const make = Effect.gen(function* () {
       truncated ||= metadataBudget.truncated;
     }
 
-    return { candidates: raw, truncated };
+    return { candidates: raw, localThreads, openCodeSessions, truncated };
   });
 
   let cachedCandidates: ReadonlyArray<RawCandidate> | null = null;
+  let cachedLocalThreads: ReadonlyArray<LocalThreadCandidate> | null = null;
+  let cachedOpenCodeSessions: ReadonlyArray<OpenCodeSessionCandidate> | null = null;
 
   const scan: AgentSessionScanner["Service"]["scan"] = Effect.gen(function* () {
-    const { candidates: raw, truncated } = yield* collectCandidates();
+    const {
+      candidates: raw,
+      localThreads,
+      openCodeSessions,
+      truncated,
+    } = yield* collectCandidates();
     cachedCandidates = raw;
+    cachedLocalThreads = localThreads;
+    cachedOpenCodeSessions = openCodeSessions;
 
     // Filesystem identity merges symlinks and case aliases without collapsing
     // distinct case-sensitive directories.
@@ -1328,6 +1706,7 @@ export const make = Effect.gen(function* () {
   const prepareRecentThreads = Effect.fn("AgentSessionScanner.prepareRecentThreads")(function* (
     workspaceRoot: string,
     completedSources: ReadonlyArray<AgentSessionImportSource>,
+    mode: AgentSessionRecentThreadMode = { mode: "preview" },
   ) {
     const root = path.resolve(expandHomePath(workspaceRoot));
     const realRoot = yield* fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root));
@@ -1336,14 +1715,36 @@ export const make = Effect.gen(function* () {
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
     const cutoffMs = nowMs - RECENT_THREAD_WINDOW_MS;
 
-    const candidates = cachedCandidates ?? (yield* collectCandidates()).candidates;
-    cachedCandidates = candidates;
+    let candidates = cachedCandidates;
+    let localThreads = cachedLocalThreads;
+    let openCodeSessions = cachedOpenCodeSessions;
+    if (candidates === null || localThreads === null || openCodeSessions === null) {
+      const collected = yield* collectCandidates();
+      candidates ??= collected.candidates;
+      localThreads ??= collected.localThreads;
+      openCodeSessions ??= collected.openCodeSessions;
+      cachedCandidates = candidates;
+      cachedLocalThreads = localThreads;
+      cachedOpenCodeSessions = openCodeSessions;
+    }
+    const selectedKeys =
+      mode.mode === "import" && mode.selectedSessions !== undefined
+        ? new Set(mode.selectedSessions.map(agentSessionSelectionKey))
+        : null;
+    const isSelected = (
+      provider: AgentSessionSource,
+      providerInstanceId: ProviderInstanceId,
+      providerSessionId: string,
+    ) =>
+      selectedKeys === null ||
+      selectedKeys.has(`${provider}\0${providerInstanceId}\0${providerSessionId}`);
 
     const eligibleTranscripts: Array<{
       readonly candidate: RawCandidate;
       readonly transcript: RawCandidate["transcripts"][number] & { readonly mtimeMs: number };
     }> = [];
     for (const candidate of candidates) {
+      if (candidate.source === "cline" || candidate.source === "commandCode") continue;
       const expanded = expandHomePath(candidate.cwd.trim());
       if (!path.isAbsolute(expanded)) continue;
       const resolved = path.resolve(expanded);
@@ -1354,6 +1755,21 @@ export const make = Effect.gen(function* () {
           transcript.mtimeMs === null ||
           transcript.mtimeMs < cutoffMs ||
           transcript.mtimeMs > nowMs
+        ) {
+          continue;
+        }
+        // In explicit import mode, metadata is the gate to expensive history
+        // reads. Unknown IDs are skipped rather than opening an unselected
+        // transcript and filtering only after parsing it.
+        if (
+          mode.mode === "import" &&
+          mode.selectedSessions !== undefined &&
+          (transcript.providerSessionId == null ||
+            !isSelected(
+              candidate.source,
+              candidate.providerInstanceId,
+              transcript.providerSessionId,
+            ))
         ) {
           continue;
         }
@@ -1376,10 +1792,209 @@ export const make = Effect.gen(function* () {
       (source) => `${source.providerInstanceId}\0${source.filePath}`,
     );
     const importedSessions = new Set<string>();
+    const eligibleLocalThreads: Array<LocalThreadCandidate> = [];
+    for (const candidate of localThreads) {
+      if (
+        !isSelected(
+          candidate.thread.source,
+          candidate.thread.providerInstanceId,
+          candidate.thread.providerSessionId,
+        ) ||
+        candidate.lastActiveAtMs === null ||
+        candidate.lastActiveAtMs < cutoffMs ||
+        candidate.lastActiveAtMs > nowMs
+      ) {
+        continue;
+      }
+      const expanded = expandHomePath(candidate.workspaceRoot.trim());
+      if (!path.isAbsolute(expanded)) continue;
+      const resolved = path.resolve(expanded);
+      if (isExcludedProjectPath(resolved)) continue;
+      if ((yield* directoryIdentity(resolved)) !== rootIdentity) continue;
+      eligibleLocalThreads.push(candidate);
+    }
+    eligibleLocalThreads.sort(
+      (left, right) => (right.lastActiveAtMs ?? 0) - (left.lastActiveAtMs ?? 0),
+    );
+    const localThreadOutcomes = Stream.fromIteratorSucceed(eligibleLocalThreads.values(), 1).pipe(
+      Stream.mapEffect((candidate) =>
+        Effect.gen(function* () {
+          const source = candidate.source;
+          const completed = completedByFile.get(`${source.providerInstanceId}\0${source.filePath}`);
+          const stats = yield* statOption(source.filePath);
+          if (Option.isNone(stats) || stats.value.type !== "File") {
+            return Option.some<AgentSessionRecentThread>({ _tag: "Skipped" });
+          }
+          const currentIdentity = transcriptIdentity(source.filePath, stats.value);
+          if (!sameTranscriptIdentity(source, currentIdentity)) {
+            return Option.some<AgentSessionRecentThread>({ _tag: "Skipped" });
+          }
+          const completedSource = completed?.find(
+            (completedCandidate) =>
+              completedCandidate.provider === candidate.thread.source &&
+              sameTranscriptIdentity(completedCandidate, currentIdentity),
+          );
+          const sessionKey = `${candidate.thread.providerInstanceId}\0${candidate.thread.providerSessionId}`;
+          if (completedSource !== undefined) {
+            if (importedSessions.has(sessionKey)) return Option.none<AgentSessionRecentThread>();
+            importedSessions.add(sessionKey);
+            return Option.some<AgentSessionRecentThread>({
+              _tag: "AlreadyImported",
+              source: completedSource,
+            });
+          }
+          if (importedSessions.has(sessionKey)) {
+            return Option.some<AgentSessionRecentThread>({ _tag: "Duplicate", source });
+          }
+          importedSessions.add(sessionKey);
+          return Option.some<AgentSessionRecentThread>({
+            _tag: "Importable",
+            thread: candidate.thread,
+            source,
+          });
+        }).pipe(importReadLock.withPermits(1)),
+      ),
+      Stream.map(Option.toArray),
+      Stream.flattenIterable,
+    );
+
+    const eligibleOpenCodeSessions = openCodeSessions
+      .filter(
+        (candidate) =>
+          isSelected("opencode", candidate.providerInstanceId, candidate.listedSession.sessionId) &&
+          candidate.lastActiveAtMs !== null &&
+          candidate.lastActiveAtMs >= cutoffMs &&
+          candidate.lastActiveAtMs <= nowMs,
+      )
+      .filter((candidate) => {
+        const workspace = expandHomePath(candidate.listedSession.directory.trim());
+        return path.isAbsolute(workspace) && !isExcludedProjectPath(path.resolve(workspace));
+      })
+      .sort((left, right) => (right.lastActiveAtMs ?? 0) - (left.lastActiveAtMs ?? 0));
+    const eligibleOpenCodeByWorkspace: Array<OpenCodeSessionCandidate> = [];
+    for (const candidate of eligibleOpenCodeSessions) {
+      const workspace = path.resolve(expandHomePath(candidate.listedSession.directory.trim()));
+      if ((yield* directoryIdentity(workspace)) === rootIdentity) {
+        eligibleOpenCodeByWorkspace.push(candidate);
+      }
+    }
+
+    const openCodeOutcomes: Array<AgentSessionRecentThread> = [];
+    const openCodeNeedsExport: Array<OpenCodeSessionCandidate> = [];
+    for (const candidate of eligibleOpenCodeByWorkspace) {
+      const source = candidate.source;
+      const completed = completedByFile.get(`${source.providerInstanceId}\0${source.filePath}`);
+      const completedSource = completed?.find(
+        (completedCandidate) =>
+          completedCandidate.provider === "opencode" &&
+          sameTranscriptIdentity(completedCandidate, source),
+      );
+      const sessionKey = `${candidate.providerInstanceId}\0${candidate.listedSession.sessionId}`;
+      if (completedSource !== undefined) {
+        if (importedSessions.has(sessionKey)) continue;
+        importedSessions.add(sessionKey);
+        openCodeOutcomes.push({ _tag: "AlreadyImported", source: completedSource });
+        continue;
+      }
+      if (importedSessions.has(sessionKey)) {
+        openCodeOutcomes.push({ _tag: "Duplicate", source });
+        continue;
+      }
+
+      const listedSession = candidate.listedSession;
+      const createdAt =
+        listedSession.createdAt ?? listedSession.updatedAt ?? "1970-01-01T00:00:00.000Z";
+      const updatedAt = listedSession.updatedAt ?? listedSession.createdAt ?? createdAt;
+      if (mode.mode === "preview") {
+        importedSessions.add(sessionKey);
+        openCodeOutcomes.push({
+          _tag: "Importable",
+          source,
+          thread: {
+            source: "opencode",
+            providerInstanceId: candidate.providerInstanceId,
+            providerSessionId: listedSession.sessionId,
+            title: listedSession.title,
+            model: null,
+            createdAt,
+            updatedAt,
+            messages: [],
+            resumable: true,
+          },
+        });
+      } else {
+        openCodeNeedsExport.push(candidate);
+      }
+    }
+
+    if (mode.mode === "import" && openCodeNeedsExport.length > 0) {
+      const groups = Map.groupBy(
+        openCodeNeedsExport,
+        (candidate) => candidate.listedSession.directory,
+      );
+      for (const [workspaceRoot, group] of groups) {
+        const exported = yield* OpenCodeSessionCli.exportSelectedOpenCodeSessions({
+          runner: processRunner,
+          environment: hostEnvironment,
+          cwd: homeDir,
+          workspaceRoot,
+          listedSessions: group.map((candidate) => candidate.listedSession),
+          selectedSessionIds: group.map((candidate) => candidate.listedSession.sessionId),
+        });
+        if (!exported.ok) {
+          if (mode.selectedSessions === undefined) {
+            for (let skipped = 0; skipped < group.length; skipped += 1) {
+              openCodeOutcomes.push({ _tag: "Skipped" });
+            }
+          }
+          continue;
+        }
+        if (mode.selectedSessions === undefined) {
+          for (let skipped = 0; skipped < exported.value.skippedCount; skipped += 1) {
+            openCodeOutcomes.push({ _tag: "Skipped" });
+          }
+        }
+        for (const session of exported.value.sessions) {
+          const candidate = group.find(
+            (entry) => entry.listedSession.sessionId === session.importedSession.sessionId,
+          );
+          if (candidate === undefined) continue;
+          const sessionKey = `${candidate.providerInstanceId}\0${session.importedSession.sessionId}`;
+          if (importedSessions.has(sessionKey)) {
+            openCodeOutcomes.push({ _tag: "Duplicate", source: candidate.source });
+            continue;
+          }
+          importedSessions.add(sessionKey);
+          const createdAt =
+            session.importedSession.createdAt ??
+            session.importedSession.updatedAt ??
+            "1970-01-01T00:00:00.000Z";
+          const updatedAt =
+            session.importedSession.updatedAt ?? session.importedSession.createdAt ?? createdAt;
+          openCodeOutcomes.push({
+            _tag: "Importable",
+            source: candidate.source,
+            thread: {
+              source: "opencode",
+              providerInstanceId: candidate.providerInstanceId,
+              providerSessionId: session.importedSession.sessionId,
+              title: session.importedSession.title,
+              model: null,
+              createdAt,
+              updatedAt,
+              messages: session.importedSession.messages,
+              resumable: true,
+            },
+          });
+        }
+      }
+    }
+    const openCodeOutcomeStream = Stream.fromIteratorSucceed(openCodeOutcomes.values(), 1);
+
     let bytesRemaining = MAX_IMPORT_BYTES;
     let transcriptsRemaining = MAX_IMPORT_TRANSCRIPTS;
     let recordsRemaining = MAX_IMPORT_RECORDS;
-    return Stream.fromIteratorSucceed(eligibleTranscripts.values(), 1).pipe(
+    const providerThreadOutcomes = Stream.fromIteratorSucceed(eligibleTranscripts.values(), 1).pipe(
       Stream.mapEffect(({ candidate, transcript }) =>
         Effect.gen(function* () {
           const completed = completedByFile.get(
@@ -1460,6 +2075,15 @@ export const make = Effect.gen(function* () {
           if (parsedThread === null) {
             return Option.some<AgentSessionRecentThread>({ _tag: "Skipped" });
           }
+          if (
+            !isSelected(
+              parsedThread.source,
+              parsedThread.providerInstanceId,
+              parsedThread.providerSessionId,
+            )
+          ) {
+            return Option.none<AgentSessionRecentThread>();
+          }
 
           const source: AgentSessionImportSource = {
             ...identity,
@@ -1482,14 +2106,21 @@ export const make = Effect.gen(function* () {
       Stream.map(Option.toArray),
       Stream.flattenIterable,
     );
+    return Stream.concat(
+      Stream.concat(localThreadOutcomes, openCodeOutcomeStream),
+      providerThreadOutcomes,
+    );
   });
 
   const recentThreads: AgentSessionScanner["Service"]["recentThreads"] = (
     workspaceRoot,
     completedSources = [],
-  ) => Stream.unwrap(prepareRecentThreads(workspaceRoot, completedSources));
+    mode = { mode: "preview" },
+  ) => Stream.unwrap(prepareRecentThreads(workspaceRoot, completedSources, mode));
 
   return AgentSessionScanner.of({ scan, recentThreads });
 });
 
-export const layer = Layer.effect(AgentSessionScanner, make);
+export const layer = Layer.effect(AgentSessionScanner, make).pipe(
+  Layer.provide(ProcessRunner.layer),
+);

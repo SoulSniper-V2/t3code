@@ -4,7 +4,8 @@
 
 ## What this fork adds
 
-- **Cline and Command Code providers**, with V2 adapters and usage reporting from their local transcripts.
+- **Cline and Command Code providers**, with V2 adapters, automatic local CLI discovery, usage reporting, reasoning controls, runtime identity prompts, and scoped MCP tool bridges.
+- **Selective session import** from Codex, Claude Code, Cline, Command Code, and OpenCode, with per-conversation previews and resumability where the source CLI supports it.
 - **Cross-chat compatibility for local CLI providers:** when a provider cannot use T3's MCP tools, an `@thread` reference supplies a bounded, recent excerpt; other V2 providers read attached threads on demand.
 - **Inline skill search:** invoke a skill with `/skill-name` anywhere in a prompt and repeat the trigger to add multiple skills to one draft.
 - **Thread workflows:** set persistent goals with `/goal`, hand a thread to another provider with `/handoff`, fork it with `/fork`, or start an independent thread through the `start_thread` MCP tool in the Synara Agent Gateway integration.

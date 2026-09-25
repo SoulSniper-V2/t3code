@@ -14,7 +14,7 @@ import { EventSinkV2 } from "../orchestration-v2/EventSink.ts";
 import { layer as idAllocatorLayer } from "../orchestration-v2/IdAllocator.ts";
 import { OrchestratorProjectionError, OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
 import { ProviderSessionRuntimeRepository } from "../persistence/ProviderSessionRuntime.ts";
-import { AgentSessionImporter, layer } from "./AgentSessionImporter.ts";
+import { AgentSessionImporter, isAgentSessionResumable, layer } from "./AgentSessionImporter.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 import { ProjectService } from "./ProjectService.ts";
 
@@ -22,6 +22,13 @@ const projectId = ProjectId.make("agent-session-import-project");
 const providerInstanceId = ProviderInstanceId.make("codex");
 const providerSessionId = "native-codex-thread";
 const threadId = ThreadId.make(`import:${providerInstanceId}:${providerSessionId}`);
+
+it("keeps history-only provider sessions marked non-resumable", () => {
+  expect(isAgentSessionResumable("cline")).toBe(false);
+  expect(isAgentSessionResumable("commandCode")).toBe(false);
+  expect(isAgentSessionResumable("codex")).toBe(true);
+  expect(isAgentSessionResumable("commandCode", true)).toBe(true);
+});
 
 it.effect("imports messages once and preserves the provider native resume binding", () => {
   const writes: Array<ReadonlyArray<OrchestrationV2DomainEvent>> = [];

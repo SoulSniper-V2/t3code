@@ -1,7 +1,9 @@
 import { useAuth } from "@clerk/react";
 import { useAtomValue } from "@effect/atom-react";
 import type {
+  AgentSessionListEntry,
   AgentSessionProjectCandidate,
+  AgentSessionSelection,
   EnvironmentId,
   ProjectId,
   ScopedProjectRef,
@@ -48,7 +50,7 @@ import {
 } from "../../onboarding/providerReadiness.logic";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { newProjectId, randomUUID } from "../../lib/utils";
-import { agentSessionImport } from "../../state/agentSessions";
+import { agentSessionImport, agentSessionList } from "../../state/agentSessions";
 import { readProjects, useProjects } from "../../state/entities";
 import { useEnvironments, usePrimaryEnvironment } from "../../state/environments";
 import { isOnboardingRelayEnvironment } from "../../onboarding/targetEnvironment.logic";
@@ -57,6 +59,7 @@ import { projectEnvironment } from "../../state/projects";
 import { serverEnvironment } from "../../state/server";
 import { terminalEnvironment } from "../../state/terminal";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { connectPairing } from "../../connection/onboarding";
 import { getProviderSummary } from "../settings/providerStatus";
 import { getDriverOption } from "../settings/providerDriverMeta";
@@ -73,7 +76,15 @@ import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
 import { ScrollArea } from "../ui/scroll-area";
 import { Spinner } from "../ui/spinner";
 import { WizardPanel, WizardSteps, WizardPopup, WizardHeader } from "../ui/wizard";
-import { Dialog } from "../ui/dialog";
+import {
+  Dialog,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogPanel,
+  DialogPopup,
+  DialogTitle,
+} from "../ui/dialog";
 import { toastManager } from "../ui/toast";
 import { cn } from "../../lib/utils";
 import { formatRelativeTime } from "../../timestampFormat";
@@ -955,10 +966,15 @@ function ImportStep({
   const { environments } = useEnvironments();
   const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
   const importThreads = useAtomCommand(agentSessionImport, { reportFailure: false });
+  const listSessions = useAtomQueryRunner(agentSessionList, { reportFailure: false });
   const projects = useProjects();
   const [selectedPaths, setSelectedPaths] = useState<ReadonlySet<string> | null>(null);
   const [importError, setImportError] = useState("");
   const [landingProject, setLandingProject] = useState<ScopedProjectRef | null>(null);
+  const [sessionPicker, setSessionPicker] = useState<ImportSessionPickerState | null>(null);
+  const [selectedSessionsByCandidate, setSelectedSessionsByCandidate] = useState<
+    ReadonlyMap<string, ReadonlyArray<AgentSessionSelection>>
+  >(new Map());
   // Keep project creation attempts separate from completed history imports so both can retry.
   const importedProjectsRef = useRef(new Map<string, ScopedProjectRef>());
   const projectsWithImportedHistoryRef = useRef(new Map<string, ScopedProjectRef>());
@@ -967,12 +983,15 @@ function ImportStep({
     new Map<string, { readonly projectId: ProjectId; readonly commandId: CommandId }>(),
   );
   const importGenerationRef = useRef(0);
+  const sessionPickerGenerationRef = useRef(0);
 
   // Ignore command completions after leaving the import step.
   useEffect(() => {
     importGenerationRef.current += 1;
+    sessionPickerGenerationRef.current += 1;
     return () => {
       importGenerationRef.current += 1;
+      sessionPickerGenerationRef.current += 1;
     };
   }, []);
 
@@ -1010,6 +1029,97 @@ function ImportStep({
     [selectedPaths, recent],
   );
   const selected = candidates.filter((candidate) => selectedKeys.has(candidate.key));
+
+  const openSessionPicker = async (candidate: ImportCandidate) => {
+    const generation = ++sessionPickerGenerationRef.current;
+    setSelectedPaths(
+      (current) => new Set([...(current ?? recent.map((item) => item.key)), candidate.key]),
+    );
+    setSessionPicker({
+      candidate,
+      sessions: [],
+      selectedKeys: new Set(),
+      skippedCount: 0,
+      loading: true,
+      error: null,
+    });
+    const result = await listSessions({
+      environmentId: candidate.environmentId,
+      input: {
+        workspaceRoot: candidate.path,
+        ...(candidate.projectId === undefined ? {} : { projectId: candidate.projectId }),
+      },
+    });
+    if (sessionPickerGenerationRef.current !== generation) return;
+    if (result._tag === "Success") {
+      const selectedEntries = selectedSessionsByCandidate.get(candidate.key);
+      const selectedKeysForProject = selectedEntries
+        ? new Set(selectedEntries.map(agentSessionSelectionKey))
+        : new Set(
+            result.value.sessions
+              .filter((session) => !session.alreadyImported)
+              .map(agentSessionSelectionKey),
+          );
+      setSessionPicker({
+        candidate,
+        sessions: result.value.sessions,
+        selectedKeys: selectedKeysForProject,
+        skippedCount: result.value.skippedCount,
+        loading: false,
+        error: null,
+      });
+      return;
+    }
+    if (result._tag === "Failure") {
+      setSessionPicker({
+        candidate,
+        sessions: [],
+        selectedKeys: new Set(),
+        skippedCount: 0,
+        loading: false,
+        error: String(squashAtomCommandFailure(result)),
+      });
+      return;
+    }
+    setSessionPicker({
+      candidate,
+      sessions: [],
+      selectedKeys: new Set(),
+      skippedCount: 0,
+      loading: false,
+      error: isAtomCommandInterrupted(result)
+        ? "Reading conversations was interrupted. Try again."
+        : "Could not read conversations. Try again.",
+    });
+  };
+
+  const closeSessionPicker = () => {
+    sessionPickerGenerationRef.current += 1;
+    setSessionPicker(null);
+  };
+
+  const saveSessionSelection = () => {
+    if (sessionPicker === null) return;
+    setSelectedSessionsByCandidate((current) => {
+      const next = new Map(current);
+      next.set(
+        sessionPicker.candidate.key,
+        sessionPicker.sessions
+          .filter(
+            (session) =>
+              !session.alreadyImported &&
+              sessionPicker.selectedKeys.has(agentSessionSelectionKey(session)),
+          )
+          .map(({ provider, providerInstanceId, providerSessionId }) => ({
+            provider,
+            providerInstanceId,
+            providerSessionId,
+          })),
+      );
+      return next;
+    });
+    closeSessionPicker();
+  };
 
   const finishAfterImport = () => {
     const projectRef = resolveOnboardingLandingProject(
@@ -1098,7 +1208,13 @@ function ImportStep({
 
       const threadImportResult = await importThreads({
         environmentId,
-        input: { projectId, expectedWorkspaceRoot: candidate.path },
+        input: {
+          projectId,
+          expectedWorkspaceRoot: candidate.path,
+          ...(selectedSessionsByCandidate.has(candidate.key)
+            ? { selectedSessions: selectedSessionsByCandidate.get(candidate.key) ?? [] }
+            : {}),
+        },
       });
       if (
         importGeneration !== importGenerationRef.current ||
@@ -1233,7 +1349,7 @@ function ImportStep({
                   </div>
                 ) : scanCandidates.length === 0 ? (
                   <p className="py-2 text-sm text-muted-foreground">
-                    No existing Claude Code or Codex projects found.
+                    No existing agent projects found.
                   </p>
                 ) : null}
                 {scan.data?.truncated ? (
@@ -1245,12 +1361,187 @@ function ImportStep({
                   candidates={scanCandidates}
                   selectedKeys={selectedKeys}
                   onSelectionChange={setSelectedPaths}
+                  onChooseSessions={openSessionPicker}
+                  selectedSessionCounts={
+                    new Map(
+                      [...selectedSessionsByCandidate].map(([key, sessions]) => [
+                        key,
+                        sessions.length,
+                      ]),
+                    )
+                  }
                 />
               </fieldset>
             );
           })}
         </div>
       </ScrollArea>
+      <Dialog
+        open={sessionPicker !== null}
+        onOpenChange={(open) => {
+          if (!open) closeSessionPicker();
+        }}
+      >
+        <DialogPopup className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              {sessionPicker === null
+                ? "Choose conversations"
+                : `Chats from ${sessionPicker.candidate.title}`}
+            </DialogTitle>
+            <DialogDescription>
+              Choose which recent conversations to bring into T3 Code. The original provider history
+              stays untouched.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            <div className="flex flex-col gap-3">
+              {sessionPicker?.loading ? (
+                <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+                  <Spinner size="md" />
+                  Reading recent conversations…
+                </div>
+              ) : sessionPicker?.error ? (
+                <p className="text-sm text-destructive" role="alert">
+                  {sessionPicker.error}
+                </p>
+              ) : sessionPicker !== null && sessionPicker.sessions.length === 0 ? (
+                <p className="py-6 text-sm text-muted-foreground">
+                  No readable recent conversations were found for this project.
+                </p>
+              ) : sessionPicker !== null ? (
+                <>
+                  <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                    <span>
+                      {
+                        sessionPicker.sessions.filter(
+                          (session) =>
+                            !session.alreadyImported &&
+                            sessionPicker.selectedKeys.has(agentSessionSelectionKey(session)),
+                        ).length
+                      }{" "}
+                      of{" "}
+                      {sessionPicker.sessions.filter((session) => !session.alreadyImported).length}{" "}
+                      new chats selected
+                    </span>
+                    <div className="flex gap-1">
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        onClick={() =>
+                          setSessionPicker((current) =>
+                            current === null
+                              ? null
+                              : {
+                                  ...current,
+                                  selectedKeys: new Set(
+                                    current.sessions
+                                      .filter((session) => !session.alreadyImported)
+                                      .map(agentSessionSelectionKey),
+                                  ),
+                                },
+                          )
+                        }
+                      >
+                        Select all
+                      </Button>
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        onClick={() =>
+                          setSessionPicker((current) =>
+                            current === null ? null : { ...current, selectedKeys: new Set() },
+                          )
+                        }
+                      >
+                        Select none
+                      </Button>
+                    </div>
+                  </div>
+                  {sessionPicker.skippedCount > 0 ? (
+                    <p className="text-xs text-muted-foreground" role="status">
+                      {sessionPicker.skippedCount} conversation(s) could not be previewed and will
+                      not be included.
+                    </p>
+                  ) : null}
+                  <div className="max-h-72 space-y-1 overflow-y-auto pr-1">
+                    {sessionPicker.sessions.map((session) => {
+                      const key = agentSessionSelectionKey(session);
+                      const checked = sessionPicker.selectedKeys.has(key);
+                      const relative = formatRelativeTime(session.lastActiveAt);
+                      const relativeLabel =
+                        relative === null
+                          ? "Unknown time"
+                          : relative.suffix === null
+                            ? relative.value
+                            : `${relative.value} ${relative.suffix}`;
+                      return (
+                        <label
+                          key={key}
+                          className={cn(
+                            "flex items-start gap-3 rounded-lg border border-border/60 px-3 py-2.5",
+                            session.alreadyImported
+                              ? "cursor-default opacity-60"
+                              : "cursor-pointer hover:bg-muted/35",
+                          )}
+                        >
+                          <Checkbox
+                            checked={checked}
+                            disabled={session.alreadyImported || sessionPicker.loading}
+                            onCheckedChange={(value) =>
+                              setSessionPicker((current) => {
+                                if (current === null) return current;
+                                const next = new Set(current.selectedKeys);
+                                if (value === true) next.add(key);
+                                else next.delete(key);
+                                return { ...current, selectedKeys: next };
+                              })
+                            }
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="flex items-center justify-between gap-3">
+                              <span className="truncate text-sm font-medium">{session.title}</span>
+                              <span className="shrink-0 text-xs text-muted-foreground">
+                                {relativeLabel}
+                              </span>
+                            </span>
+                            <span className="mt-0.5 block text-xs text-muted-foreground">
+                              {getAgentSessionSourceLabel(session.provider)}
+                              {session.alreadyImported
+                                ? " · already in T3"
+                                : session.resumable
+                                  ? " · can resume"
+                                  : " · history only"}
+                            </span>
+                            {session.preview ? (
+                              <span className="mt-1 line-clamp-2 block text-xs leading-relaxed text-muted-foreground">
+                                {session.preview}
+                              </span>
+                            ) : null}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </>
+              ) : null}
+            </div>
+          </DialogPanel>
+          <DialogFooter>
+            <Button variant="ghost-muted" onClick={closeSessionPicker}>
+              Cancel
+            </Button>
+            <Button
+              disabled={
+                sessionPicker === null || sessionPicker.loading || sessionPicker.error !== null
+              }
+              onClick={saveSessionSelection}
+            >
+              Use {sessionPicker?.selectedKeys.size ?? 0} chats
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
       {importError ? <p className="mt-3 text-sm text-destructive">{importError}</p> : null}
       <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
         <Button
@@ -1279,6 +1570,38 @@ type ImportCandidate = AgentSessionProjectCandidate & {
   readonly key: string;
 };
 
+type ImportSessionPickerState = {
+  readonly candidate: ImportCandidate;
+  readonly sessions: ReadonlyArray<AgentSessionListEntry>;
+  readonly selectedKeys: ReadonlySet<string>;
+  readonly skippedCount: number;
+  readonly loading: boolean;
+  readonly error: string | null;
+};
+
+function agentSessionSelectionKey(
+  selection: Pick<AgentSessionSelection, "provider" | "providerInstanceId" | "providerSessionId">,
+) {
+  return `${selection.provider}\0${selection.providerInstanceId}\0${selection.providerSessionId}`;
+}
+
+function getAgentSessionSourceLabel(provider: AgentSessionSelection["provider"]): string {
+  switch (provider) {
+    case "claudeAgent":
+      return "Claude Code";
+    case "codex":
+      return "Codex";
+    case "cline":
+      return "Cline";
+    case "commandCode":
+      return "Command Code";
+    case "opencode":
+      return "OpenCode";
+    default:
+      return provider;
+  }
+}
+
 /**
  * Repositories first, newest activity on top. Clones of one repository share
  * a group with a tri-state checkbox. Folders that are not git repositories
@@ -1289,10 +1612,14 @@ function ImportCandidateList({
   candidates,
   selectedKeys,
   onSelectionChange,
+  onChooseSessions,
+  selectedSessionCounts,
 }: {
   readonly candidates: ReadonlyArray<ImportCandidate>;
   readonly selectedKeys: ReadonlySet<string>;
   readonly onSelectionChange: (next: ReadonlySet<string>) => void;
+  readonly onChooseSessions: (candidate: ImportCandidate) => void;
+  readonly selectedSessionCounts: ReadonlyMap<string, number>;
 }) {
   const { repositories, other } = useMemo(() => groupOnboardingProjects(candidates), [candidates]);
   const setKeys = (keys: ReadonlyArray<string>, checked: boolean) => {
@@ -1313,6 +1640,8 @@ function ImportCandidateList({
           group={group}
           selectedKeys={selectedKeys}
           onToggle={setKeys}
+          onChooseSessions={onChooseSessions}
+          selectedSessionCounts={selectedSessionCounts}
         />
       ))}
       {other.length > 0 ? (
@@ -1345,6 +1674,8 @@ function ImportCandidateList({
                 nested
                 checked={selectedKeys.has(candidate.key)}
                 onCheckedChange={(checked) => setKeys([candidate.key], checked)}
+                onChooseSessions={() => onChooseSessions(candidate)}
+                selectedSessionCount={selectedSessionCounts.get(candidate.key)}
               />
             ))}
           </CollapsiblePanel>
@@ -1358,10 +1689,14 @@ function ImportRepositoryGroup({
   group,
   selectedKeys,
   onToggle,
+  onChooseSessions,
+  selectedSessionCounts,
 }: {
   readonly group: OnboardingProjectGroup<ImportCandidate>;
   readonly selectedKeys: ReadonlySet<string>;
   readonly onToggle: (keys: ReadonlyArray<string>, checked: boolean) => void;
+  readonly onChooseSessions: (candidate: ImportCandidate) => void;
+  readonly selectedSessionCounts: ReadonlyMap<string, number>;
 }) {
   const keys = group.candidates.map((candidate) => candidate.key);
   const selectedCount = keys.filter((key) => selectedKeys.has(key)).length;
@@ -1375,6 +1710,8 @@ function ImportRepositoryGroup({
         {...(group.repository === null ? {} : { secondary: only.path })}
         checked={selectedKeys.has(only.key)}
         onCheckedChange={(checked) => onToggle([only.key], checked)}
+        onChooseSessions={() => onChooseSessions(only)}
+        selectedSessionCount={selectedSessionCounts.get(only.key)}
       />
     );
   }
@@ -1405,6 +1742,8 @@ function ImportRepositoryGroup({
             nested
             checked={selectedKeys.has(candidate.key)}
             onCheckedChange={(checked) => onToggle([candidate.key], checked)}
+            onChooseSessions={() => onChooseSessions(candidate)}
+            selectedSessionCount={selectedSessionCounts.get(candidate.key)}
           />
         ))}
       </CollapsiblePanel>
@@ -1419,6 +1758,8 @@ function ImportCandidateRow({
   nested = false,
   checked,
   onCheckedChange,
+  onChooseSessions,
+  selectedSessionCount,
 }: {
   readonly candidate: ImportCandidate;
   readonly label: string;
@@ -1426,34 +1767,43 @@ function ImportCandidateRow({
   readonly nested?: boolean;
   readonly checked: boolean;
   readonly onCheckedChange: (checked: boolean) => void;
+  readonly onChooseSessions: () => void;
+  readonly selectedSessionCount?: number | undefined;
 }) {
   return (
-    <label
-      className={cn(
-        "flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-muted/40 has-disabled:cursor-default",
-        nested && "pl-8",
-      )}
+    <div
+      className={cn("flex items-center gap-1 rounded-md pr-1 hover:bg-muted/40", nested && "ml-6")}
     >
-      <Checkbox checked={checked} onCheckedChange={(value) => onCheckedChange(value === true)} />
-      <Tooltip>
-        <TooltipTrigger
-          render={<span className="flex min-w-0 flex-1 items-baseline gap-2 truncate" />}
-        >
-          <span className={cn("truncate", nested ? "font-mono text-xs" : "text-sm font-medium")}>
-            {label}
-          </span>
-          {secondary !== undefined ? (
-            <span className="truncate font-mono text-2xs text-muted-foreground">{secondary}</span>
-          ) : null}
-        </TooltipTrigger>
-        <TooltipPopup variant="code">{candidate.path}</TooltipPopup>
-      </Tooltip>
-      <ImportRowMeta
-        sources={nested ? null : candidate.sources}
-        threadCount={candidate.threadCount}
-        lastActiveAt={candidate.lastActiveAt}
-      />
-    </label>
+      <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 px-2 py-1.5 has-disabled:cursor-default">
+        <Checkbox checked={checked} onCheckedChange={(value) => onCheckedChange(value === true)} />
+        <Tooltip>
+          <TooltipTrigger
+            render={<span className="flex min-w-0 flex-1 items-baseline gap-2 truncate" />}
+          >
+            <span className={cn("truncate", nested ? "font-mono text-xs" : "text-sm font-medium")}>
+              {label}
+            </span>
+            {secondary !== undefined ? (
+              <span className="truncate font-mono text-2xs text-muted-foreground">{secondary}</span>
+            ) : null}
+          </TooltipTrigger>
+          <TooltipPopup variant="code">{candidate.path}</TooltipPopup>
+        </Tooltip>
+        <ImportRowMeta
+          sources={nested ? null : candidate.sources}
+          threadCount={candidate.threadCount}
+          lastActiveAt={candidate.lastActiveAt}
+        />
+      </label>
+      <Button
+        variant="ghost"
+        size="xs"
+        aria-label={`Choose conversations from ${candidate.title}`}
+        onClick={onChooseSessions}
+      >
+        {selectedSessionCount === undefined ? "Choose chats" : `${selectedSessionCount} chats`}
+      </Button>
+    </div>
   );
 }
 
@@ -1467,7 +1817,7 @@ function ImportRowMeta({
   threadCount,
   lastActiveAt,
 }: {
-  readonly sources: ReadonlyArray<"claudeAgent" | "codex"> | null;
+  readonly sources: ReadonlyArray<AgentSessionSelection["provider"]> | null;
   readonly threadCount: number;
   readonly lastActiveAt: string | null;
 }) {

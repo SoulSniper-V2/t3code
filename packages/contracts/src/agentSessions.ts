@@ -3,7 +3,13 @@ import { IsoDateTime, NonNegativeInt, ProjectId, TrimmedNonEmptyString } from ".
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 /** Coding agent home directories the scanner knows how to read. */
-export const AgentSessionSource = Schema.Literals(["claudeAgent", "codex"]);
+export const AgentSessionSource = Schema.Literals([
+  "claudeAgent",
+  "codex",
+  "cline",
+  "commandCode",
+  "opencode",
+]);
 export type AgentSessionSource = typeof AgentSessionSource.Type;
 
 /** File identity saved with an imported session so bounded retries can skip unchanged history. */
@@ -19,6 +25,37 @@ export const AgentSessionImportSource = Schema.Struct({
   birthtimeMs: Schema.NullOr(Schema.Number),
 });
 export type AgentSessionImportSource = typeof AgentSessionImportSource.Type;
+
+/** Stable provider identity used to choose one transcript for import. */
+export const AgentSessionSelection = Schema.Struct({
+  provider: AgentSessionSource,
+  providerInstanceId: ProviderInstanceId,
+  providerSessionId: TrimmedNonEmptyString,
+});
+export type AgentSessionSelection = typeof AgentSessionSelection.Type;
+
+/** List recent importable sessions for a project candidate discovered by scan. */
+export const AgentSessionListInput = Schema.Struct({
+  workspaceRoot: TrimmedNonEmptyString,
+  projectId: Schema.optional(ProjectId),
+});
+export type AgentSessionListInput = typeof AgentSessionListInput.Type;
+
+export const AgentSessionListEntry = Schema.Struct({
+  ...AgentSessionSelection.fields,
+  title: TrimmedNonEmptyString,
+  preview: Schema.String,
+  lastActiveAt: IsoDateTime,
+  alreadyImported: Schema.Boolean,
+  resumable: Schema.Boolean,
+});
+export type AgentSessionListEntry = typeof AgentSessionListEntry.Type;
+
+export const AgentSessionListResult = Schema.Struct({
+  sessions: Schema.Array(AgentSessionListEntry),
+  skippedCount: NonNegativeInt,
+});
+export type AgentSessionListResult = typeof AgentSessionListResult.Type;
 
 /** Imported message ids retain their origin after event metadata is projected into SQLite. */
 export function isImportedAgentSessionMessageId(messageId: string): boolean {
@@ -76,6 +113,8 @@ export type AgentSessionScanResult = typeof AgentSessionScanResult.Type;
 export const AgentSessionImportInput = Schema.Struct({
   projectId: ProjectId,
   expectedWorkspaceRoot: Schema.optional(TrimmedNonEmptyString),
+  /** Omitted imports all recent sessions for older clients; an empty list imports none. */
+  selectedSessions: Schema.optional(Schema.Array(AgentSessionSelection)),
 });
 export type AgentSessionImportInput = typeof AgentSessionImportInput.Type;
 
