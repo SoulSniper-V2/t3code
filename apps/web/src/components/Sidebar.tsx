@@ -355,7 +355,7 @@ function SidebarProviderStack(props: {
       showBadge={showInstanceBadge}
       // Glyph dims, badge stays saturated; offset matches the composer trigger.
       iconClassName="size-3.5 opacity-60"
-      badgeClassName="right-[-0.1875rem] bottom-[-0.1875rem] h-3 min-w-3 px-0.5 provider-stack-badge-text"
+      badgeClassName="right-[-0.1875rem] bottom-[-0.1875rem] h-3 min-w-3 px-0.5 text-5xs"
     />
   );
   if (stack.length === 1) {
