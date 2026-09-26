@@ -1,4 +1,5 @@
 import {
+  Columns2Icon,
   Maximize2Icon,
   Minimize2Icon,
   PanelBottomIcon,
@@ -16,6 +17,7 @@ export interface PanelLayoutControlsProps {
   showThreadPanelControl?: boolean;
   showTerminalControl?: boolean;
   showRightPanelControl?: boolean;
+  showSplitChatControl?: boolean;
   terminalAvailable: boolean;
   terminalOpen: boolean;
   terminalShortcutLabel: string | null;
@@ -28,15 +30,18 @@ export interface PanelLayoutControlsProps {
   rightPanelOpen: boolean;
   rightPanelShortcutLabel: string | null;
   rightPanelUnavailableLabel?: string;
+  splitChatOpen?: boolean;
   onToggleTerminal: () => void;
   onToggleThreadPanel: () => void;
   onToggleRightPanel: () => void;
+  onOpenSplitChat?: () => void;
 }
 
 export const PanelLayoutControls = memo(function PanelLayoutControls({
   showThreadPanelControl = true,
   showTerminalControl = true,
   showRightPanelControl = true,
+  showSplitChatControl = false,
   terminalAvailable,
   terminalOpen,
   terminalShortcutLabel,
@@ -49,9 +54,11 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
   rightPanelOpen,
   rightPanelShortcutLabel,
   rightPanelUnavailableLabel = "Right panel is unavailable",
+  splitChatOpen = false,
   onToggleTerminal,
   onToggleThreadPanel,
   onToggleRightPanel,
+  onOpenSplitChat,
 }: PanelLayoutControlsProps) {
   const threadPanelToggle = (
     <Toggle
@@ -137,6 +144,24 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
               ? `Toggle right panel${rightPanelShortcutLabel ? ` (${rightPanelShortcutLabel})` : ""}`
               : rightPanelUnavailableLabel}
           </TooltipPopup>
+        </Tooltip>
+      ) : null}
+      {showSplitChatControl ? (
+        <Tooltip>
+          <TooltipTrigger render={<span className="flex shrink-0" />}>
+            <Toggle
+              className="shrink-0 [-webkit-app-region:no-drag]"
+              pressed={splitChatOpen}
+              onPressedChange={onOpenSplitChat}
+              aria-label="Open another chat beside this one"
+              aria-haspopup="dialog"
+              variant="ghost"
+              size="sm"
+            >
+              <Columns2Icon className="size-4" />
+            </Toggle>
+          </TooltipTrigger>
+          <TooltipPopup side="bottom">Open another chat beside this one</TooltipPopup>
         </Tooltip>
       ) : null}
     </div>

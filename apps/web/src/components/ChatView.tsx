@@ -402,6 +402,7 @@ import { MessagesTimeline, type MessagesTimelineHistoryControls } from "./chat/M
 import { resolveTimelineIsAtEnd, worktreeSetupAgentStarted } from "./chat/MessagesTimeline.logic";
 import { resolveComposerTimelineInset, resolveScrollToEndClearance } from "./composerFooterLayout";
 import { ChatHeader } from "./chat/ChatHeader";
+import { SplitThreadPicker } from "./chat/SplitThreadPicker";
 import { useRemoteOpenState } from "~/remoteOpen";
 import { shouldShowOpenInPicker } from "./chat/OpenInPicker.logic";
 import { useOpenFavoriteEditorShortcut } from "./chat/OpenInPickerShortcut";
@@ -770,6 +771,8 @@ type ChatViewProps =
       environmentId: EnvironmentId;
       threadId: ThreadId;
       onDiffPanelOpen?: () => void;
+      isSplitPane?: boolean;
+      onNavigateFromSplitPane?: (threadRef: ScopedThreadRef) => void;
       reserveTitleBarControlInset?: boolean;
       forceExpandedMobileComposer?: boolean;
       routeKind: "server";
@@ -779,6 +782,8 @@ type ChatViewProps =
       environmentId: EnvironmentId;
       threadId: ThreadId;
       onDiffPanelOpen?: () => void;
+      isSplitPane?: boolean;
+      onNavigateFromSplitPane?: (threadRef: ScopedThreadRef) => void;
       reserveTitleBarControlInset?: boolean;
       forceExpandedMobileComposer?: boolean;
       routeKind: "draft";
@@ -1461,6 +1466,46 @@ function chatActionErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "An error occurred.";
 }
 
+let activeChatKeyboardOwnerKey: string | null = null;
+
+function chatViewKeyForTarget(target: EventTarget | null): string | null {
+  if (typeof Element === "undefined" || !(target instanceof Element)) return null;
+  return target.closest<HTMLElement>("[data-chat-view-root]")?.dataset.chatViewRoot ?? null;
+}
+
+function isChatKeyboardEventOwned(
+  target: EventTarget | null,
+  routeThreadKey: string,
+  isSplitPane: boolean,
+): boolean {
+  const targetOwner = chatViewKeyForTarget(target);
+  if (targetOwner !== null) return targetOwner === routeThreadKey;
+
+  if (
+    activeChatKeyboardOwnerKey !== null &&
+    typeof document !== "undefined" &&
+    !Array.from(document.querySelectorAll<HTMLElement>("[data-chat-view-root]")).some(
+      (root) => root.dataset.chatViewRoot === activeChatKeyboardOwnerKey,
+    )
+  ) {
+    activeChatKeyboardOwnerKey = null;
+  }
+  return activeChatKeyboardOwnerKey === null
+    ? !isSplitPane
+    : activeChatKeyboardOwnerKey === routeThreadKey;
+}
+
+function focusSplitChatComposer(threadKey: string): void {
+  activeChatKeyboardOwnerKey = threadKey;
+  if (typeof document === "undefined") return;
+  window.requestAnimationFrame(() => {
+    const threadView = Array.from(
+      document.querySelectorAll<HTMLElement>("[data-chat-view-root]"),
+    ).find((root) => root.dataset.chatViewRoot === threadKey);
+    threadView?.querySelector<HTMLElement>('[data-testid="composer-editor"]')?.focus();
+  });
+}
+
 const ENVIRONMENT_UNAVAILABLE_SEND_TOAST_TRAIL_SIZE = 3;
 const EMPTY_HELD_TURN_DIFF_SUMMARIES: readonly never[] = [];
 const noopHeldTurnDiff = (_turnId: RunId, _filePath?: string) => {};
@@ -1486,6 +1531,8 @@ export default function ChatView(props: ChatViewProps) {
     threadId,
     routeKind,
     onDiffPanelOpen,
+    isSplitPane = false,
+    onNavigateFromSplitPane,
     reserveTitleBarControlInset = true,
     forceExpandedMobileComposer = false,
   } = props;
@@ -1504,6 +1551,34 @@ export default function ChatView(props: ChatViewProps) {
       currentRouteThreadKeyRef.current = null;
     };
   }, [routeThreadKey]);
+  useEffect(() => {
+    const updateKeyboardOwner = (event: Event) => {
+      const target = event.target;
+      const targetOwner = chatViewKeyForTarget(target);
+      if (targetOwner !== null) {
+        activeChatKeyboardOwnerKey = targetOwner;
+        return;
+      }
+      if (
+        typeof Element === "undefined" ||
+        !(target instanceof Element) ||
+        !target.closest(TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR)
+      ) {
+        if (!isSplitPane) activeChatKeyboardOwnerKey = routeThreadKey;
+      }
+    };
+    document.addEventListener("pointerdown", updateKeyboardOwner, true);
+    document.addEventListener("focusin", updateKeyboardOwner, true);
+    return () => {
+      document.removeEventListener("pointerdown", updateKeyboardOwner, true);
+      document.removeEventListener("focusin", updateKeyboardOwner, true);
+      if (isSplitPane && activeChatKeyboardOwnerKey === routeThreadKey) {
+        activeChatKeyboardOwnerKey =
+          document.querySelector<HTMLElement>("[data-chat-view-primary-root]")?.dataset
+            .chatViewRoot ?? null;
+      }
+    };
+  }, [isSplitPane, routeThreadKey]);
   const updateProjectScriptSettings = useAtomCommand(serverEnvironment.updateSettings, {
     reportFailure: false,
   });
@@ -2113,6 +2188,25 @@ export default function ChatView(props: ChatViewProps) {
     [activeThread],
   );
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
+  const [splitThreadPickerOpen, setSplitThreadPickerOpen] = useState(false);
+  const openSplitThreadPicker = useCallback(() => setSplitThreadPickerOpen(true), []);
+  const selectSplitThread = useCallback(
+    (targetThreadRef: ScopedThreadRef) => {
+      if (!activeThreadRef || !isServerThread || routeKind !== "server" || isSplitPane) return;
+      useRightPanelStore.getState().openThread(activeThreadRef, targetThreadRef);
+      focusSplitChatComposer(scopedThreadKey(targetThreadRef));
+      setSplitThreadPickerOpen(false);
+    },
+    [activeThreadRef, isServerThread, isSplitPane, routeKind],
+  );
+  const openRelatedThreadInSplitPane = useCallback(
+    (targetThreadRef: ScopedThreadRef) => {
+      if (!activeThreadRef || isSplitPane) return;
+      useRightPanelStore.getState().openThread(activeThreadRef, targetThreadRef);
+      focusSplitChatComposer(scopedThreadKey(targetThreadRef));
+    },
+    [activeThreadRef, isSplitPane],
+  );
   const previewPanelInlineSize = usePreviewPanelInlineSize(undefined, {
     containerWidth: workspaceLayoutWidth ?? undefined,
     widthStorageKey: `t3code:preview-panel-width:${activeThreadKey}`,
@@ -2157,7 +2251,7 @@ export default function ChatView(props: ChatViewProps) {
     setTimelineAnchor({ threadKey: activeThreadKey, messageId: null });
   }, [anchorRunSettled, activeThreadKey]);
   const activeRightPanelKind = useRightPanelStore((state) =>
-    selectActiveRightPanel(state.byThreadKey, activeThreadRef),
+    isSplitPane ? null : selectActiveRightPanel(state.byThreadKey, activeThreadRef),
   );
   const diffOpen = activeRightPanelKind === "diff";
   const explicitDiffOpenRef = useRef<ScopedThreadRef | null>(null);
@@ -2174,7 +2268,7 @@ export default function ChatView(props: ChatViewProps) {
     selectThreadRightPanelState(state.byThreadKey, activeThreadRef),
   );
   const activeRightPanelSurface = useRightPanelStore((state) =>
-    selectActiveRightPanelSurface(state.byThreadKey, activeThreadRef),
+    isSplitPane ? null : selectActiveRightPanelSurface(state.byThreadKey, activeThreadRef),
   );
   const activePreviewState = useThreadPreviewState(activeThreadRef);
   const activePreviewMiniPlayer = usePreviewMiniPlayerStore((state) =>
@@ -2193,8 +2287,9 @@ export default function ChatView(props: ChatViewProps) {
     () => [...new Set([...activeKnownTerminalIds, ...panelTerminalIds])],
     [activeKnownTerminalIds, panelTerminalIds],
   );
-  const previewPanelOpen = activeRightPanelKind === "preview" && isPreviewSupportedInRuntime();
-  const rightPanelOpen = rightPanelState.isOpen;
+  const previewPanelOpen =
+    !isSplitPane && activeRightPanelKind === "preview" && isPreviewSupportedInRuntime();
+  const rightPanelOpen = !isSplitPane && rightPanelState.isOpen;
   const { active: panelAnimationsActive, durationMs: panelAnimationDurationMs } =
     usePanelAnimationSettings();
   const activeTerminalDrawerPresence = usePanelPresence(
@@ -2218,12 +2313,14 @@ export default function ChatView(props: ChatViewProps) {
     activeThreadKey,
     panelAnimationDurationMs,
   );
-  const rightPanelPresent = rightPanelPresence.present;
+  const rightPanelPresent = !isSplitPane && rightPanelPresence.present;
   const rightPanelControlsInPanel =
     shouldUsePlanSidebarSheet && rightPanelPresent && rightPanelOpen;
   const rightPanelControlsAtRoot = rightPanelPresent && !shouldUsePlanSidebarSheet;
-  const renderedRightPanelSurface = rightPanelPresence.value?.activeSurface ?? null;
-  const renderedRightPanelSurfaces = rightPanelPresence.value?.surfaces ?? [];
+  const renderedRightPanelSurface = isSplitPane
+    ? null
+    : (rightPanelPresence.value?.activeSurface ?? null);
+  const renderedRightPanelSurfaces = isSplitPane ? [] : (rightPanelPresence.value?.surfaces ?? []);
   const previewMiniPlayerVisible = shouldRenderPreviewMiniPlayer(
     activePreviewMiniPlayer?.source ?? null,
     renderedRightPanelSurface,
@@ -5231,7 +5328,8 @@ export default function ChatView(props: ChatViewProps) {
     }
     if (!clientSettingsHydrated) return;
 
-    const proactivePanelsEnabled = settings.proactivePanelsEnabled && !shouldUsePlanSidebarSheet;
+    const proactivePanelsEnabled =
+      settings.proactivePanelsEnabled && !shouldUsePlanSidebarSheet && !isSplitPane;
     const eligibleLink =
       proactivePanelsEnabled &&
       shouldOpenProactivePullRequest(previousTargetKey, proactivePullRequestsKey);
@@ -5322,6 +5420,7 @@ export default function ChatView(props: ChatViewProps) {
     visiblePullRequestCount,
 
     settings.proactivePanelsEnabled,
+    isSplitPane,
     shouldUsePlanSidebarSheet,
     threadDetailLoading,
   ]);
@@ -5480,6 +5579,9 @@ export default function ChatView(props: ChatViewProps) {
     (surface: RightPanelSurface) => {
       if (!activeThreadRef) return;
       useRightPanelStore.getState().activateSurface(activeThreadRef, surface.id);
+      if (surface.kind === "thread") {
+        focusSplitChatComposer(scopedThreadKey(surface.threadRef));
+      }
       if (surface.kind === "preview" && surface.resourceId) {
         setActivePreviewTab(activeThreadRef, surface.resourceId);
       }
@@ -6019,6 +6121,7 @@ export default function ChatView(props: ChatViewProps) {
         // DOM focus on body, so these keys must also be heard at document.
         const handleKeyDown = (event: KeyboardEvent) => {
           if (
+            !isChatKeyboardEventOwned(event.target, routeThreadKey, isSplitPane) ||
             !(event.target instanceof Node) ||
             (!scrollNode.contains(event.target) &&
               event.target !== document.body &&
@@ -6094,7 +6197,13 @@ export default function ChatView(props: ChatViewProps) {
       }
       removeListeners?.();
     };
-  }, [activeThread?.id, isTimelineAtLogicalEnd, timelineRealContentOverflowsViewport]);
+  }, [
+    activeThread?.id,
+    isSplitPane,
+    isTimelineAtLogicalEnd,
+    routeThreadKey,
+    timelineRealContentOverflowsViewport,
+  ]);
 
   const onTimelineAnchorReady = useCallback((messageId: MessageId, anchorIndex: number) => {
     if (pendingTimelineAnchorRef.current === messageId) {
@@ -6264,14 +6373,14 @@ export default function ChatView(props: ChatViewProps) {
   }, [activeThreadKey]);
 
   useEffect(() => {
-    if (!activeThread?.id || terminalUiState.terminalOpen) return;
+    if (!activeThread?.id || terminalUiState.terminalOpen || isSplitPane) return;
     const frame = window.requestAnimationFrame(() => {
       focusComposer();
     });
     return () => {
       window.cancelAnimationFrame(frame);
     };
-  }, [activeThread?.id, focusComposer, terminalUiState.terminalOpen]);
+  }, [activeThread?.id, focusComposer, isSplitPane, terminalUiState.terminalOpen]);
 
   // Tabbing back into the app lands focus wherever it last was, often the right panel or the
   // body. Put it in the composer unless something that takes typing already holds it. The
@@ -6279,7 +6388,8 @@ export default function ChatView(props: ChatViewProps) {
   // terminal is a surface and is recognized by the predicate instead. Mobile is left alone so
   // returning to the app does not raise the keyboard.
   useEffect(() => {
-    if (!activeThread?.id || terminalUiState.terminalOpen || isMobileViewport) return;
+    if (!activeThread?.id || terminalUiState.terminalOpen || isMobileViewport || isSplitPane)
+      return;
     let frame: number | null = null;
     const onWindowFocus = () => {
       if (frame !== null) window.cancelAnimationFrame(frame);
@@ -6298,7 +6408,13 @@ export default function ChatView(props: ChatViewProps) {
       window.removeEventListener("focus", onWindowFocus);
       if (frame !== null) window.cancelAnimationFrame(frame);
     };
-  }, [activeThread?.id, focusComposer, isMobileViewport, terminalUiState.terminalOpen]);
+  }, [
+    activeThread?.id,
+    focusComposer,
+    isMobileViewport,
+    isSplitPane,
+    terminalUiState.terminalOpen,
+  ]);
 
   useEffect(() => {
     if (!activeThread?.id) return;
@@ -7206,6 +7322,7 @@ export default function ChatView(props: ChatViewProps) {
 
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
+      if (!isChatKeyboardEventOwned(event.target, routeThreadKey, isSplitPane)) return;
       if (preventRepeatedTerminalCloseShortcut(event, keybindings)) {
         event.stopPropagation();
         return;
@@ -7299,6 +7416,7 @@ export default function ChatView(props: ChatViewProps) {
       }
 
       if (command === "rightPanel.toggle") {
+        if (isSplitPane) return;
         event.preventDefault();
         event.stopPropagation();
         toggleRightPanel();
@@ -7306,6 +7424,7 @@ export default function ChatView(props: ChatViewProps) {
       }
 
       if (command === "threadPanel.toggle") {
+        if (isSplitPane) return;
         event.preventDefault();
         event.stopPropagation();
         toggleThreadPanel();
@@ -7377,6 +7496,7 @@ export default function ChatView(props: ChatViewProps) {
       }
 
       if (command === "diff.toggle") {
+        if (isSplitPane) return;
         event.preventDefault();
         event.stopPropagation();
         onToggleDiff();
@@ -7478,6 +7598,8 @@ export default function ChatView(props: ChatViewProps) {
     keybindings,
     handleUnsettleActiveThread,
     isServerThread,
+    isSplitPane,
+    routeThreadKey,
     onInterrupt,
     onToggleDiff,
     pinThread,
@@ -7498,6 +7620,7 @@ export default function ChatView(props: ChatViewProps) {
   // Route it to the composer like a typed key, which also expands it.
   useEffect(() => {
     const keyHandler = (event: KeyboardEvent) => {
+      if (!isChatKeyboardEventOwned(event.target, routeThreadKey, isSplitPane)) return;
       if (
         shouldRedirectInputToComposer(event) &&
         isPasteAsTextShortcut(event, isMacPlatform(navigator.platform))
@@ -7506,6 +7629,7 @@ export default function ChatView(props: ChatViewProps) {
       }
     };
     const handler = (event: ClipboardEvent) => {
+      if (!isChatKeyboardEventOwned(event.target, routeThreadKey, isSplitPane)) return;
       if (!activeThreadId || isCommandPaletteOpen()) return;
       if (getTerminalFocusOwner() !== null) return;
       if (composerRef.current?.isModelPickerOpen()) return;
@@ -7529,7 +7653,7 @@ export default function ChatView(props: ChatViewProps) {
       window.removeEventListener("keydown", keyHandler, true);
       window.removeEventListener("paste", handler, true);
     };
-  }, [activeThreadId, composerRef]);
+  }, [activeThreadId, composerRef, isSplitPane, routeThreadKey]);
 
   const [pendingRevert, setPendingRevert] = useState<{
     turnCount: number;
@@ -7767,12 +7891,17 @@ export default function ChatView(props: ChatViewProps) {
 
   const onOpenRelatedThread = useCallback(
     (threadId: ThreadId) => {
+      const relatedThreadRef = scopeThreadRef(environmentId, threadId);
+      if (isSplitPane) {
+        onNavigateFromSplitPane?.(relatedThreadRef);
+        return;
+      }
       void navigate({
         to: "/$environmentId/$threadId",
-        params: buildThreadRouteParams(scopeThreadRef(environmentId, threadId)),
+        params: buildThreadRouteParams(relatedThreadRef),
       });
     },
-    [environmentId, navigate],
+    [environmentId, isSplitPane, navigate, onNavigateFromSplitPane],
   );
 
   const onForkFromRun = useCallback(
@@ -7807,17 +7936,23 @@ export default function ChatView(props: ChatViewProps) {
         );
         return;
       }
-      await navigate({
-        to: "/$environmentId/$threadId",
-        params: buildThreadRouteParams(targetThreadRef),
-      });
+      if (isSplitPane) {
+        onNavigateFromSplitPane?.(targetThreadRef);
+      } else {
+        await navigate({
+          to: "/$environmentId/$threadId",
+          params: buildThreadRouteParams(targetThreadRef),
+        });
+      }
     },
     [
       activeEnvironmentUnavailable,
       activeThread,
       environmentId,
       forkThreadFromRun,
+      isSplitPane,
       navigate,
+      onNavigateFromSplitPane,
       setThreadError,
     ],
   );
@@ -9726,15 +9861,20 @@ export default function ChatView(props: ChatViewProps) {
     }
 
     if (failure === null) {
-      const navigateResult = await settlePromise(() =>
-        navigate({
+      const nextThreadRef = scopeThreadRef(activeThread.environmentId, nextThreadId);
+      const navigateResult = await settlePromise(() => {
+        if (isSplitPane) {
+          onNavigateFromSplitPane?.(nextThreadRef);
+          return Promise.resolve();
+        }
+        return navigate({
           to: "/$environmentId/$threadId",
           params: {
             environmentId: activeThread.environmentId,
             threadId: nextThreadId,
           },
-        }),
-      );
+        });
+      });
       failure = navigateResult._tag === "Failure" ? navigateResult : null;
     }
 
@@ -9776,9 +9916,11 @@ export default function ChatView(props: ChatViewProps) {
     createThread,
     deleteThread,
     isConnecting,
+    isSplitPane,
     isSendBusy,
     isServerThread,
     navigate,
+    onNavigateFromSplitPane,
     resetLocalDispatch,
     defaultRuntimeMode,
     startThreadTurn,
@@ -10070,7 +10212,17 @@ export default function ChatView(props: ChatViewProps) {
   }
 
   const rightPanelContent = activeThreadRef ? (
-    renderedRightPanelSurface?.kind === "preview" ? (
+    renderedRightPanelSurface?.kind === "thread" ? (
+      <ChatView
+        key={scopedThreadKey(renderedRightPanelSurface.threadRef)}
+        environmentId={renderedRightPanelSurface.threadRef.environmentId}
+        threadId={renderedRightPanelSurface.threadRef.threadId}
+        routeKind="server"
+        isSplitPane
+        reserveTitleBarControlInset={false}
+        onNavigateFromSplitPane={openRelatedThreadInSplitPane}
+      />
+    ) : renderedRightPanelSurface?.kind === "preview" ? (
       <Suspense fallback={null}>
         <PreviewPanel
           mode="embedded"
@@ -10294,17 +10446,21 @@ export default function ChatView(props: ChatViewProps) {
     rightPanelAvailable: activeProject !== null,
     rightPanelOpen,
     rightPanelShortcutLabel: shortcutLabelForCommand(keybindings, "rightPanel.toggle"),
+    showSplitChatControl:
+      !isSplitPane && routeKind === "server" && isServerThread && !shouldUsePlanSidebarSheet,
+    splitChatOpen: activeRightPanelKind === "thread",
+    onOpenSplitChat: openSplitThreadPicker,
     onToggleTerminal: toggleTerminalVisibility,
     onToggleThreadPanel: toggleThreadPanel,
     onToggleRightPanel: toggleRightPanel,
   } satisfies PanelLayoutControlsProps;
-  const panelToggleControls = (
+  const panelToggleControls = isSplitPane ? null : (
     <PanelLayoutControls
       {...panelToggleControlProps}
       showThreadPanelControl={!inlineRightPanelOwnsTitleBar}
     />
   );
-  const threadPanelHeaderControl = (
+  const threadPanelHeaderControl = isSplitPane ? null : (
     <div
       className="absolute top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] z-50 flex h-[var(--workspace-topbar-height)] items-center [-webkit-app-region:no-drag]"
       data-workspace-titlebar-controls
@@ -10313,10 +10469,11 @@ export default function ChatView(props: ChatViewProps) {
         {...panelToggleControlProps}
         showTerminalControl={false}
         showRightPanelControl={false}
+        showSplitChatControl={false}
       />
     </div>
   );
-  const panelLayoutControls = (
+  const panelLayoutControls = isSplitPane ? null : (
     <div
       className={cn(
         // Keep one viewport anchor inside the header's no-drag region. The
@@ -10355,6 +10512,8 @@ export default function ChatView(props: ChatViewProps) {
     <div
       ref={workspaceLayoutRef}
       className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background"
+      data-chat-view-root={routeThreadKey}
+      data-chat-view-primary-root={!isSplitPane ? "true" : undefined}
     >
       <Dialog
         open={
@@ -10379,6 +10538,14 @@ export default function ChatView(props: ChatViewProps) {
           ) : null}
         </WizardPopup>
       </Dialog>
+      {!isSplitPane && routeKind === "server" && activeThreadRef ? (
+        <SplitThreadPicker
+          open={splitThreadPickerOpen}
+          currentThreadRef={activeThreadRef}
+          onOpenChange={setSplitThreadPickerOpen}
+          onSelect={selectSplitThread}
+        />
+      ) : null}
       {rightPanelControlsAtRoot ? panelLayoutControls : null}
       <div
         className={cn(
@@ -10393,7 +10560,7 @@ export default function ChatView(props: ChatViewProps) {
           data-chat-header
           className={cn(
             "relative bg-background transition-[padding-left] duration-200 ease-linear motion-reduce:transition-none",
-            isElectron
+            isElectron && !isSplitPane
               ? cn(
                   "drag-region flex h-[var(--workspace-topbar-height)] min-h-[var(--workspace-topbar-height)] shrink-0 items-center px-3 sm:px-5",
                   reserveTitleBarControlInset &&
@@ -10407,7 +10574,7 @@ export default function ChatView(props: ChatViewProps) {
           {isElectron && rightPanelControlsAtRoot ? (
             <span
               aria-hidden
-              className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] h-[var(--workspace-topbar-height)] w-28 [-webkit-app-region:no-drag]"
+              className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] h-[var(--workspace-topbar-height)] w-32 [-webkit-app-region:no-drag]"
             />
           ) : null}
           {!rightPanelControlsAtRoot && !rightPanelControlsInPanel ? panelLayoutControls : null}
@@ -10419,7 +10586,8 @@ export default function ChatView(props: ChatViewProps) {
             activeThreadTitle={activeThread.title}
             activeProject={activeProject ?? null}
             rightPanelOpen={inlineRightPanelOwnsTitleBar}
-            onNewThreadInProject={handleNewThreadInActiveProject}
+            onNewThreadInProject={isSplitPane ? undefined : handleNewThreadInActiveProject}
+            isSplitPane={isSplitPane}
             {...(activeDraftLogicalProjectKey
               ? { onOpenProjectSettings: handleOpenDraftProjectSettings }
               : {})}
@@ -10923,7 +11091,7 @@ export default function ChatView(props: ChatViewProps) {
               </AlertDialogPopup>
             </AlertDialog>
 
-            <ThreadDetailsPanel {...threadDetailsPanelProps} />
+            <ThreadDetailsPanel {...threadDetailsPanelProps} forceHidden={isSplitPane} />
 
             {pullRequestDialogState ? (
               <PullRequestThreadDialog

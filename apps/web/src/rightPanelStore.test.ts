@@ -6,6 +6,7 @@ import {
   migratePersistedRightPanelState,
   pullRequestSurface,
   pullRequestSurfaceId,
+  rightPanelThreadSurfaceId,
   selectActiveRightPanel,
   selectActiveRightPanelSurface,
   selectSelectedRightPanelSurface,
@@ -27,6 +28,66 @@ beforeEach(() => {
 });
 
 describe("rightPanelStore", () => {
+  it("opens other chats as scoped, independently switchable panel tabs", () => {
+    const store = useRightPanelStore.getState();
+
+    store.openThread(refA, refB);
+    store.openThread(refA, refB);
+    store.openThread(refA, refA);
+
+    const stateA = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(stateA).toMatchObject({
+      isOpen: true,
+      activeSurfaceId: rightPanelThreadSurfaceId(refB),
+      surfaces: [{ kind: "thread", threadRef: refB }],
+    });
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refB).surfaces,
+    ).toHaveLength(0);
+
+    store.openThread(refB, refA);
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refB).surfaces,
+    ).toEqual([{ id: rightPanelThreadSurfaceId(refA), kind: "thread", threadRef: refA }]);
+  });
+
+  it("removes a deleted chat from split tabs and restores the previous surface", () => {
+    const store = useRightPanelStore.getState();
+    store.open(refA, "diff");
+    store.openThread(refA, refB);
+
+    store.removeThread(refB);
+
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "diff",
+      surfaces: [{ id: "diff", kind: "diff" }],
+    });
+  });
+
+  it("migrates valid chat surfaces and drops malformed or self-referencing chats", () => {
+    const migrated = migratePersistedRightPanelState({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: true,
+          activeSurfaceId: "thread:stale-id",
+          surfaces: [
+            { id: "thread:stale-id", kind: "thread", threadRef: refB },
+            { id: "thread:self", kind: "thread", threadRef: refA },
+            { id: "thread:bad", kind: "thread", threadRef: { environmentId: "env-1" } },
+            null,
+          ],
+        },
+      },
+    });
+
+    expect(migrated.byThreadKey["env-1:thread-A"]).toEqual({
+      isOpen: true,
+      activeSurfaceId: rightPanelThreadSurfaceId(refB),
+      surfaces: [{ id: rightPanelThreadSurfaceId(refB), kind: "thread", threadRef: refB }],
+    });
+  });
+
   it("gives each host/device its own tab and preserves renamed tabs", () => {
     const store = useRightPanelStore.getState();
     const android = {

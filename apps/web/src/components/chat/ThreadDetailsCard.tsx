@@ -17,12 +17,14 @@ export function ThreadDetailsCard({
   anchor,
   handle,
   onPresentationChange,
+  forceHidden = false,
   children,
 }: {
   threadRef: ScopedThreadRef;
   anchor: RefObject<Element | null>;
   handle: ReturnType<typeof PopoverCreateHandle>;
   onPresentationChange: (presentation: ThreadPanelPresentation) => void;
+  forceHidden?: boolean;
   children: (density: "full" | "compact" | "essential") => ReactNode;
 }) {
   const canvas = useChatCanvas();
@@ -37,12 +39,14 @@ export function ThreadDetailsCard({
     ? resolveThreadDetailsCardLayout({ container: canvas.container, ...canvas.layout })
     : null;
   const mode = placement ? "inline" : "popover";
-  const inlineOpen = useRightPanelStore((state) =>
+  const storedInlineOpen = useRightPanelStore((state) =>
     selectThreadPanelOpen(state.threadPanelVisibilityByThreadKey, threadRef, "inline"),
   );
-  const popoverOpen = useRightPanelStore((state) =>
+  const storedPopoverOpen = useRightPanelStore((state) =>
     selectThreadPanelOpen(state.threadPanelVisibilityByThreadKey, threadRef, "popover"),
   );
+  const inlineOpen = !forceHidden && storedInlineOpen;
+  const popoverOpen = !forceHidden && storedPopoverOpen;
   const [contentElement, setContentElement] = useState<HTMLDivElement | null>(null);
   const measurementKey = `${threadRef.environmentId}:${threadRef.threadId}:${preferredPlacement?.width ?? "popup"}`;
   const [measurements, setMeasurements] = useState({
