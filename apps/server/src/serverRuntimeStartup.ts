@@ -26,6 +26,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "./config.ts";
+import { flushCompileCache } from "./compileCache.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
@@ -446,12 +447,12 @@ const make = (options?: StartupOptions) =>
         const reconciliation = yield* providerRuntimeRecovery.reconcile("shutdown");
         yield* Effect.logInfo("V2 orchestration shutdown reconciliation completed", reconciliation);
       }).pipe(
-        Effect.catchCauseIf(
-          (cause) => !Cause.hasInterrupts(cause),
-          (cause) =>
-            Effect.logWarning("V2 orchestration shutdown reconciliation failed", {
-              cause: Cause.pretty(cause),
-            }),
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.void
+            : Effect.logWarning("V2 orchestration shutdown reconciliation failed", {
+                cause: Cause.pretty(cause),
+              }),
         ),
       ),
     );

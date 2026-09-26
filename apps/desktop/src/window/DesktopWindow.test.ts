@@ -105,7 +105,7 @@ function makeFakeBrowserWindow() {
     isMaximized: vi.fn(() => false),
     isMinimized: vi.fn(() => false),
     isVisible: vi.fn(() => true),
-    loadURL: vi.fn(() => Promise.resolve()),
+    loadURL: vi.fn((_url: string) => Promise.resolve()),
     maximize: vi.fn(),
     on: vi.fn((eventName: string, listener: (...args: readonly unknown[]) => void) => {
       windowListeners.set(eventName, listener);
@@ -1403,7 +1403,7 @@ describe("DesktopWindow", () => {
           const desktopWindow = yield* DesktopWindow.DesktopWindow;
 
           // 1. WSL-only boot shows the connecting splash.
-          yield* desktopWindow.showConnectingSplash;
+          yield* desktopWindow.showConnectingSplash();
           assert.equal(yield* Ref.get(scenario.createCalls), 1);
 
           // 2. Backend reports ready, but opening the real main fails. The pool
@@ -1439,7 +1439,7 @@ describe("DesktopWindow", () => {
         yield* Effect.gen(function* () {
           const desktopWindow = yield* DesktopWindow.DesktopWindow;
 
-          yield* desktopWindow.showConnectingSplash;
+          yield* desktopWindow.showConnectingSplash();
           assert.equal(yield* Ref.get(scenario.createCalls), 1);
 
           // Taskbar/dock activation during cold boot must bring the splash back
@@ -1451,6 +1451,23 @@ describe("DesktopWindow", () => {
       }),
   );
 
+  it.effect("shows a T3 Code startup label before the local backend is ready", () =>
+    Effect.gen(function* () {
+      const splash = makeFakeBrowserWindow();
+      const scenario = yield* makeSplashScenario([splash.window]);
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.showConnectingSplash("desktop");
+
+        const [dataUrl] = splash.loadURL.mock.calls[0] ?? [];
+        assert.isDefined(dataUrl);
+        assert.include(decodeURIComponent(dataUrl), "Starting T3 Code…");
+        assert.equal(yield* Ref.get(scenario.createCalls), 1);
+      }).pipe(Effect.provide(scenario.layer));
+    }),
+  );
+
   it.effect("does not dispatch menu actions to the splash before the backend is ready", () =>
     Effect.gen(function* () {
       const splash = makeFakeBrowserWindow();
@@ -1460,7 +1477,7 @@ describe("DesktopWindow", () => {
       yield* Effect.gen(function* () {
         const desktopWindow = yield* DesktopWindow.DesktopWindow;
 
-        yield* desktopWindow.showConnectingSplash;
+        yield* desktopWindow.showConnectingSplash();
         yield* desktopWindow.dispatchMenuAction("open-settings");
 
         assert.equal(yield* Ref.get(scenario.createCalls), 1);
@@ -1479,7 +1496,7 @@ describe("DesktopWindow", () => {
       yield* Effect.gen(function* () {
         const desktopWindow = yield* DesktopWindow.DesktopWindow;
 
-        yield* desktopWindow.showConnectingSplash;
+        yield* desktopWindow.showConnectingSplash();
         const readyExit = yield* Effect.exit(
           desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773")),
         );
@@ -1568,7 +1585,7 @@ describe("DesktopWindow", () => {
 
       yield* Effect.gen(function* () {
         const desktopWindow = yield* DesktopWindow.DesktopWindow;
-        yield* desktopWindow.showConnectingSplash;
+        yield* desktopWindow.showConnectingSplash();
         yield* desktopWindow.dispatchSnapShotEvent({ type: "ready", id: captureOne });
 
         assert.equal(yield* Ref.get(scenario.createCalls), 1);

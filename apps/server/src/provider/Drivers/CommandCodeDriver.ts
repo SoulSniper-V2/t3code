@@ -12,6 +12,9 @@
  */
 import { CommandCodeSettings, ProviderDriverKind } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as NodeOS from "node:os";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
@@ -34,7 +37,9 @@ const decodeCommandCodeSettings = Schema.decodeSync(CommandCodeSettings);
 
 export type CommandCodeDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
+  | FileSystem.FileSystem
   | IdAllocatorV2
+  | Path.Path
   | ServerConfig;
 
 export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeDriverEnv> = {
@@ -72,6 +77,7 @@ export const CommandCodeDriver: ProviderDriver<CommandCodeSettings, CommandCodeD
       const snapshot = yield* makeCommandCodeSnapshotShape({
         config: effectiveConfig,
         env: processEnv,
+        homeDir: NodeOS.homedir(),
         stamp,
         displayName: "Command Code",
         driverKind: DRIVER_KIND,

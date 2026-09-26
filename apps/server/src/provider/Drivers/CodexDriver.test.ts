@@ -161,6 +161,7 @@ it.layer(testLayer)("CodexDriver", (it) => {
         yield* fs.writeFileString(realBinaryPath, "#!/bin/sh\n");
         yield* fs.chmod(realBinaryPath, 0o755);
         yield* fs.symlink(realBinaryPath, binaryPath);
+        const canonicalInstallPath = yield* fs.realPath(installPath);
 
         const instance = yield* CodexDriver.create({
           instanceId: ProviderInstanceId.make("codex-installer"),
@@ -182,7 +183,7 @@ it.layer(testLayer)("CodexDriver", (it) => {
               "install",
               "-g",
               "--prefix",
-              installPath,
+              canonicalInstallPath,
               "--allow-scripts=@openai/codex",
               "@openai/codex@latest",
             ],
@@ -299,6 +300,7 @@ it.layer(testLayer)("CodexDriver", (it) => {
         }
         yield* fs.makeDirectory(shimDir, { recursive: true });
         yield* fs.makeDirectory(npmBin, { recursive: true });
+        const canonicalNpmPrefix = yield* fs.realPath(npmPrefix);
         yield* fs.symlink(misePath, NodePath.join(shimDir, fixture.commandName));
         yield* fs.symlink(npmEntry, NodePath.join(npmBin, fixture.commandName));
         const lookupPath = [
@@ -369,7 +371,7 @@ it.layer(testLayer)("CodexDriver", (it) => {
         if (fixture.nodeFirst) {
           expect(capabilities.update).toMatchObject({
             executable: "npm",
-            args: expect.arrayContaining(["--prefix", npmPrefix, "@openai/codex@latest"]),
+            args: expect.arrayContaining(["--prefix", canonicalNpmPrefix, "@openai/codex@latest"]),
           });
         } else {
           expect(capabilities.update).toBeNull();
