@@ -10,12 +10,15 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
+import { EDITORS } from "@t3tools/contracts";
+import { resolveEditorCommand } from "@t3tools/shared/editor";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as ExternalLauncher from "./externalLauncher.ts";
@@ -1058,9 +1061,18 @@ for (const { platform, installPath, onPath } of [
         yield* fs.makeDirectory(path.dirname(executable), { recursive: true });
         yield* fs.writeFileString(executable, "#!/bin/sh\n");
         yield* fs.chmod(executable, 0o755);
-        const editors = yield* Effect.gen(function* () {
+        const { editors, antigravityCommand } = yield* Effect.gen(function* () {
           const launcher = yield* ExternalLauncher.ExternalLauncher;
-          return yield* launcher.resolveAvailableEditors();
+          const editors = yield* launcher.resolveAvailableEditors();
+          const antigravityEditor = EDITORS.find((editor) => editor.id === "antigravity");
+          assert.ok(antigravityEditor);
+          const antigravityCommand = yield* resolveEditorCommand(antigravityEditor, {
+            HOME: home,
+            LOCALAPPDATA: home,
+            PATH: onPath ? path.dirname(executable) : path.join(home, "empty"),
+            PATHEXT: ".COM;.EXE;.BAT;.CMD",
+          });
+          return { editors, antigravityCommand };
         }).pipe(
           Effect.provide(
             testLayer({
@@ -1074,7 +1086,14 @@ for (const { platform, installPath, onPath } of [
             }),
           ),
         );
-        assert.notInclude(editors, "antigravity");
+        // A real Antigravity IDE may be installed in /Applications on the
+        // machine running this test. Its discovery is valid; the `agy` CLI
+        // fixture itself must never be selected as the IDE launcher.
+        assert.isFalse(
+          Option.isSome(antigravityCommand) &&
+            path.resolve(antigravityCommand.value.command) === path.resolve(executable),
+        );
+        assert.equal(editors.includes("antigravity"), Option.isSome(antigravityCommand));
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 }
