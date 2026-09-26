@@ -6806,21 +6806,14 @@ export default function ChatView(props: ChatViewProps) {
       title: count === 1 ? "Waiting on background task" : `Waiting on ${count} background tasks`,
       description: activeBackgroundTasks.map((task) => task.description || task.taskId).join(", "),
       actions: (
-        <>
-          {showViewAgents ? (
-            <Button size="xs" variant="ghost" aria-label="View agents" onClick={addAgentsSurface}>
-              View
-            </Button>
-          ) : null}
-          <Button
-            size="xs"
-            variant="ghost"
-            disabled={isStoppingBackgroundWork}
-            onClick={() => void handleStopBackgroundWork()}
-          >
-            {isStoppingBackgroundWork ? "Stopping..." : "Stop"}
-          </Button>
-        </>
+        <Button
+          size="xs"
+          variant="ghost"
+          disabled={isStoppingBackgroundWork}
+          onClick={() => void handleStopBackgroundWork()}
+        >
+          {isStoppingBackgroundWork ? "Stopping..." : "Stop"}
+        </Button>
       ),
     };
   }, [activeBackgroundTasks, activeThread, handleStopBackgroundWork, isStoppingBackgroundWork]);
@@ -10259,6 +10252,7 @@ export default function ChatView(props: ChatViewProps) {
         : undefined,
     onEnvironmentChange,
     onEnvModeChange,
+    envMode,
     ...(canOverrideServerThreadEnvMode ? { effectiveEnvModeOverride: envMode } : {}),
     ...(canOverrideServerThreadEnvMode
       ? {

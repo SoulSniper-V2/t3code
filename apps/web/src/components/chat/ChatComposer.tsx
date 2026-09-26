@@ -1772,6 +1772,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onRemoveEditingQueuedAttachment,
   } = props;
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const shownSyncPhase = props.threadSyncPhase;
   const activeTasksProgress = props.threadSyncPhase === null ? props.activeTasksProgress : null;
   const activeTaskSteps = props.threadSyncPhase === null ? props.activeTaskSteps : null;
   // Non-null while a queued message is loaded for editing. The primary action
@@ -1781,6 +1782,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Store subscriptions (prompt / images / terminal contexts)
   // ------------------------------------------------------------------
   const composerDraft = useComposerThreadDraft(composerDraftTarget);
+  const composerDraftTargetKey = composerTargetKey(composerDraftTarget);
   const {
     goal: activeGoal,
     setGoal: setThreadGoalText,

@@ -78,6 +78,7 @@ interface BranchToolbarProps {
   onEnvModeChange: (mode: EnvMode) => void;
   /** The thread's env mode as ChatView resolves it. */
   envMode: EnvMode;
+  effectiveEnvModeOverride?: EnvMode;
   activeThreadBranchOverride?: string | null;
   onActiveThreadBranchOverrideChange?: (branch: string | null) => void;
   startFromOrigin: boolean;
@@ -509,6 +510,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   draftId,
   onEnvModeChange,
   envMode,
+  effectiveEnvModeOverride,
   activeThreadBranchOverride,
   onActiveThreadBranchOverrideChange,
   startFromOrigin,

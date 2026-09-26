@@ -53,6 +53,7 @@ export interface ThreadDetailsPanelProps extends Pick<
   onAutoEnvironment?: (() => void) | undefined;
   onEnvironmentChange: (environmentId: EnvironmentId) => void;
   onEnvModeChange: (mode: EnvMode) => void;
+  envMode: EnvMode;
   effectiveEnvModeOverride?: EnvMode;
   activeThreadBranchOverride?: string | null;
   onActiveThreadBranchOverrideChange?: (branch: string | null) => void;
@@ -83,6 +84,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
     threadId: props.threadId,
     ...(props.draftId ? { draftId: props.draftId } : {}),
     onEnvModeChange: props.onEnvModeChange,
+    envMode: props.envMode,
     startFromOrigin: props.startFromOrigin,
     onStartFromOriginChange: props.onStartFromOriginChange,
     ...(props.effectiveEnvModeOverride

@@ -109,9 +109,9 @@ function isUnsettled(thread: OrchestrationV2ThreadShell): boolean {
 
 /**
  * Keeps every thread ↔ pull request link's host snapshot current. One sweep a minute reads
- * the shell snapshot, groups visible links by pull request so the host is asked once per PR
- * no matter how many threads share it, and writes back only what changed. Native stacks the
- * host reports are auto-linked to the thread as `source: "stack"`.
+ * only the active threads that have links, groups visible links by pull request so the host
+ * is asked once per PR no matter how many threads share it, and writes back only what
+ * changed. Native stacks the host reports are auto-linked to the thread as `source: "stack"`.
  */
 export class PullRequestSyncReactor extends Context.Service<
   PullRequestSyncReactor,

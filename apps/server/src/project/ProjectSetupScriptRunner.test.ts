@@ -29,7 +29,9 @@ it.effect("resolves setup scripts through the standalone project service", () =>
   const write = vi.fn((input: Parameters<TerminalManager.TerminalManager["Service"]["write"]>[0]) =>
     Effect.sync(() => void writes.push(input.data)),
   );
-  const closeIdle = vi.fn(() => Effect.void);
+  const closeIdle = vi.fn(
+    (_input: Parameters<TerminalManager.TerminalManager["Service"]["closeIdle"]>[0]) => Effect.void,
+  );
   const listeners: Array<Parameters<TerminalManager.TerminalManager["Service"]["subscribe"]>[0]> =
     [];
   const subscribe: TerminalManager.TerminalManager["Service"]["subscribe"] = (listener) =>

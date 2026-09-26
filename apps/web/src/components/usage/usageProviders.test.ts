@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "vite-plus/test";
 
 import { ProviderDriverKind, UsageProviderKind } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";

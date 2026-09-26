@@ -71,7 +71,7 @@ export const readCursorUsageLimits = Effect.fn("readCursorUsageLimits")(function
     const path = yield* Path.Path;
     const platform = yield* HostProcessPlatform;
     const endpoint = (
-      settings.apiEndpoint.trim() ||
+      settings.apiEndpoint?.trim() ||
       environment.CURSOR_API_ENDPOINT?.trim() ||
       DEFAULT_CURSOR_API_ENDPOINT
     ).replace(/\/$/, "");

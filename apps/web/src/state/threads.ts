@@ -9,9 +9,8 @@ import {
   EMPTY_ENVIRONMENT_THREAD_STATE,
   type EnvironmentThreadState,
   createThreadEnvironmentAtoms,
-  isThreadSessionRunning,
 } from "@t3tools/client-runtime/state/threads";
-import type { EnvironmentId, OrchestrationThreadShell, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 
@@ -82,7 +81,7 @@ export function createRunningThreadKeepAliveAtom<E>(input: {
   readonly environmentIdsAtom: Atom.Atom<ReadonlyArray<EnvironmentId>>;
   readonly threadsAtom: (
     environmentId: EnvironmentId,
-  ) => Atom.Atom<ReadonlyArray<Pick<OrchestrationThreadShell, "id" | "session">>>;
+  ) => Atom.Atom<ReadonlyArray<Pick<OrchestrationV2ThreadShell, "id" | "activeRunId">>>;
   readonly stateAtom: (
     environmentId: EnvironmentId,
     threadId: ThreadId,
@@ -94,7 +93,7 @@ export function createRunningThreadKeepAliveAtom<E>(input: {
     let previous: ReadonlyArray<ThreadId> = [];
     return Atom.make((get) => {
       const running = get(input.threadsAtom(environmentId)).flatMap((thread) =>
-        isThreadSessionRunning(thread.session) ? [thread.id] : [],
+        thread.activeRunId !== null ? [thread.id] : [],
       );
       if (arrayElementsEqual(previous, running)) return previous;
       previous = running;

@@ -5,9 +5,9 @@ import {
 import {
   EnvironmentId,
   ThreadId,
+  RunId,
   type OrchestrationSessionStatus,
-  type OrchestrationThread,
-  type OrchestrationThreadShell,
+  type OrchestrationV2ThreadShell,
   type OrchestrationV2RunStatus,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
@@ -20,24 +20,12 @@ import { createRunningThreadKeepAliveAtom } from "./threads";
 const LOCAL = EnvironmentId.make("local");
 const REMOTE = EnvironmentId.make("remote");
 
-function session(threadId: ThreadId, status: OrchestrationSessionStatus) {
-  return {
-    threadId,
-    status,
-    providerName: "codex",
-    runtimeMode: "full-access",
-    activeTurnId: null,
-    lastError: null,
-    updatedAt: "2026-09-24T00:00:00.000Z",
-  } satisfies OrchestrationThread["session"];
-}
-
 function shell(id: string, status: OrchestrationSessionStatus | null) {
   const threadId = ThreadId.make(id);
   return {
     id: threadId,
-    session: status === null ? null : session(threadId, status),
-  } satisfies Pick<OrchestrationThreadShell, "id" | "session">;
+    activeRunId: status === "running" || status === "starting" ? RunId.make(`${id}-run`) : null,
+  } satisfies Pick<OrchestrationV2ThreadShell, "id" | "activeRunId">;
 }
 
 function detail(

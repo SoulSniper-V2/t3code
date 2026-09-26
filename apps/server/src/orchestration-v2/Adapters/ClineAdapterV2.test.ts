@@ -40,6 +40,15 @@ import {
 import { ClineProviderCapabilitiesV2, makeClineAdapterV2 } from "./ClineAdapterV2.ts";
 
 const decodeClineSettings = Schema.decodeSync(ClineSettings);
+const JsonString = Schema.fromJsonString(Schema.Unknown);
+const decodeClineInvocation = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      argv: Schema.Array(Schema.String),
+      prompt: Schema.String,
+    }),
+  ),
+);
 
 const MOCK_AGENT_PATH = NodeURL.fileURLToPath(
   new URL("../../provider/testFixtures/clineHeadless/cline-mock-agent.cjs", import.meta.url),
@@ -217,10 +226,7 @@ it.layer(ClineAdapterV2TestLayer)("ClineAdapterV2 (headless protocol)", (it) => 
       const invocations = NodeFS.readFileSync(harness.argvLogPath, "utf8")
         .trim()
         .split("\n")
-        .map(
-          (line) =>
-            JSON.parse(line) as { readonly argv: ReadonlyArray<string>; readonly prompt: string },
-        );
+        .map((line) => decodeClineInvocation(line));
       expect(invocations).toHaveLength(1);
       const argv = invocations[0]!;
       expect(argv.argv).toContain("--json");
@@ -289,7 +295,7 @@ it.layer(ClineAdapterV2TestLayer)("ClineAdapterV2 (headless protocol)", (it) => 
         .split("\n");
       expect(invocationsAfterSecondTurn).toHaveLength(2);
       const argumentsByTurn = invocationsAfterSecondTurn.map(
-        (line) => (JSON.parse(line) as { readonly argv: ReadonlyArray<string> }).argv,
+        (line) => decodeClineInvocation(line).argv,
       );
       expect(
         argumentsByTurn.every(
@@ -309,7 +315,7 @@ it.layer(ClineAdapterV2TestLayer)("ClineAdapterV2 (headless protocol)", (it) => 
         const dataDir = NodePath.join(harness.cwd, "cline-data");
         const originalSettingsPath = NodePath.join(dataDir, "settings", "cline_mcp_settings.json");
         NodeFS.mkdirSync(NodePath.dirname(originalSettingsPath), { recursive: true });
-        const originalSettings = JSON.stringify({
+        const originalSettings = yield* Schema.encodeEffect(JsonString)({
           mcpServers: {
             userServer: {
               command: "synthetic-user-server",
@@ -399,7 +405,7 @@ it.layer(ClineAdapterV2TestLayer)("ClineAdapterV2 (headless protocol)", (it) => 
         expect(scopedSettingsPath).toBeTruthy();
         expect(scopedSettingsPath).not.toBe(originalSettingsPath);
         expect(NodeFS.existsSync(scopedSettingsPath!)).toBe(true);
-        expect(JSON.parse(scopedSettingsText!)).toEqual({
+        expect(yield* Schema.decodeUnknownEffect(JsonString)(scopedSettingsText!)).toEqual({
           mcpServers: {
             userServer: {
               command: "synthetic-user-server",

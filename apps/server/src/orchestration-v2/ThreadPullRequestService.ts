@@ -19,6 +19,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
+import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
@@ -53,7 +54,7 @@ function samePullRequest(
 function isStalePullRequestSyncFailure(cause: Cause.Cause<unknown>, threadId: ThreadId): boolean {
   const error = Cause.squash(cause);
   return (
-    error instanceof OrchestratorDispatchError &&
+    Schema.is(OrchestratorDispatchError)(error) &&
     error.commandType === "thread.pull-request.sync" &&
     error.cause === `Thread ${threadId} changed before pull request discovery.`
   );
@@ -148,7 +149,6 @@ export const make = Effect.gen(function* () {
     const threads = threadSnapshot.threads.filter(
       (thread) =>
         thread.archivedAt === null &&
-        (request.threadId === null || thread.id === request.threadId) &&
         ((thread.settledOverride !== "settled" && thread.settledAt === null) ||
           request.threadId !== null ||
           pendingBackfill.has(thread.id)) &&

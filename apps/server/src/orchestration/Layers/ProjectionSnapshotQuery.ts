@@ -15,6 +15,9 @@ import {
   ProjectIconOverride,
   ThreadLinkedPullRequest,
   ThreadId,
+  type ThreadPullRequestLink,
+  ThreadPullRequestSnapshot,
+  ThreadPullRequestStack,
 } from "@t3tools/contracts";
 import {
   OrchestrationCheckpointFile,
@@ -58,6 +61,7 @@ import { ProjectionState } from "../../persistence/Services/ProjectionState.ts";
 import { ProjectionThreadActivity } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import { ProjectionThreadMessage } from "../../persistence/Services/ProjectionThreadMessages.ts";
 import { ProjectionThreadProposedPlan } from "../../persistence/Services/ProjectionThreadProposedPlans.ts";
+import { ProjectionThreadPullRequest } from "../../persistence/ProjectionThreadPullRequests.ts";
 import { ProjectionThreadSession } from "../../persistence/Services/ProjectionThreadSessions.ts";
 import { ProjectionThread } from "../../persistence/Services/ProjectionThreads.ts";
 import { ProjectEnrichmentService } from "../../project/ProjectEnrichmentService.ts";
@@ -73,6 +77,7 @@ import {
   type ProjectionSnapshotCounts,
   type ProjectionThreadCheckpointContext,
   type ProjectionThreadDetailQuery,
+  type ProjectionThreadPullRequests,
   type ProjectionSnapshotQueryShape,
 } from "../Services/ProjectionSnapshotQuery.ts";
 
@@ -116,6 +121,12 @@ const ProjectionTurnStartMessageDbRowSchema = ProjectionThreadMessageDbRowSchema
   Struct.assign({ hasOtherUserMessages: Schema.Number }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
+const ProjectionThreadPullRequestDbRowSchema = ProjectionThreadPullRequest.mapFields(
+  Struct.assign({
+    snapshot: Schema.NullOr(Schema.fromJsonString(ThreadPullRequestSnapshot)),
+    stack: Schema.NullOr(Schema.fromJsonString(ThreadPullRequestStack)),
+  }),
+);
 const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
     modelSelection: Schema.fromJsonString(ModelSelection),
@@ -406,6 +417,21 @@ function mapProposedPlanRow(
     implementationThreadId: row.implementationThreadId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+function mapPullRequestRow(
+  row: Schema.Schema.Type<typeof ProjectionThreadPullRequestDbRowSchema>,
+): ThreadPullRequestLink {
+  return {
+    host: row.host,
+    repository: row.repository,
+    number: row.number,
+    url: row.url,
+    source: row.source,
+    linkedAt: row.linkedAt,
+    snapshot: row.snapshot,
+    stack: row.stack,
   };
 }
 
@@ -847,6 +873,42 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           AND threads.archived_at IS NULL
           AND threads.latest_turn_id IS NOT NULL
         ORDER BY turns.thread_id ASC
+      `,
+  });
+
+  // One row per PR link in active thread order; OV2 consumes this lightweight
+  // view without building a legacy shell snapshot or repository enrichment.
+  const listActiveThreadPullRequestSyncRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionThreadPullRequestDbRowSchema.mapFields(
+      Struct.assign({
+        projectId: ProjectionThread.fields.projectId,
+        settledOverride: ProjectionThread.fields.settledOverride,
+        settledAt: ProjectionThread.fields.settledAt,
+      }),
+    ),
+    execute: () =>
+      sql`
+        SELECT
+          links.thread_id AS "threadId",
+          threads.project_id AS "projectId",
+          threads.settled_override AS "settledOverride",
+          threads.settled_at AS "settledAt",
+          links.host,
+          links.repository,
+          links.number,
+          links.url,
+          links.source,
+          links.linked_at AS "linkedAt",
+          links.snapshot_json AS "snapshot",
+          links.stack_json AS "stack"
+        FROM projection_thread_pull_requests links
+        INNER JOIN projection_threads threads
+          ON threads.thread_id = links.thread_id
+        WHERE threads.deleted_at IS NULL
+          AND threads.archived_at IS NULL
+        ORDER BY threads.project_id ASC, threads.created_at ASC, threads.thread_id ASC,
+          links.linked_at ASC, links.number ASC
       `,
   });
 
@@ -2461,7 +2523,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 sessionRows.map((row) => [row.threadId, mapSessionRow(row)] as const),
               );
 
-              const snapshot = {
+              // Built from schema-decoded rows, so no second decode here. The HTTP
+              // and RPC layers encode it against OrchestrationShellSnapshot on the
+              // way out, like the per-item shells from getThreadShellById.
+              return {
                 snapshotSequence: computeSnapshotSequence(stateRows),
                 projects: Arr.filterMap(projectRows, (row) =>
                   row.deletedAt === null
@@ -2504,15 +2569,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     : Result.failVoid,
                 ),
                 updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
-              };
-
-              return yield* decodeShellSnapshot(snapshot).pipe(
-                Effect.mapError(
-                  toPersistenceDecodeError(
-                    "ProjectionSnapshotQuery.getShellSnapshot:decodeShellSnapshot",
-                  ),
-                ),
-              );
+              } satisfies OrchestrationShellSnapshot;
             }),
           ),
           Effect.mapError((error) => {
@@ -2539,6 +2596,35 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ).pipe(Effect.map((projects) => ({ ...snapshot, projects }))),
       ),
     );
+
+  const listThreadsWithPullRequests: ProjectionSnapshotQueryShape["listThreadsWithPullRequests"] =
+    () =>
+      listActiveThreadPullRequestSyncRows(undefined).pipe(
+        Effect.map((rows) => {
+          const threads = new Map<
+            ThreadId,
+            ProjectionThreadPullRequests & { readonly pullRequests: Array<ThreadPullRequestLink> }
+          >();
+          for (const row of rows) {
+            const thread = threads.get(row.threadId) ?? {
+              id: row.threadId,
+              projectId: row.projectId,
+              settledOverride: row.settledOverride,
+              settledAt: row.settledAt,
+              pullRequests: [],
+            };
+            thread.pullRequests.push(mapPullRequestRow(row));
+            threads.set(row.threadId, thread);
+          }
+          return [...threads.values()];
+        }),
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.listThreadsWithPullRequests:query",
+            "ProjectionSnapshotQuery.listThreadsWithPullRequests:decodeRows",
+          ),
+        ),
+      );
 
   const getArchivedShellSnapshot: ProjectionSnapshotQueryShape["getArchivedShellSnapshot"] = () =>
     sql
@@ -3448,6 +3534,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getShellSnapshot,
     getShellSnapshotWithoutEnrichment,
     getArchivedShellSnapshot,
+    listThreadsWithPullRequests,
     getDeletedWorktreeThreads,
     searchThreads,
     getSnapshotSequence,
