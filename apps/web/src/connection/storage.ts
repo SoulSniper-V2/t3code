@@ -166,7 +166,8 @@ function writeDatabaseValue(
 ) {
   return Effect.callback<void, ConnectionTransientError>((resume) => {
     const transaction = database.transaction(storeName, "readwrite");
-    transaction.addEventListener("error", () => {
+    // Failed commits can emit only `abort` (for example, quota exhaustion).
+    transaction.addEventListener("abort", () => {
       resume(
         Effect.fail(catalogError("write", transaction.error ?? "Unknown IndexedDB write error")),
       );
@@ -181,7 +182,8 @@ function writeDatabaseValue(
 function removeDatabaseValue(database: IDBDatabase, storeName: string, key: IDBValidKey) {
   return Effect.callback<void, ConnectionTransientError>((resume) => {
     const transaction = database.transaction(storeName, "readwrite");
-    transaction.addEventListener("error", () => {
+    // Failed commits can emit only `abort` (for example, quota exhaustion).
+    transaction.addEventListener("abort", () => {
       resume(
         Effect.fail(catalogError("remove", transaction.error ?? "Unknown IndexedDB remove error")),
       );

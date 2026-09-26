@@ -135,14 +135,17 @@ const makeTestRelay = Effect.fnUntraced(function* (
   options: {
     readonly respond?: (attempt: number) => Response;
     readonly failSecretRead?: (name: string) => boolean;
+    readonly initiallyLinked?: boolean;
   } = {},
 ) {
   const values = new Map<string, Uint8Array>([
     [PUBLISH_AGENT_ACTIVITY_SECRET, new TextEncoder().encode("true")],
-    [RELAY_URL_SECRET, new TextEncoder().encode("https://relay.example.test")],
-    [RELAY_ISSUER_SECRET, new TextEncoder().encode("https://relay.example.test")],
-    [RELAY_ENVIRONMENT_CREDENTIAL_SECRET, new TextEncoder().encode("credential-1")],
   ]);
+  if (options.initiallyLinked !== false) {
+    values.set(RELAY_URL_SECRET, new TextEncoder().encode("https://relay.example.test"));
+    values.set(RELAY_ISSUER_SECRET, new TextEncoder().encode("https://relay.example.test"));
+    values.set(RELAY_ENVIRONMENT_CREDENTIAL_SECRET, new TextEncoder().encode("credential-1"));
+  }
   const secretReads: string[] = [];
   const secrets = ServerSecretStore.of({
     get: (name) =>
@@ -162,10 +165,15 @@ const makeTestRelay = Effect.fnUntraced(function* (
   });
   const currentShell = yield* Ref.make<OrchestrationV2ThreadShell | null>(shell());
   const shellReads: ThreadId[] = [];
+  let shellSnapshotReads = 0;
   const threads = ThreadManagementService.of({
     getThreadShell: (threadId) =>
       Effect.sync(() => shellReads.push(threadId)).pipe(Effect.andThen(Ref.get(currentShell))),
-    getShellSnapshot: unused,
+    getShellSnapshot: () =>
+      Effect.sync(() => {
+        shellSnapshotReads += 1;
+        return { schemaVersion: 1, snapshotSequence: 1, threads: [], archivedThreads: [] };
+      }),
     ensureLegacyTranscript: unused,
     dispatch: unused,
     getTimelinePage: () => Effect.die("Unused timeline read"),
@@ -227,7 +235,7 @@ const makeTestRelay = Effect.fnUntraced(function* (
       update: unused,
       delete: unused,
       getByWorkspaceRoot: unused,
-      snapshot: unused(),
+      snapshot: Effect.succeed({ projects: [], updatedAt: NOW }),
       getById: () =>
         Effect.succeed(
           Option.some({
@@ -245,10 +253,60 @@ const makeTestRelay = Effect.fnUntraced(function* (
     Effect.provideService(FetchHttpClient.Fetch, fetch),
     Effect.provide(NodeCrypto.layer),
   );
-  return { relay, secrets, secretReads, currentShell, shellReads, publications };
+  return {
+    relay,
+    secrets,
+    secretReads,
+    currentShell,
+    shellReads,
+    shellSnapshotReads: () => shellSnapshotReads,
+    publications,
+  };
 });
 
 describe("AgentAwarenessRelay", () => {
+  it.effect("backs off relay checks while unlinked", () =>
+    Effect.gen(function* () {
+      const { relay, secretReads, shellSnapshotReads } = yield* makeTestRelay({
+        initiallyLinked: false,
+      });
+      yield* relay.start();
+
+      yield* TestClock.adjust("10 minutes");
+      const readsBeforeWindow = secretReads.filter((name) => name === RELAY_URL_SECRET).length;
+      yield* TestClock.adjust("10 minutes");
+      const readsAfterWindow = secretReads.filter((name) => name === RELAY_URL_SECRET).length;
+
+      assert.equal(readsAfterWindow - readsBeforeWindow, 10);
+      assert.equal(shellSnapshotReads(), 0);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("wakes relay catch-up immediately after linking", () =>
+    Effect.gen(function* () {
+      const { relay, secrets, shellSnapshotReads } = yield* makeTestRelay({
+        initiallyLinked: false,
+      });
+      yield* relay.start();
+      yield* TestClock.adjust("10 minutes");
+      assert.equal(shellSnapshotReads(), 0);
+
+      yield* secrets.set(RELAY_URL_SECRET, new TextEncoder().encode("https://relay.example.test"));
+      yield* secrets.set(
+        RELAY_ISSUER_SECRET,
+        new TextEncoder().encode("https://relay.example.test"),
+      );
+      yield* secrets.set(
+        RELAY_ENVIRONMENT_CREDENTIAL_SECRET,
+        new TextEncoder().encode("credential-1"),
+      );
+      yield* relay.requestCatchUp();
+      yield* TestClock.adjust("1 second");
+
+      assert.equal(shellSnapshotReads(), 1);
+    }).pipe(Effect.scoped),
+  );
+
   it("ignores transcript and tool updates but retains activity and metadata changes", () => {
     for (const type of [
       "message.updated",

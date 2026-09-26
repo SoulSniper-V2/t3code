@@ -4,6 +4,7 @@
 
 ## What this fork adds
 
+- **Side-by-side chat**: open two saved chats together in resizable panes, each with its own composer and session state.
 - **Cline and Command Code providers**, with V2 adapters, automatic local CLI discovery, usage reporting, reasoning controls, runtime identity prompts, and scoped MCP tool bridges.
 - **Selective session import** from Codex, Claude Code, Cline, Command Code, and OpenCode, with per-conversation previews and resumability where the source CLI supports it.
 - **Cross-chat compatibility for local CLI providers:** when a provider cannot use T3's MCP tools, an `@thread` reference supplies a bounded, recent excerpt; other V2 providers read attached threads on demand.

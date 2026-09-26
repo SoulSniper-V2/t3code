@@ -1784,6 +1784,49 @@ describe("sortProjectsForSidebar", () => {
     ]);
   });
 
+  it.each(["updated_at", "created_at"] as const)(
+    "matches the per-comparison %s order on a shuffled list with ties",
+    (sortOrder) => {
+      const minute = (value: number) => `2026-03-09T10:0${value}:00.000Z`;
+      // (index * 7) % 24 scrambles the input order. Titles repeat, and
+      // projects 16-23 have no threads, so they use their own stamps.
+      const projects = Array.from({ length: 24 }, (_, index) => {
+        const n = (index * 7) % 24;
+        return makeProject({
+          id: ProjectId.make(`project-${n}`),
+          title: n % 2 === 0 ? "Alpha" : "Beta",
+          createdAt: minute(n % 3),
+          updatedAt: n % 5 === 0 ? "invalid" : minute(n % 2),
+        });
+      });
+      const threads = Array.from({ length: 48 }, (_, n) => ({
+        projectId: ProjectId.make(`project-${n % 16}`),
+        createdAt: minute(n % 6),
+        updatedAt: minute(n % 3),
+        latestUserMessageAt: n % 4 === 0 ? null : minute(n % 5),
+      }));
+      // The comparator this sort replaced: it walked each project's threads
+      // on every call.
+      const timestamp = (project: Project) =>
+        getProjectSortTimestamp(
+          project,
+          threads.filter((thread) => thread.projectId === project.id),
+          sortOrder,
+        );
+      const expected = projects.toSorted((left, right) => {
+        const rightTimestamp = timestamp(right);
+        const leftTimestamp = timestamp(left);
+        const byTimestamp =
+          rightTimestamp === leftTimestamp ? 0 : rightTimestamp > leftTimestamp ? 1 : -1;
+        return (
+          byTimestamp || left.title.localeCompare(right.title) || left.id.localeCompare(right.id)
+        );
+      });
+
+      expect(sortProjectsForSidebar(projects, threads, sortOrder)).toEqual(expected);
+    },
+  );
+
   it("returns the project timestamp when no threads are present", () => {
     const timestamp = getProjectSortTimestamp(
       makeProject({ updatedAt: "2026-03-09T10:10:00.000Z" }),

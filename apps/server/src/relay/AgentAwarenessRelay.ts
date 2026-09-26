@@ -26,6 +26,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -52,6 +53,7 @@ export class AgentAwarenessRelay extends Context.Service<
   AgentAwarenessRelay,
   {
     readonly publishThread: (threadId: ThreadId) => Effect.Effect<void>;
+    readonly requestCatchUp: () => Effect.Effect<void>;
     readonly drain: Effect.Effect<void>;
     readonly start: () => Effect.Effect<void, never, Scope.Scope>;
   }
@@ -357,6 +359,7 @@ export const make = Effect.gen(function* () {
   const cloudLinkKeyPair = yield* getOrCreateEnvironmentKeyPairFromSecretStore(secrets);
   const startedAt = (yield* DateTime.now).epochMilliseconds;
   const activeSnapshotPublishedRef = yield* Ref.make(false);
+  const catchUpRequests = yield* Queue.dropping<void>(1);
   const publishedStateByThreadRef = yield* Ref.make(new Map<ThreadId, string>());
 
   const readSecretString = (name: string) =>
@@ -671,17 +674,24 @@ export const make = Effect.gen(function* () {
   });
 
   const publishActiveThreadsUnsafe = Effect.gen(function* () {
+    const relayUrl = yield* readSecretString(RELAY_URL_SECRET).pipe(
+      Effect.orElseSucceed(() => null),
+    );
+    if (!relayUrl) {
+      yield* Effect.logDebug("agent activity snapshot skipped; relay link credentials unavailable");
+      return "unlinked" as const;
+    }
     const publishAgentActivity = yield* readPublishAgentActivityEnabled.pipe(
       Effect.orElseSucceed(() => false),
     );
     if (!publishAgentActivity) {
       yield* Effect.logDebug("agent activity snapshot skipped; publication disabled");
-      return false;
+      return "disabled" as const;
     }
     const relayConfig = yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null));
     if (!relayConfig) {
       yield* Effect.logDebug("agent activity snapshot skipped; relay link credentials unavailable");
-      return false;
+      return "unlinked" as const;
     }
     const environmentId = yield* serverEnvironment.getEnvironmentId;
     const [projectSnapshot, shellSnapshot] = yield* Effect.all([
@@ -696,7 +706,7 @@ export const make = Effect.gen(function* () {
     });
     if (activeThreadIds.length === 0) {
       yield* Effect.logDebug("agent activity snapshot has no publishable threads");
-      return true;
+      return "published" as const;
     }
     yield* Effect.logInfo("publishing active agent activity snapshot", {
       count: activeThreadIds.length,
@@ -708,9 +718,12 @@ export const make = Effect.gen(function* () {
 
   const publishActiveThreadsOnceWhenConfigured = (logEnabledWhenReady: boolean) =>
     Effect.gen(function* () {
+      let unlinkedRetryDelayMs = 5_000;
       while (!(yield* Ref.get(activeSnapshotPublishedRef))) {
-        const published = yield* publishActiveThreadsUnsafe.pipe(Effect.orElseSucceed(() => false));
-        if (published) {
+        const result = yield* publishActiveThreadsUnsafe.pipe(
+          Effect.orElseSucceed(() => "failed" as const),
+        );
+        if (result === "published") {
           yield* Ref.set(activeSnapshotPublishedRef, true);
           if (logEnabledWhenReady) {
             const relayConfig = yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null));
@@ -720,9 +733,16 @@ export const make = Effect.gen(function* () {
           }
           return;
         }
-        yield* Effect.sleep("5 seconds");
+        const retryDelayMs = result === "unlinked" ? unlinkedRetryDelayMs : 5_000;
+        yield* Effect.race(Effect.sleep(retryDelayMs), Queue.take(catchUpRequests));
+        if (result === "unlinked") {
+          unlinkedRetryDelayMs = Math.min(unlinkedRetryDelayMs * 2, 60_000);
+        }
       }
     });
+
+  const requestCatchUp: AgentAwarenessRelay["Service"]["requestCatchUp"] = () =>
+    Queue.offer(catchUpRequests, undefined).pipe(Effect.asVoid);
 
   schedulePublishConfirm = (threadId) =>
     Effect.forkIn(
@@ -785,6 +805,7 @@ export const make = Effect.gen(function* () {
 
   return AgentAwarenessRelay.of({
     publishThread,
+    requestCatchUp,
     drain: worker.drain,
     start,
   });
