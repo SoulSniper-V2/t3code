@@ -30,6 +30,7 @@ import {
   LINUX_FILE_EXCLUSIONS,
   MAC_FILE_EXCLUSIONS,
   InvalidMockUpdateServerPortError,
+  InvalidDesktopBuildVersionError,
   UnsupportedDesktopBuildArchitectureError,
   LinuxIconResizeError,
   LinuxDesktopBuildPrerequisitesMissingError,
@@ -45,6 +46,7 @@ import {
   resolveDesktopBuildIconAssets,
   resolveDesktopProductName,
   resolveDesktopUpdateChannel,
+  isValidDesktopArtifactVersion,
   resolveDesktopWebAssetBrand,
   resolveResourceMonitorRustTargets,
   resolveWindowsServerAsarIgnoreGlobs,
@@ -245,6 +247,36 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.equal(resolveDesktopUpdateChannel("0.0.17-nightly.20260413.42"), "nightly");
     assert.equal(resolveDesktopUpdateChannel("0.0.17"), "latest");
   });
+
+  it("accepts valid desktop SemVer and rejects zero-padded prerelease numbers", () => {
+    assert.isTrue(isValidDesktopArtifactVersion("0.0.44"));
+    assert.isTrue(isValidDesktopArtifactVersion("0.0.44-nightly.20260926.36"));
+    assert.isFalse(isValidDesktopArtifactVersion("0.0.44-nightly.20260926.0036"));
+    assert.isFalse(isValidDesktopArtifactVersion("0.0.044-nightly.20260926.36"));
+  });
+
+  it.effect("rejects invalid desktop build versions before staging artifacts", () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        resolveBuildOptions({
+          platform: Option.some("mac"),
+          target: Option.none(),
+          arch: Option.some("arm64"),
+          buildVersion: Option.some("0.0.44-nightly.20260926.0036"),
+          outputDir: Option.none(),
+          skipBuild: Option.none(),
+          keepStage: Option.none(),
+          signed: Option.none(),
+          verbose: Option.none(),
+          mockUpdates: Option.none(),
+          mockUpdateServerPort: Option.none(),
+          wslRuntime: Option.none(),
+        }),
+      );
+
+      assert.instanceOf(error, InvalidDesktopBuildVersionError);
+    }),
+  );
 
   it("switches desktop packaging product names to nightly for nightly builds", () => {
     assert.equal(resolveDesktopProductName("0.0.17"), "T3 Code (Alpha)");

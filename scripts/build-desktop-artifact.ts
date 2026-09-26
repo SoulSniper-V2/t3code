@@ -218,6 +218,17 @@ export class UnsupportedDesktopBuildArchitectureError extends Schema.TaggedError
   }
 }
 
+export class InvalidDesktopBuildVersionError extends Schema.TaggedError<InvalidDesktopBuildVersionError>()(
+  "InvalidDesktopBuildVersionError",
+  {
+    version: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Invalid desktop build version '${this.version}'. Use a valid SemVer version without zero-padded numeric identifiers.`;
+  }
+}
+
 const InvalidMockUpdateServerPortReason = Schema.Literals([
   "not-numeric",
   "not-integer",
@@ -1327,6 +1338,9 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     });
   }
   const version = mergeOptions(input.buildVersion, env.version, undefined);
+  if (version !== undefined && !isValidDesktopArtifactVersion(version)) {
+    return yield* new InvalidDesktopBuildVersionError({ version });
+  }
   const releaseDir = resolveBooleanFlag(input.mockUpdates, env.mockUpdates)
     ? "release-mock"
     : "release";
@@ -2270,6 +2284,20 @@ export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig"
 
 export function resolveDesktopUpdateChannel(version: string): "latest" | "nightly" {
   return /-nightly\.\d{8}\.\d+$/.test(version) ? "nightly" : "latest";
+}
+
+const DESKTOP_ARTIFACT_SEMVER_PATTERN =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+
+/** Electron's updater rejects SemVer numeric prerelease identifiers with leading zeroes. */
+export function isValidDesktopArtifactVersion(version: string): boolean {
+  const match = DESKTOP_ARTIFACT_SEMVER_PATTERN.exec(version);
+  if (!match) return false;
+  const prerelease = match[4];
+  return (
+    prerelease === undefined ||
+    prerelease.split(".").every((identifier) => !/^0\d+$/.test(identifier))
+  );
 }
 
 // Pull request builds (`-pr.<n>.`) and the maintainers' preview train
