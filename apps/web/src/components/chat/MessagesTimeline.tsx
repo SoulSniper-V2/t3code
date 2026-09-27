@@ -295,6 +295,8 @@ interface TimelineRowSharedState {
   providerStatuses: ReadonlyArray<ServerProvider>;
   /** Projection runs, for recovering handoff models on legacy items. */
   runs: ReadonlyArray<HandoffTimelineRun>;
+  /** Reasoning disclosures stay stable while LegendList recycles rows. */
+  expandedReasoningMessageIds: ReadonlySet<MessageId>;
   activeThreadEnvironmentId: EnvironmentId;
   onRevertToTurnCount: (targetTurnCount: number, messageId: MessageId) => void;
   onUseArtifactTemplate: (template: CodexArtifactTemplate) => void;
@@ -313,6 +315,7 @@ interface TimelineRowSharedState {
   }) => void;
   onToggleTurnFold: (runId: RunId) => void;
   onToggleAttemptFold: (attemptId: RunAttemptId) => void;
+  onToggleReasoning: (messageId: MessageId, expanded: boolean, anchorKey: string) => void;
   onFileOpen: (attachment: ChatFileAttachment) => void;
   onFileDownload: (attachment: ChatFileAttachment) => void;
   openPullRequest: (event: MouseEvent<HTMLElement>, url: string) => void;
@@ -329,6 +332,7 @@ interface TimelineRowActivityState {
   isCompacting: boolean;
   isRevertingCheckpoint: boolean;
   activeTurnInProgress: boolean;
+  unsettledTurnId: RunId | null;
   isPreparingWorktree: boolean;
   latestRunId: RunId | null;
   /**
@@ -551,6 +555,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const [expandedAttemptIds, setExpandedAttemptIds] = useState<ReadonlySet<RunAttemptId>>(
     () => rememberedPosition?.disclosures?.attempts ?? new Set(),
   );
+  const [expandedReasoningMessageIds, setExpandedReasoningMessageIds] = useState<
+    ReadonlySet<MessageId>
+  >(() => rememberedPosition?.disclosures?.reasoning ?? new Set());
   const [positionedThreadKey, setPositionedThreadKey] = useState<string | null>(() =>
     rememberedPosition?.atEnd === false ? null : listIdentityKey,
   );
@@ -564,6 +571,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   let paintedExpandedRunIds = expandedRunIds;
   let paintedExpandedWorkGroupIds = expandedWorkGroupIds;
   let paintedExpandedAttemptIds = expandedAttemptIds;
+  let paintedExpandedReasoningMessageIds = expandedReasoningMessageIds;
   if (listIdentityRef.current !== listIdentityKey) {
     listIdentityRef.current = listIdentityKey;
     setPositionedThreadKey(null);
@@ -572,9 +580,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     paintedExpandedRunIds = rememberedPosition?.disclosures?.runs ?? new Set();
     paintedExpandedWorkGroupIds = rememberedPosition?.disclosures?.workGroups ?? new Set();
     paintedExpandedAttemptIds = rememberedPosition?.disclosures?.attempts ?? new Set();
+    paintedExpandedReasoningMessageIds = rememberedPosition?.disclosures?.reasoning ?? new Set();
     setExpandedRunIds(paintedExpandedRunIds);
     setExpandedWorkGroupIds(paintedExpandedWorkGroupIds);
     setExpandedAttemptIds(paintedExpandedAttemptIds);
+    setExpandedReasoningMessageIds(paintedExpandedReasoningMessageIds);
   }
   const citationThreadRef = useMemo(() => parseScopedThreadKey(routeThreadKey), [routeThreadKey]);
   const openPullRequest = useOpenPrLink(citationThreadRef ?? undefined);
@@ -693,6 +703,18 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         } else {
           next.add(attemptId);
         }
+        return next;
+      });
+    },
+    [suspendEndScrollMaintenanceForDisclosure],
+  );
+  const onToggleReasoning = useCallback(
+    (messageId: MessageId, expanded: boolean, anchorKey: string) => {
+      suspendEndScrollMaintenanceForDisclosure(anchorKey, !expanded);
+      setExpandedReasoningMessageIds((existing) => {
+        const next = new Set(existing);
+        if (expanded) next.add(messageId);
+        else next.delete(messageId);
         return next;
       });
     },
@@ -1021,6 +1043,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             runs: paintedExpandedRunIds,
             workGroups: paintedExpandedWorkGroupIds,
             attempts: paintedExpandedAttemptIds,
+            reasoning: paintedExpandedReasoningMessageIds,
             workGroupState: workGroupViewState,
           },
         });
@@ -1136,6 +1159,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       providerStatuses,
       runs,
+      expandedReasoningMessageIds: paintedExpandedReasoningMessageIds,
       activeThreadEnvironmentId,
       onRevertToTurnCount,
       onRunShellCommand,
@@ -1150,6 +1174,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onRollbackCheckpoint,
       onToggleTurnFold,
       onToggleAttemptFold,
+      onToggleReasoning,
       onToggleWorkGroup,
       onToggleWorkEntry: suspendEndScrollMaintenanceForDisclosure,
       onCancelWorktreeSetup: onCancelWorktreeSetup ?? null,
@@ -1169,6 +1194,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       providerStatuses,
       runs,
+      paintedExpandedReasoningMessageIds,
       activeThreadEnvironmentId,
       onRevertToTurnCount,
       onRunShellCommand,
@@ -1183,6 +1209,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onRollbackCheckpoint,
       onToggleTurnFold,
       onToggleAttemptFold,
+      onToggleReasoning,
       onToggleWorkGroup,
       suspendEndScrollMaintenanceForDisclosure,
       onCancelWorktreeSetup,
@@ -1207,6 +1234,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       isRevertingCheckpoint,
       backgroundWorktreeSetup,
       activeTurnInProgress,
+      unsettledTurnId: activeTurnInProgress ? (latestRun?.runId ?? null) : null,
       isPreparingWorktree,
       latestRunId: latestRun?.runId ?? null,
     }),
@@ -1214,6 +1242,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       compactionAwaitingRow,
       backgroundWorktreeSetup,
       activeTurnInProgress,
+      latestRun?.runId,
       isPreparingWorktree,
       isRevertingCheckpoint,
       isWorking,
@@ -2989,8 +3018,8 @@ function ReasoningTraceBlock({
     live &&
     messages.some((reasoningMessage) => reasoningMessage.streaming) &&
     isWorking &&
-    first.turnId !== null &&
-    first.turnId === unsettledTurnId;
+    first.runId !== null &&
+    first.runId === unsettledTurnId;
   if (
     messages.every((reasoningMessage) => reasoningMessage.text.trim().length === 0) &&
     !streaming

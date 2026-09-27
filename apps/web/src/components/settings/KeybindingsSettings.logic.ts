@@ -15,9 +15,13 @@ import { shortcutKeyFromEvent } from "../../keybindings";
 import { isMacPlatform } from "../../lib/utils";
 import { METRIC_OPTIONS, WINDOW_OPTIONS } from "../usage/usageShortcuts";
 
-const usageCommandOrder = new Map<KeybindingCommand, number>(
-  [...METRIC_OPTIONS, ...WINDOW_OPTIONS].map((option, index) => [option.command, index]),
-);
+const usageCommands: ReadonlyArray<KeybindingCommand> = [
+  METRIC_OPTIONS[0]!.command,
+  "usage.open",
+  ...METRIC_OPTIONS.slice(1).map((option) => option.command),
+  ...WINDOW_OPTIONS.map((option) => option.command),
+];
+const usageCommandOrder = new Map(usageCommands.map((command, index) => [command, index] as const));
 
 function compareUsageCommands(left: KeybindingCommand, right: KeybindingCommand): number | null {
   const leftIndex = usageCommandOrder.get(left);

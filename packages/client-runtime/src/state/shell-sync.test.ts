@@ -66,6 +66,7 @@ describe("environment shell synchronization", () => {
   it.effect("publishes live state before persistence and preserves it when ready", () =>
     Effect.gen(function* () {
       const events = yield* Queue.unbounded<OrchestrationV2ShellStreamItem>();
+      const releaseSave = yield* Deferred.make<void>();
       const client = {
         [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: () => Stream.fromQueue(events),
       } as unknown as WsRpcProtocolClient;
@@ -86,7 +87,7 @@ describe("environment shell synchronization", () => {
         loadShell: () => Effect.succeedNone,
         // Keep persistence pending so this test proves live publication does
         // not wait for the cache write to finish.
-        saveShell: () => Effect.never,
+        saveShell: () => Deferred.await(releaseSave),
         loadThread: () => Effect.succeedNone,
         saveThread: () => Effect.void,
         removeThread: () => Effect.void,
@@ -154,6 +155,9 @@ describe("environment shell synchronization", () => {
       const state = yield* SubscriptionRef.get(shellState);
       expect(state.status).toBe("live");
       expect(Option.getOrThrow(state.snapshot)).toEqual(LIVE_SHELL_SNAPSHOT);
+      // Do not let the pending persistence mock block scoped cleanup after the
+      // live-state assertion has proved publication does not wait for it.
+      yield* Deferred.succeed(releaseSave, undefined);
     }),
   );
 

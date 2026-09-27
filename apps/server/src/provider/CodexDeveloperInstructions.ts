@@ -16,6 +16,12 @@ export interface T3CodeToolAvailability {
   readonly device: boolean;
 }
 
+type CodexAdditionalContext = {
+  readonly t3_code_orchestration: V2TurnStartParams__AdditionalContextEntry;
+  readonly t3_code_runtime: V2TurnStartParams__AdditionalContextEntry;
+  readonly t3_code_tools?: V2TurnStartParams__AdditionalContextEntry;
+};
+
 const normalizeAvailability = (
   availability: boolean | T3CodeToolAvailability,
 ): T3CodeToolAvailability =>
@@ -187,23 +193,11 @@ export interface CodexRuntimeInfo {
   readonly reasoningEffort: string;
 }
 
-/** Prompt for `turn/start.collaborationMode.settings.developer_instructions`. */
-export function buildCodexDeveloperInstructions(
-  interactionMode: ProviderInteractionMode,
-  runtime: CodexRuntimeInfo,
-  toolsAvailable: boolean | T3CodeToolAvailability = true,
-): string {
-  const tools = toolInstructions(toolsAvailable);
-  return [
-    interactionMode === "plan"
-      ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
-      : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
-    tools,
-    T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim(),
-    buildRuntimeInstructions({ harness: "Codex", ...runtime }),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+/** Mode prompt for `turn/start.collaborationMode.settings.developer_instructions`. */
+export function buildCodexDeveloperInstructions(interactionMode: ProviderInteractionMode): string {
+  return interactionMode === "plan"
+    ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
+    : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS;
 }
 
 /**
@@ -223,10 +217,14 @@ export function buildCodexAdditionalContext(
    * setting, so the prompt cannot claim tools the turn doesn't have.
    */
   toolsAvailable: boolean | T3CodeToolAvailability = true,
-): Record<string, V2TurnStartParams__AdditionalContextEntry> {
+): CodexAdditionalContext {
   const tools = toolInstructions(toolsAvailable);
   // Separate keys keep each value under Codex's per-entry token cap.
   return {
+    t3_code_orchestration: {
+      kind: "application",
+      value: T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim(),
+    },
     t3_code_runtime: {
       kind: "application",
       value: buildRuntimeInstructions({ harness: "Codex", ...runtime }),

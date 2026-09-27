@@ -145,7 +145,7 @@ describe("UsageService", () => {
   it.live("keeps Cursor credential errors visible when a saved login cannot be read", () =>
     Effect.gen(function* () {
       const { settings, home } = yield* setup;
-      const authPath = NodePath.join(home, "config", "cursor", "auth.json");
+      const authPath = NodePath.join(home, ".config", "cursor", "auth.json");
       yield* Effect.promise(async () => {
         await NodeFSP.mkdir(NodePath.dirname(authPath), { recursive: true });
         await NodeFSP.writeFile(authPath, "invalid json");

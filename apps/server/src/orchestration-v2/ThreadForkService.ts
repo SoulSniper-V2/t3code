@@ -30,6 +30,23 @@ export class ThreadForkPlanError extends Schema.TaggedError<ThreadForkPlanError>
   },
 ) {}
 
+/** A fork can start from any provider-finished run, including usage-limited runs. */
+export function isForkableSourceRunStatus(status: OrchestrationV2Run["status"]): boolean {
+  return (
+    status === "completed" ||
+    status === "waiting" ||
+    status === "failed" ||
+    status === "interrupted" ||
+    status === "cancelled"
+  );
+}
+
+export function forkableSourceRunStatusError(
+  run: Pick<OrchestrationV2Run, "id" | "status">,
+): string {
+  return `Fork source run ${run.id} is ${run.status}; in-progress and rolled-back runs cannot be forked.`;
+}
+
 export interface ThreadForkServiceV2Shape {
   readonly plan: (input: {
     readonly sourceProjection: Pick<OrchestrationV2ThreadProjection, "thread">;
@@ -55,11 +72,11 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
   ThreadForkServiceV2.of({
     plan: (input) =>
       Effect.gen(function* () {
-        if (input.sourceRun.status !== "completed") {
+        if (!isForkableSourceRunStatus(input.sourceRun.status)) {
           return yield* new ThreadForkPlanError({
             sourceThreadId: input.sourceProjection.thread.id,
             targetThreadId: input.targetThreadId,
-            cause: `Fork source run ${input.sourceRun.id} is ${input.sourceRun.status}.`,
+            cause: forkableSourceRunStatusError(input.sourceRun),
           });
         }
         const targetThread: OrchestrationV2AppThread = {

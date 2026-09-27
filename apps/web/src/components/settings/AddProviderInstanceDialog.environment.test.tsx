@@ -126,7 +126,12 @@ describe("AddProviderInstanceDialog environment routing", () => {
     expect(settingsHooks.mutate).toHaveBeenCalledWith({
       operation: "create",
       instanceId: "codex_3",
-      instance: { driver: "codex", enabled: true, displayName: "Codex" },
+      instance: {
+        driver: "codex",
+        enabled: true,
+        displayName: "Codex",
+        config: { shadowHomePath: "~/.codex-t3/codex_3" },
+      },
     });
   });
 

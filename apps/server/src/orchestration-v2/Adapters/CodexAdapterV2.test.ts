@@ -479,7 +479,7 @@ describe("CodexAdapterV2 runtime policy", () => {
     }),
   );
 
-  it.effect("adds default-mode developer instructions when the T3 MCP server is attached", () =>
+  it.effect("adds T3 host and tool context when the T3 MCP server is attached", () =>
     Effect.gen(function* () {
       const params = yield* buildCodexTurnStartParams({
         nativeThreadId: "native-orchestration-instructions",
@@ -498,13 +498,18 @@ describe("CodexAdapterV2 runtime policy", () => {
 
       assert.equal(params.collaborationMode?.mode, "default");
       assert.include(
-        params.collaborationMode?.settings.developer_instructions ?? "",
+        params.additionalContext?.t3_code_orchestration?.value ?? "",
         "Use `delegate_task`",
       );
       assert.include(
-        params.collaborationMode?.settings.developer_instructions ?? "",
+        params.additionalContext?.t3_code_orchestration?.value ?? "",
         "structured object, never as JSON text",
       );
+      assert.include(
+        params.additionalContext?.t3_code_runtime?.value ?? "",
+        "through the Codex harness",
+      );
+      assert.include(params.additionalContext?.t3_code_tools?.value ?? "", "preview_status");
     }),
   );
 
@@ -526,6 +531,7 @@ describe("CodexAdapterV2 runtime policy", () => {
       });
 
       assert.isUndefined(params.collaborationMode);
+      assert.isUndefined(params.additionalContext);
     }),
   );
 
@@ -551,10 +557,7 @@ describe("CodexAdapterV2 runtime policy", () => {
         params.collaborationMode?.settings.developer_instructions ?? "",
         "request_user_input",
       );
-      assert.include(
-        params.collaborationMode?.settings.developer_instructions ?? "",
-        "preview_status",
-      );
+      assert.include(params.additionalContext?.t3_code_tools?.value ?? "", "preview_status");
     }),
   );
 
@@ -577,6 +580,7 @@ describe("CodexAdapterV2 runtime policy", () => {
 
       assert.equal(params.collaborationMode?.mode, "plan");
       assert.notProperty(params.collaborationMode?.settings, "developer_instructions");
+      assert.isUndefined(params.additionalContext);
     }),
   );
 

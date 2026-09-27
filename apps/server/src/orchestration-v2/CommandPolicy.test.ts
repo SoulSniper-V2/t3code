@@ -473,10 +473,30 @@ layer("CommandPolicyV2", (it) => {
         capabilities: CodexProviderCapabilitiesV2,
         sameProvider: true,
         hasStrongNativeSource: true,
+        sourceRunStatus: "completed",
         fromSpecificTurn: true,
       });
 
       assert.equal(result, "native_fork");
+    }),
+  );
+
+  it.effect("uses bounded portable context for failed source runs", () =>
+    Effect.gen(function* () {
+      const policy = yield* CommandPolicyV2;
+
+      const result = yield* policy.decideForkExecution({
+        commandId,
+        threadId,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        capabilities: CodexProviderCapabilitiesV2,
+        sameProvider: true,
+        hasStrongNativeSource: true,
+        sourceRunStatus: "failed",
+        fromSpecificTurn: true,
+      });
+
+      assert.equal(result, "portable_context");
     }),
   );
 
@@ -491,6 +511,7 @@ layer("CommandPolicyV2", (it) => {
         capabilities: CursorProviderCapabilitiesV2,
         sameProvider: true,
         hasStrongNativeSource: true,
+        sourceRunStatus: "completed",
         fromSpecificTurn: true,
       });
 
@@ -509,6 +530,7 @@ layer("CommandPolicyV2", (it) => {
         capabilities: GrokProviderCapabilitiesV2,
         sameProvider: true,
         hasStrongNativeSource: true,
+        sourceRunStatus: "completed",
         fromSpecificTurn: true,
       });
 
@@ -538,6 +560,7 @@ layer("CommandPolicyV2", (it) => {
           })),
           sameProvider: true,
           hasStrongNativeSource: true,
+          sourceRunStatus: "completed",
           fromSpecificTurn: true,
         })
         .pipe(Effect.flip);

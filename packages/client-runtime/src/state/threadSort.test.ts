@@ -1,4 +1,4 @@
-import { ProjectId, TurnId, type OrchestrationLatestTurn } from "@t3tools/contracts";
+import { MessageId, ProjectId, RunId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -16,6 +16,7 @@ import {
   type SettledThreadTimestampInput,
   type ThreadSortInput,
 } from "./threadSort.ts";
+import type { ThreadRunSummary } from "./models.ts";
 
 describe("activeThreadAnchorTimestampMs", () => {
   it("uses the later unsettle time when an old thread re-enters the active list", () => {
@@ -78,13 +79,13 @@ describe("sortSettledThreads", () => {
     id: string;
     settledAt?: string | null;
     latestUserMessageAt?: string | null;
-    latestTurn?: OrchestrationLatestTurn | null;
+    latestRun?: ThreadRunSummary | null;
     updatedAt?: string;
   }) => ({
     id: input.id,
     settledAt: input.settledAt ?? null,
     latestUserMessageAt: input.latestUserMessageAt ?? null,
-    latestTurn: input.latestTurn ?? null,
+    latestRun: input.latestRun ?? null,
     updatedAt: input.updatedAt ?? "2026-03-09T09:00:00.000Z",
   });
 
@@ -116,17 +117,17 @@ describe("sortSettledThreads", () => {
     expect(sorted.map((thread) => thread.id)).toEqual(["auto-recent", "explicit", "auto-old"]);
   });
 
-  it("counts a turn completion as activity for auto-settled threads", () => {
-    // The message came in before the other thread's, but its turn finished
+  it("counts a run completion as activity for auto-settled threads", () => {
+    // The message came in before the other thread's, but its run finished
     // after: completion time is the real "work ended" moment.
     const sorted = sortSettledThreads([
       settled({ id: "message-only", latestUserMessageAt: "2026-03-09T10:04:00.000Z" }),
       settled({
         id: "completed-later",
         latestUserMessageAt: "2026-03-09T10:00:00.000Z",
-        latestTurn: {
-          turnId: TurnId.make("turn-1"),
-          state: "completed",
+        latestRun: {
+          runId: RunId.make("run-1"),
+          status: "completed",
           assistantMessageId: null,
           requestedAt: "2026-03-09T10:00:00.000Z",
           startedAt: "2026-03-09T10:00:00.000Z",

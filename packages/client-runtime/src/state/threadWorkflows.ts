@@ -93,9 +93,17 @@ export function threadSupportsProviderHandoff(projection: Projection | null | un
   if (session !== null) {
     return session.capabilities.sessions.supportsProviderSwitchingViaHandoff;
   }
-  return (
-    resolveActiveThreadRun(projection) === null &&
-    (projection.thread.historyOrigin === "v1_import" || projection.runs.length === 0)
+  if (resolveActiveThreadRun(projection) !== null) return false;
+  if (projection.thread.historyOrigin === "v1_import" || projection.runs.length === 0) return true;
+
+  // A detached session is removed from the projection, but a strong native
+  // thread reference can still provide portable context for the next turn.
+  return projection.providerThreads.some(
+    (thread) =>
+      thread.id === projection.thread.activeProviderThreadId &&
+      thread.appThreadId === projection.thread.id &&
+      thread.providerInstanceId === projection.thread.modelSelection.instanceId &&
+      thread.nativeThreadRef !== null,
   );
 }
 

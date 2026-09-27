@@ -1557,7 +1557,6 @@ function ImportStep({
           </DialogFooter>
         </DialogPopup>
       </Dialog>
-      {importError ? <p className="mt-3 text-sm text-destructive">{importError}</p> : null}
       <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
         <Button variant="ghost-muted" disabled={isImporting} onClick={finishAfterImport}>
           Do not import projects

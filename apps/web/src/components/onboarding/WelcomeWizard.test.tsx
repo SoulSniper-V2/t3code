@@ -9,10 +9,14 @@ const mocks = vi.hoisted(() => ({
   createProject: vi.fn(),
   complete: vi.fn(),
   refresh: vi.fn(),
+  listSessions: vi.fn(),
   toast: vi.fn(),
   projects: [] as Array<{ id: string; environmentId: string; workspaceRoot: string }>,
 }));
-vi.mock("../../state/agentSessions", () => ({ agentSessionImport: "import" }));
+vi.mock("../../state/agentSessions", () => ({
+  agentSessionImport: "import",
+  agentSessionList: "list",
+}));
 vi.mock("../../state/projects", () => ({ projectEnvironment: { create: "create" } }));
 vi.mock("../../state/use-atom-command", () => ({
   useAtomCommand: (command: string) =>
@@ -21,6 +25,9 @@ vi.mock("../../state/use-atom-command", () => ({
       : command === "create"
         ? mocks.createProject
         : mocks.refresh,
+}));
+vi.mock("../../state/use-atom-query-runner", () => ({
+  useAtomQueryRunner: () => mocks.listSessions,
 }));
 vi.mock("../../onboarding/firstRun", () => ({ useCompleteOnboarding: () => mocks.complete }));
 vi.mock("../../state/entities", () => ({
@@ -106,6 +113,10 @@ beforeEach(() => {
   mocks.importThreads.mockResolvedValue({
     _tag: "Success",
     value: { importedCount: 28, skippedCount: 1 },
+  });
+  mocks.listSessions.mockResolvedValue({
+    _tag: "Success",
+    value: { sessions: [], skippedCount: 0 },
   });
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   container = document.createElement("div");
