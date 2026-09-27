@@ -1,6 +1,7 @@
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
 
 import {
   CheckpointId,
@@ -2865,6 +2866,48 @@ export const OrchestrationV2ThreadHistoryPage = Schema.Struct({
 });
 export type OrchestrationV2ThreadHistoryPage = typeof OrchestrationV2ThreadHistoryPage.Type;
 
+const knownDomainEventTypes: ReadonlySet<string> = new Set(
+  OrchestrationV2DomainEvent.members.flatMap((member) => {
+    const type = member.fields.type;
+    return "literals" in type ? type.literals : [type.literal];
+  }),
+);
+
+/**
+ * A thread event whose type this build does not know. Newer servers add event
+ * types; older clients decode them to this case and skip them, still advancing
+ * their resume cursor, instead of failing the whole subscription. A known type
+ * whose payload does not decode still fails. Decode-only: servers never send it.
+ */
+const OrchestrationV2UnknownThreadStreamEvent = Schema.Struct({
+  kind: Schema.Literal("event"),
+  sequence: NonNegativeInt,
+  event: Schema.Struct({
+    type: Schema.String.check(
+      Schema.makeFilter(
+        (type: string) =>
+          !knownDomainEventTypes.has(type) || "A known event type must decode in full.",
+      ),
+    ),
+  }),
+}).pipe(
+  Schema.decodeTo(
+    Schema.Struct({
+      kind: Schema.Literal("unknown-event"),
+      sequence: NonNegativeInt,
+      eventType: Schema.String,
+    }),
+    {
+      decode: SchemaGetter.transform((item) => ({
+        kind: "unknown-event" as const,
+        sequence: item.sequence,
+        eventType: item.event.type,
+      })),
+      encode: SchemaGetter.forbidden(() => "Servers never send unknown thread events."),
+    },
+  ),
+);
+
 export const OrchestrationV2ThreadStreamItem = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("synchronized"),
@@ -2887,6 +2930,8 @@ export const OrchestrationV2ThreadStreamItem = Schema.Union([
     sequence: NonNegativeInt,
     event: OrchestrationV2DomainEvent,
   }),
+  // After the known arm: union members are tried in order.
+  OrchestrationV2UnknownThreadStreamEvent,
 ]);
 export type OrchestrationV2ThreadStreamItem = typeof OrchestrationV2ThreadStreamItem.Type;
 
