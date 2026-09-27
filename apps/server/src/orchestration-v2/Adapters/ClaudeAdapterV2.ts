@@ -2519,6 +2519,8 @@ interface ActiveClaudeTurnContext {
   // Root frames seen before the echo; held only when the CLI echoes early.
   gatedFramesBeforeEcho: number;
   readonly heldRootFrames: Array<SDKMessage>;
+  /** Resolves when an interrupted turn has emitted its terminal projection. */
+  interruptedTurnSettled: Deferred.Deferred<void, never> | null;
 }
 
 interface ActiveClaudeProviderRetry {
@@ -2572,6 +2574,8 @@ interface ActiveClaudeToolCall {
 }
 
 const PENDING_CLAUDE_SUBAGENT_MODEL_CAP = 64;
+/** Let Claude record an aborted prompt before closing the SDK query. */
+const CLAUDE_INTERRUPT_GRACE = "3 seconds";
 // Per-subagent bound on frames held while waiting for task_started.
 const PENDING_CLAUDE_SUBAGENT_FRAME_CAP = 256;
 
@@ -4545,6 +4549,11 @@ export function makeClaudeAdapterV2(
             next.delete(input.context.providerTurnId);
             return next;
           });
+          if (input.context.interruptedTurnSettled !== null) {
+            const interruptedTurnSettled = input.context.interruptedTurnSettled;
+            input.context.interruptedTurnSettled = null;
+            yield* Deferred.succeed(interruptedTurnSettled, undefined);
+          }
         });
 
         const emitAssistantTextArtifacts = Effect.fnUntraced(function* (input: {
@@ -6444,6 +6453,7 @@ export function makeClaudeAdapterV2(
               promptEcho: isClaudeProviderContinuationTurn(turnInput) ? "confirmed" : "pending",
               gatedFramesBeforeEcho: 0,
               heldRootFrames: [],
+              interruptedTurnSettled: null,
             };
             // Continuation turns attach to the wake output the CLI already
             // produced instead of prompting it again: drain the buffered wake
@@ -6592,7 +6602,18 @@ export function makeClaudeAdapterV2(
               next.add(turnInput.providerTurnId);
               return next;
             });
-            yield* existing.query.interrupt;
+            const interruptedTurnSettled = yield* Deferred.make<void, never>();
+            currentTurn.interruptedTurnSettled = interruptedTurnSettled;
+            // Claude may acknowledge interrupt before it has written the
+            // aborted prompt/result to its transcript. Let that result finish
+            // flowing through finalizeActiveTurn before closing the query.
+            yield* existing.query.interrupt.pipe(Effect.ignore);
+            yield* Deferred.await(interruptedTurnSettled).pipe(
+              Effect.timeoutOption(CLAUDE_INTERRUPT_GRACE),
+            );
+            if (currentTurn.interruptedTurnSettled === interruptedTurnSettled) {
+              currentTurn.interruptedTurnSettled = null;
+            }
             yield* existing.query.close.pipe(Effect.ignore);
             const closed = yield* Deferred.await(existing.closed).pipe(
               Effect.timeoutOption("10 seconds"),
