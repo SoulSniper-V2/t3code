@@ -9,11 +9,13 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import {
   baseSshArgs,
   getLastNonEmptyOutputLine,
   parseSshResolveOutput,
+  resolveSshCommand,
   runSshCommand,
 } from "./command.ts";
 import { SshCommandError } from "./errors.ts";
@@ -64,6 +66,18 @@ const makeNeverFinishingProcess = () => {
 };
 
 describe("ssh command", () => {
+  it.effect("uses the system OpenSSH executable on macOS", () =>
+    Effect.gen(function* () {
+      assert.equal(yield* resolveSshCommand, "/usr/bin/ssh");
+    }).pipe(Effect.provideService(HostProcessPlatform, "darwin")),
+  );
+
+  it.effect("keeps platform-specific SSH executable names elsewhere", () =>
+    Effect.gen(function* () {
+      assert.equal(yield* resolveSshCommand, "ssh");
+    }).pipe(Effect.provideService(HostProcessPlatform, "linux")),
+  );
+
   it.effect("parses resolved ssh config output into a target", () =>
     Effect.sync(() => {
       assert.deepEqual(

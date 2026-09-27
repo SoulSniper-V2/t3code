@@ -23,7 +23,7 @@ const MAX_SSH_ERROR_OUTPUT_LENGTH = 4_000;
  * identity-file paths containing spaces.
  */
 const sshCommandForPlatform = (platform: NodeJS.Platform): string =>
-  platform === "win32" ? "ssh.exe" : "ssh";
+  platform === "win32" ? "ssh.exe" : platform === "darwin" ? "/usr/bin/ssh" : "ssh";
 
 export const resolveSshCommand = Effect.map(HostProcessPlatform, sshCommandForPlatform);
 
