@@ -2422,6 +2422,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       extendInfo: {
         NSScreenCaptureUsageDescription:
           "T3 Code captures the active window when you use the window capture shortcut.",
+        NSLocalNetworkUsageDescription:
+          "T3 Code uses your local network to connect to SSH backends and paired T3 environments.",
       },
       protocols: [
         {

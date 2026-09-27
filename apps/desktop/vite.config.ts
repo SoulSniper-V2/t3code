@@ -3,6 +3,7 @@ import { defineConfig } from "vite-plus";
 
 import { isDesktopRuntimeExternalDependency } from "../../scripts/lib/desktop-external-packages.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
+import { resolveDesktopSshCliReleaseBaseUrl } from "./src/ssh/desktopSshCliRunner.ts";
 
 const repoEnv = loadRepoEnv();
 
@@ -17,6 +18,13 @@ const shouldLaunchElectronAfterPack = process.env.T3CODE_DESKTOP_DEV === "1";
 const publicConfigDefine = {
   __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: JSON.stringify(
     repoEnv.T3CODE_CLERK_PUBLISHABLE_KEY?.trim() ?? "",
+  ),
+  __T3CODE_BUILD_CLI_RELEASE_BASE_URL__: JSON.stringify(
+    resolveDesktopSshCliReleaseBaseUrl({
+      releaseBaseUrl: repoEnv.T3CODE_RELEASE_BASE_URL,
+      updateRepository: repoEnv.T3CODE_DESKTOP_UPDATE_REPOSITORY,
+      githubRepository: repoEnv.GITHUB_REPOSITORY,
+    }) ?? "",
   ),
 };
 
