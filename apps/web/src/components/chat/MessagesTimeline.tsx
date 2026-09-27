@@ -2966,6 +2966,164 @@ function subagentGroupTiming(
   };
 }
 
+/**
+ * Thinking inside a tool group has its own disclosure, preserved across recycling.
+ * A group whose row already reads "Thought" (no visible tool) skips the header.
+ */
+function ReasoningTraceBlock({
+  anchorKey,
+  messages,
+  live,
+  showHeader,
+}: {
+  anchorKey: string;
+  messages: ReadonlyArray<ChatMessage>;
+  live: boolean;
+  showHeader: boolean;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const { isWorking, unsettledTurnId } = use(TimelineRowActivityCtx);
+  const first = messages[0]!;
+  const expanded = !showHeader || ctx.expandedReasoningMessageIds.has(first.id);
+  const streaming =
+    live &&
+    messages.some((reasoningMessage) => reasoningMessage.streaming) &&
+    isWorking &&
+    first.turnId !== null &&
+    first.turnId === unsettledTurnId;
+  if (
+    messages.every((reasoningMessage) => reasoningMessage.text.trim().length === 0) &&
+    !streaming
+  ) {
+    return null;
+  }
+  const label = streaming ? "Thinking" : "Thought";
+  const collapsedPreview = messages.find((message) => message.text.trim().length > 0)?.text.trim();
+  const headerText = expanded ? (
+    label
+  ) : (
+    <ReactMarkdown remarkPlugins={[remarkGfm, [remarkThoughtPreview, label]]}>
+      {collapsedPreview ?? label}
+    </ReactMarkdown>
+  );
+  return (
+    <div className="flex flex-col">
+      {showHeader ? (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => ctx.onToggleReasoning(first.id, !expanded, anchorKey)}
+          className="flex min-h-6 cursor-pointer select-none items-center gap-1.5 rounded-md ps-0.5 pe-2 text-start text-sm leading-relaxed transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+        >
+          <span className="flex size-6 shrink-0 items-center justify-center text-icon-muted">
+            <BrainIcon aria-hidden className="block size-4 shrink-0 stroke-2 opacity-70" />
+          </span>
+          <span
+            ref={streaming ? observeVisibleAnimation : undefined}
+            className="relative min-w-0 flex-1 truncate text-secondary-label"
+          >
+            {headerText}
+            {streaming ? <ActivityShimmerOverlay>{headerText}</ActivityShimmerOverlay> : null}
+          </span>
+          <span className="flex size-4 shrink-0 items-center justify-center" aria-hidden>
+            <ChevronRightIcon
+              className={cn(
+                "size-3 shrink-0 text-icon-muted opacity-70 transition-transform duration-200",
+                expanded && "rotate-90",
+              )}
+            />
+          </span>
+        </button>
+      ) : null}
+      {expanded ? (
+        <div className="ms-7 flex max-h-96 flex-col gap-3 overflow-auto px-0.5 py-1 select-text">
+          {messages.map((reasoningMessage) => (
+            <ChatMarkdown
+              key={reasoningMessage.id}
+              className="text-foreground"
+              text={reasoningMessage.text}
+              cwd={ctx.markdownCwd}
+              threadRef={ctx.threadRef ?? undefined}
+              isStreaming={streaming && reasoningMessage.streaming}
+              lineBreaks
+              skills={ctx.skills}
+              headingLevelOffset={MESSAGE_HEADING_LEVEL}
+              onUseArtifactTemplate={ctx.onUseArtifactTemplate}
+              onImageExpand={ctx.onImageExpand}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * A provider's thinking trace. Collapsed by default: reasoning is context for
+ * the answer, not the answer. The open/closed flag lives on the list so it
+ * survives row recycling in the virtualizer.
+ */
+const ReasoningTimelineRow = memo(function ReasoningTimelineRow({
+  row,
+}: {
+  row: Extract<TimelineRow, { kind: "message" }>;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const { message } = row;
+  const expanded = ctx.expandedReasoningMessageIds.has(message.id);
+  const { onToggleReasoning } = ctx;
+  const toggle = useCallback(() => {
+    onToggleReasoning(message.id, !expanded, row.id);
+  }, [expanded, message.id, row.id, onToggleReasoning]);
+
+  if (message.text.trim().length === 0) {
+    return null;
+  }
+
+  return (
+    <div className={cn("flex flex-col", expanded && "mb-1")}>
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={toggle}
+        className="flex cursor-pointer select-none items-center gap-1.5 rounded-md px-0.5 py-0.5 text-start transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+      >
+        <span className="flex size-6 shrink-0 items-center justify-center text-icon-muted">
+          <BrainIcon aria-hidden className="block size-4 shrink-0 stroke-2 opacity-70" />
+        </span>
+        <span className="flex min-w-0 flex-1 items-center gap-1.5">
+          <span className="relative min-w-0 flex-1 truncate text-secondary-label text-sm leading-relaxed">
+            Thought
+          </span>
+          <span className="flex size-4 shrink-0 items-center justify-center" aria-hidden>
+            <ChevronRightIcon
+              className={cn(
+                "size-3 shrink-0 text-icon-muted opacity-70 transition-transform duration-200",
+                expanded && "rotate-90",
+              )}
+            />
+          </span>
+        </span>
+      </button>
+      {expanded ? (
+        <div className="mt-1 ms-7 flex max-h-96 flex-col gap-3 overflow-auto px-0.5 py-1 select-text">
+          <ChatMarkdown
+            className="text-foreground"
+            text={message.text}
+            cwd={ctx.markdownCwd}
+            threadRef={ctx.threadRef ?? undefined}
+            lineBreaks
+            skills={ctx.skills}
+            headingLevelOffset={MESSAGE_HEADING_LEVEL}
+            onUseArtifactTemplate={ctx.onUseArtifactTemplate}
+            onImageExpand={ctx.onImageExpand}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
 const V2SubagentGroup = memo(function V2SubagentGroup({
   row,
 }: {
