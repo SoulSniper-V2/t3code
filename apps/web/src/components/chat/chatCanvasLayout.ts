@@ -51,6 +51,27 @@ export function resolveChatCanvasLayout({
       preview.lastInteraction === "resize" ? GAP : padding + minChatWidth + GAP;
     // New players start beside the composer, with the workspace card above them.
     if (preview.position === null) frame = { ...frame, y: container.height - frame.height - GAP };
+    if (preview.lastInteraction === "resize" && composerHeight > 0) {
+      // Lift the preview while chat uses its remaining shrink room, reaching
+      // the composer's top before the preview enters the readable chat lane.
+      const laneWidth = Math.min(normalWidth, minChatWidth);
+      const transitionWidth = Math.max(GAP, normalWidth - laneWidth);
+      const lift = Math.min(
+        1,
+        Math.max(0, (padding + normalWidth + GAP - frame.x) / transitionWidth),
+      );
+      if (lift > 0) {
+        frame = resolvePreviewMiniPlayerFrame({
+          width: frame.width,
+          position: frame,
+          source: preview.source,
+          container: {
+            ...container,
+            height: Math.max(GAP * 2 + 1, container.height - composerHeight * lift),
+          },
+        });
+      }
+    }
     const preferredFrame = {
       ...frame,
       ...clampPreviewMiniPlayerPosition(frame, container, frame, undefined, minimumPreviewX),
@@ -90,7 +111,15 @@ export function resolveChatCanvasLayout({
     }
     if (nextChat) chat = nextChat;
     else overlapsChat = true;
-    if (overlapsChat) {
+    if (overlapsChat && preview.lastInteraction === "resize") {
+      const width = Math.min(normalWidth, minChatWidth);
+      chat = {
+        left: padding,
+        width,
+        insetStart: 0,
+        insetEnd: Math.max(0, container.width - padding * 2 - width),
+      };
+    } else if (overlapsChat) {
       const obstacles = {
         detailsCard: cardObstacle,
         composer: { left: chat.left, right: chat.left + chat.width, height: composerHeight },

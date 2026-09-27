@@ -45,11 +45,24 @@ const XAiSessionUpdateNotification = Schema.Struct({
     promptId: Schema.optional(Schema.String),
     stop_reason: Schema.optional(Schema.String),
     stopReason: Schema.optional(Schema.String),
+    // subagent_finished
+    child_session_id: Schema.optional(Schema.String),
+    status: Schema.optional(Schema.String),
+    output: Schema.optional(Schema.NullOr(Schema.String)),
+    error: Schema.optional(Schema.NullOr(Schema.String)),
   }),
   _meta: Schema.optional(Schema.Unknown),
 });
 
 type XAiSessionUpdateNotification = typeof XAiSessionUpdateNotification.Type;
+
+const decodeXAiSessionUpdateNotification = Schema.decodeUnknownEffect(XAiSessionUpdateNotification);
+
+const xAiSessionNotificationMethods = [
+  "x.ai/session_notification",
+  "_x.ai/session_notification",
+  "_x.ai/session/update",
+] as const;
 
 const XAI_TASK_COMPLETED_PROMPT_ID_PREFIX = "task-completed-";
 
@@ -262,7 +275,23 @@ export function isXAiMonitorTool(toolCall: AcpToolCallState): boolean {
   return isXAiMonitorStartAck(xAiToolOutputText(toolCall));
 }
 
+/**
+ * A shell command Grok runs in the background (asked for, or moved there after
+ * its auto-background timeout) acknowledges with
+ * `{ type: "BackgroundTaskStarted", task_id }` and completes its tool call
+ * while the process still runs. Like a monitor, it ends only with
+ * `x.ai/task_completed` for that task id.
+ */
+function xAiBackgroundShellTaskId(toolCall: AcpToolCallState): string | undefined {
+  const rawOutput = unknownRecord(toolCall.data.rawOutput);
+  return nonEmptyString(rawOutput?.type) === "BackgroundTaskStarted"
+    ? nonEmptyString(rawOutput?.task_id)
+    : undefined;
+}
+
 export function extractXAiMonitorTaskId(toolCall: AcpToolCallState): string | undefined {
+  const backgroundShellTaskId = xAiBackgroundShellTaskId(toolCall);
+  if (backgroundShellTaskId !== undefined) return backgroundShellTaskId;
   if (!isXAiMonitorTool(toolCall)) return undefined;
   const rawOutput = unknownRecord(toolCall.data.rawOutput);
   // Live ACP start ACK: { type: "Monitor", taskId, timeoutMs, persistent }
@@ -380,6 +409,8 @@ const XAiTaskLifecycleNotification = Schema.Struct({
     task_snapshot: Schema.optional(
       Schema.Struct({
         task_id: Schema.optional(Schema.String),
+        output: Schema.optional(Schema.String),
+        exit_code: Schema.optional(Schema.NullOr(Schema.Number)),
       }),
     ),
   }),
@@ -391,7 +422,9 @@ type XAiTaskLifecycleNotification = typeof XAiTaskLifecycleNotification.Type;
 export interface XAiBackgroundTaskLifecycleMutation {
   readonly sessionId: string;
   readonly taskId: string;
-  readonly status: "running" | "completed";
+  readonly status: "running" | "completed" | "failed";
+  /** Final output from `task_completed.task_snapshot`, when Grok sent one. */
+  readonly output?: string;
 }
 
 export function xAiBackgroundTaskLifecycleMutation(
@@ -404,7 +437,15 @@ export function xAiBackgroundTaskLifecycleMutation(
     nonEmptyString(update.task_id) ??
     nonEmptyString(update.tool_call_id);
   if (taskId === undefined) return null;
-  return { sessionId: notification.sessionId, taskId, status };
+  const exitCode = update.task_snapshot?.exit_code;
+  const output = update.task_snapshot?.output;
+  return {
+    sessionId: notification.sessionId,
+    taskId,
+    status:
+      status === "completed" && typeof exitCode === "number" && exitCode !== 0 ? "failed" : status,
+    ...(output === undefined ? {} : { output }),
+  };
 }
 
 /**
@@ -431,6 +472,62 @@ export const registerXAiBackgroundTaskTracking = (
       runtime.handleExtNotification(method, XAiTaskLifecycleNotification, (notification) => {
         const mutation = xAiBackgroundTaskLifecycleMutation(notification, status);
         return mutation === null ? Effect.void : apply(mutation);
+      }),
+    { discard: true },
+  );
+
+/**
+ * A background subagent's end, sent on its PARENT session as
+ * `{ sessionUpdate: "subagent_finished", child_session_id, status, output, error }`
+ * (grok-build `crates/codegen/xai-grok-shell/src/extensions/notification.rs`
+ * `SessionUpdate::SubagentFinished`). `status` is exactly "completed",
+ * "failed" or "cancelled" (`SubagentResult::status()` in
+ * `crates/codegen/xai-grok-tools/src/implementations/grok_build/task/types.rs`);
+ * `output` is the final text of a completed subagent and `error` the message
+ * of a failed one. Grok follows it with its own `subagent-completed-<id>` wake
+ * turn when `will_wake` is true.
+ */
+export interface XAiSubagentFinishedNotice {
+  readonly sessionId: string;
+  readonly childSessionId: string;
+  readonly status: "completed" | "failed" | "cancelled";
+  readonly result: string | null;
+}
+
+/** Null for other session updates, and for a status Grok does not define. */
+export function xAiSubagentFinishedNotice(
+  notification: XAiSessionUpdateNotification,
+): XAiSubagentFinishedNotice | null {
+  const update = notification.update;
+  const childSessionId = nonEmptyString(update.child_session_id);
+  if (update.sessionUpdate !== "subagent_finished" || childSessionId === undefined) return null;
+  const status = update.status;
+  if (status !== "completed" && status !== "failed" && status !== "cancelled") return null;
+  const text = status === "completed" ? update.output : update.error;
+  return {
+    sessionId: notification.sessionId,
+    childSessionId,
+    status,
+    result: nonEmptyString(text ?? undefined) ?? null,
+  };
+}
+
+/**
+ * Finishes background subagents from Grok's `subagent_finished`. These arrive
+ * on the session notification methods that also carry turn completion; a
+ * runtime from {@link makeXAiPromptCompletionRuntime} settles its prompt from
+ * each notification before passing it to this handler.
+ */
+export const registerXAiSubagentFinished = (
+  runtime: Pick<AcpSessionRuntime.AcpSessionRuntime["Service"], "handleExtNotification">,
+  finish: (notice: XAiSubagentFinishedNotice) => Effect.Effect<void>,
+): Effect.Effect<void> =>
+  Effect.forEach(
+    xAiSessionNotificationMethods,
+    (method) =>
+      runtime.handleExtNotification(method, XAiSessionUpdateNotification, (notification) => {
+        const notice = xAiSubagentFinishedNotice(notification);
+        return notice === null ? Effect.void : finish(notice);
       }),
     { discard: true },
   );
@@ -480,10 +577,11 @@ export function resolveXAiAcpToolTitle(toolCall: AcpToolCallState): string | und
  * - replace generic titles ("Tool") with description / variant labels
  * - structured Monitor start ACK stays running
  * - text start ACK stays running
- * - structured Bash results with exit_code are terminal (any tool: post-settle
- *   wake re-reports of a finished monitor arrive with empty rawInput and a
- *   generic title, so monitor detection cannot match; without this they replay
- *   as running and the timeline row spins forever)
+ * - structured Bash results with exit_code are terminal, unless Grok itself
+ *   still reports the tool running. Grok 1.0.41 streams every monitor tick as
+ *   `status: "in_progress"` with a Bash-shaped rawOutput whose exit_code is
+ *   already 0, and never sends a completed status for the monitor; its end
+ *   arrives as `_x.ai/task_completed`.
  */
 export function normalizeXAiAcpToolCallState(toolCall: AcpToolCallState): AcpToolCallState {
   const resolvedTitle = resolveXAiAcpToolTitle(toolCall);
@@ -494,7 +592,8 @@ export function normalizeXAiAcpToolCallState(toolCall: AcpToolCallState): AcpToo
 
   const rawOutput = unknownRecord(withTitle.data.rawOutput);
   const outputType = nonEmptyString(rawOutput?.type)?.toLowerCase();
-  if (outputType === "bash") {
+  const reportedRunning = withTitle.status === "inProgress" || withTitle.status === "pending";
+  if (outputType === "bash" && !reportedRunning) {
     // Same key set as the adapter's command projection (commandExitCode).
     const exitCode = ["exit_code", "exitCode", "code"]
       .map((key) => rawOutput?.[key])
@@ -508,6 +607,10 @@ export function normalizeXAiAcpToolCallState(toolCall: AcpToolCallState): AcpToo
         status: exitCode === 0 ? "completed" : "failed",
       };
     }
+  }
+  if (xAiBackgroundShellTaskId(withTitle) !== undefined) {
+    // Start acknowledgement only; the command still runs in the background.
+    return { ...withTitle, status: "inProgress" };
   }
   if (!isXAiMonitorTool(withTitle)) {
     return withTitle;
@@ -1383,6 +1486,14 @@ const rememberCompletedXAiPromptId = (
  */
 export const makeXAiPromptCompletionRuntime = Effect.fn("makeXAiPromptCompletionRuntime")(
   function* (runtime: AcpSessionRuntime.AcpSessionRuntime["Service"]) {
+    // Grok sends turn completion and other session updates (subagent_finished)
+    // on the same extension methods, and the client keeps one handler per
+    // method. This wrapper owns those methods: it settles prompts itself, then
+    // passes each notification to the handler registered on the wrapped runtime.
+    const sessionNotificationHandlers = new Map<
+      string,
+      (params: unknown) => Effect.Effect<void, EffectAcpErrors.AcpError>
+    >();
     let nextPromptFallbackId = 0;
     const allocatePromptFallbackId = Effect.sync(() => {
       nextPromptFallbackId += 1;
@@ -1412,20 +1523,44 @@ export const makeXAiPromptCompletionRuntime = Effect.fn("makeXAiPromptCompletion
     );
 
     yield* Effect.forEach(
-      ["x.ai/session_notification", "_x.ai/session_notification", "_x.ai/session/update"] as const,
+      xAiSessionNotificationMethods,
       (method) =>
-        runtime.handleExtNotification(method, XAiSessionUpdateNotification, (notification) => {
-          const complete = xAiPromptCompleteFromSessionUpdate(notification);
-          if (complete === null) {
-            return Effect.void;
-          }
-          return settleFromPromptComplete(complete);
-        }),
+        runtime.handleExtNotification(method, Schema.Unknown, (params) =>
+          decodeXAiSessionUpdateNotification(params).pipe(
+            Effect.flatMap((notification) => {
+              const complete = xAiPromptCompleteFromSessionUpdate(notification);
+              return complete === null ? Effect.void : settleFromPromptComplete(complete);
+            }),
+            Effect.ignore,
+            Effect.andThen(
+              Effect.suspend(
+                () => sessionNotificationHandlers.get(method)?.(params) ?? Effect.void,
+              ),
+            ),
+          ),
+        ),
       { discard: true },
     );
 
     return {
       ...runtime,
+      handleExtNotification: (method, payload, handler) =>
+        xAiSessionNotificationMethods.some((owned) => owned === method)
+          ? Effect.sync(() => {
+              sessionNotificationHandlers.set(method, (params) =>
+                Schema.decodeUnknownEffect(payload)(params).pipe(
+                  Effect.mapError((error) =>
+                    EffectAcpErrors.AcpProtocolParseError.fromSchemaError(
+                      "decode-notification-payload",
+                      method,
+                      error,
+                    ),
+                  ),
+                  Effect.flatMap(handler),
+                ),
+              );
+            })
+          : runtime.handleExtNotification(method, payload, handler),
       prompt: (payload, promptOptions?) =>
         Effect.gen(function* () {
           const started = yield* runtime.start();

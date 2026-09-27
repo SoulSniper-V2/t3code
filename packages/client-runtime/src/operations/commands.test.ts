@@ -573,6 +573,7 @@ describe("V2 environment commands", () => {
                   commandId: expect.any(String),
                   threadId: v2ThreadId,
                   runId: waitingRunId,
+                  holdQueue: true,
                 },
               ],
         );
@@ -1000,6 +1001,7 @@ describe("V2 environment commands", () => {
           commandId: "direct-interrupt",
           threadId: v2ThreadId,
           runId: "active-run",
+          holdQueue: true,
         },
       ]);
     }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),

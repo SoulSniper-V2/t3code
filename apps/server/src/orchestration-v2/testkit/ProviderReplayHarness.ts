@@ -60,7 +60,6 @@ import {
 import { layer as turnItemPositionStoreLayer } from "../TurnItemPositionStore.ts";
 import { layer as runtimeRequestServiceLayer } from "../RuntimeRequestService.ts";
 import { layer as threadForkServiceLayer } from "../ThreadForkService.ts";
-import { layer as serverEnvironmentTestLayer } from "./ServerEnvironment.testkit.ts";
 import {
   runOrchestratorV2Scenario,
   type OrchestratorV2ScenarioStepError,
@@ -119,7 +118,6 @@ export function makeReplayServerConfig(
       otlpTracesExport: DEFAULT_SIGNAL_EXPORT,
       otlpMetricsExport: DEFAULT_SIGNAL_EXPORT,
       otlpLogsExport: DEFAULT_SIGNAL_EXPORT,
-      otlpServiceName: "t3-server",
       mode: "web",
       port: 0,
       host: undefined,
@@ -451,11 +449,7 @@ export function makeOrchestratorV2ReplayLayerWithRegistry<Error>(
     effectWorkerProvided,
     eventSinkProvided,
     continuationWorkerProvided,
-  ).pipe(
-    Layer.provide(worktreeRepairDependenciesTestLayer),
-    Layer.provide(NodeServices.layer),
-    Layer.provide(serverEnvironmentTestLayer),
-  );
+  ).pipe(Layer.provide(worktreeRepairDependenciesTestLayer), Layer.provide(NodeServices.layer));
 
   // Build the daemon from the exact worker instance exposed alongside the
   // orchestrator. Keeping this acquisition in the replay layer makes the

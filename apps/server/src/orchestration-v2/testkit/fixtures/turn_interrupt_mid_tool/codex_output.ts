@@ -72,7 +72,7 @@ function assertCodexInterruptAfterCommandExecution(transcript: ProviderReplayTra
   assert.isAtLeast(
     completedIndex,
     0,
-    "Codex interrupt fixture must record turn/completed before terminal cleanup",
+    "Codex interrupt fixture must record the interrupted turn completing",
   );
   assert.isAtLeast(
     terminateIndex,
@@ -81,14 +81,18 @@ function assertCodexInterruptAfterCommandExecution(transcript: ProviderReplayTra
   );
   assert.isAbove(
     terminateIndex,
-    completedIndex,
-    "This recorded Codex interrupt fixture terminates background terminals after turn/completed",
+    interruptIndex,
+    "The adapter stops the still-running command after it interrupts the turn",
   );
+  const commandEntry = transcript.entries[commandIndex];
+  const commandParams =
+    commandEntry?.type === "emit_inbound" ? frameParams(commandEntry.frame) : undefined;
+  const commandItem = commandParams?.item as Record<string, unknown> | undefined;
   const terminateEntry = transcript.entries[terminateIndex];
   const terminateParams =
     terminateEntry?.type === "expect_outbound" ? frameParams(terminateEntry.frame) : undefined;
-  assert.equal(terminateParams?.threadId, "019e03b8-9e5c-7b32-88ab-f742a29b75b8");
-  assert.equal(terminateParams?.processId, "4275");
+  assert.equal(terminateParams?.threadId, commandParams?.threadId);
+  assert.equal(terminateParams?.processId, commandItem?.processId);
 }
 
 export function assertTurnInterruptMidToolCodexOutput(

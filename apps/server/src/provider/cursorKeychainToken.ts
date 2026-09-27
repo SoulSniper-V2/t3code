@@ -14,9 +14,8 @@ export class CursorKeychainTimeoutError extends Error {
  * Share one Keychain request across usage history and limits in this server process.
  *
  * macOS shows the access prompt on the server's own screen, which a remote
- * client cannot answer, so callers give up after `timeoutMs`. The read stays in
- * flight: the next call reuses it instead of stacking a second prompt, and picks
- * up the token once someone allows access.
+ * client cannot answer. The read stays in flight after a timeout so retries
+ * reuse the same prompt instead of stacking additional Keychain dialogs.
  */
 export function makeCachedCursorAccessTokenReader(
   read: () => Promise<string | null>,
@@ -47,7 +46,7 @@ export function makeCachedCursorAccessTokenReader(
   };
 }
 
-/** Read the Cursor CLI's default macOS credential without invoking the shared security binary. */
+/** Read Cursor's default macOS credential without invoking the shared security binary. */
 export const readMacCursorAccessToken = makeCachedCursorAccessTokenReader(async () => {
   const { AsyncEntry } = requireForKeyring("@napi-rs/keyring") as typeof import("@napi-rs/keyring");
   return (await new AsyncEntry("cursor-access-token", "cursor-user").getPassword()) ?? null;

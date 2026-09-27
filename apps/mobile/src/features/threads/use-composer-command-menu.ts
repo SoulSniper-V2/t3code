@@ -497,7 +497,6 @@ export function useComposerCommandMenu({
 
     return [];
   }, [
-    draftMessage,
     currentThreadId,
     environmentId,
     threadShells,

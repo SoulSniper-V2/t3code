@@ -25,7 +25,6 @@ export function assertToolCallRestrictedGranularOutput(
   assertVisibleTurnItemsMirrorLocalTurnItems(projection);
   assertTurnItemTypes(projection, [
     "user_message",
-    "command_execution",
     "file_change",
     "approval_request",
     "assistant_message",

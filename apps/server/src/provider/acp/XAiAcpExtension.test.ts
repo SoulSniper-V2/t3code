@@ -27,12 +27,19 @@ import {
   makeXAiPromptCompletionRuntime,
   normalizeXAiAcpToolCallState,
   registerXAiBackgroundTaskTracking,
+  registerXAiSubagentFinished,
   resolveXAiAcpToolTitle,
   xAiBackgroundTaskLifecycleMutation,
   xAiPromptCompleteFromSessionUpdate,
+  xAiSubagentFinishedNotice,
   XAiAskUserQuestionRequest,
 } from "./XAiAcpExtension.ts";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
+import {
+  type AcpToolCallState,
+  mergeToolCallState,
+  parseSessionUpdateEvent,
+} from "./AcpRuntimeModel.ts";
 
 const decodeXAiAskUserQuestionRequest = Schema.decodeUnknownSync(XAiAskUserQuestionRequest);
 
@@ -79,6 +86,16 @@ describe("xAiPromptCompleteFromSessionUpdate", () => {
     ).toBeNull();
   });
 });
+
+// Runs a recorded Grok tool_call_update through the adapter's parse path.
+function parseRecordedToolCallUpdate(update: Record<string, unknown>): AcpToolCallState {
+  const [event] = parseSessionUpdateEvent({
+    sessionId: "01a0d660-c1bb-7842-91a3-02d91dc8b0d2",
+    update,
+  } as Parameters<typeof parseSessionUpdateEvent>[0]).events;
+  if (event?._tag !== "ToolCallUpdated") throw new Error("expected a tool call update");
+  return event.toolCall;
+}
 
 describe("XAiAcpExtension", () => {
   it("recognizes Grok Task starts as native subagents", () => {
@@ -404,27 +421,77 @@ describe("XAiAcpExtension", () => {
     expect(extractXAiMonitorTaskId(normalized)).toBe("019f44a5-87d1-7640-8e35-6a4667ffc873");
   });
 
-  it("completes Monitor variant tools from structured Bash exit codes", () => {
-    const toolCall = {
-      toolCallId: "call-mon-2",
-      title: "Tool",
-      status: "inProgress" as const,
-      data: {
-        rawInput: {
-          variant: "Monitor",
-          command: "echo MON_DONE",
-          description: "Stream mon lines",
-        },
-        rawOutput: {
-          type: "Bash",
-          output: Array.from(new TextEncoder().encode("mon_line_1\nMON_DONE\n")),
-          output_for_prompt: "mon_line_1\nMON_DONE\n",
+  it("keeps Monitor ticks running while Grok reports them in progress", () => {
+    // Recorded from Grok 1.0.41: every tick is an in_progress update whose
+    // Bash-shaped rawOutput already carries exit_code 0. The monitor ends only
+    // through `_x.ai/task_completed`, never through a completed status.
+    const command = "for i in 1 2 3; do sleep 8; echo tick $i; done";
+    const started = parseRecordedToolCallUpdate({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "call-6b025a4e-621c-4526-a579-ba86ada2669c-0",
+      kind: "other",
+      title: "Start monitor: Watch three ticks eight seconds apart",
+      locations: [],
+      rawInput: {
+        variant: "Monitor",
+        command,
+        description: "Watch three ticks eight seconds apart",
+        timeout_ms: 36000000,
+        persistent: false,
+      },
+    });
+    const tick = parseRecordedToolCallUpdate({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "call-6b025a4e-621c-4526-a579-ba86ada2669c-0",
+      status: "in_progress",
+      content: [{ type: "content", content: { type: "text", text: "tick 1\n" } }],
+      rawOutput: {
+        type: "Bash",
+        output: [116, 105, 99, 107, 32, 49, 10],
+        output_for_prompt: "tick 1\n",
+        exit_code: 0,
+        command,
+        truncated: false,
+        signal: null,
+        timed_out: false,
+        description: null,
+        current_dir: "<workspace>",
+        output_file: "",
+        total_bytes: 7,
+      },
+    });
+    const toolCall = normalizeXAiAcpToolCallState(mergeToolCallState(started, tick));
+    expect(isXAiMonitorTool(toolCall)).toBe(true);
+    expect(toolCall.status).toBe("inProgress");
+  });
+
+  it("finishes monitors from the recorded task_completed snapshot", () => {
+    const completed = {
+      sessionId: "01a0d660-c1bb-7842-91a3-02d91dc8b0d2",
+      update: {
+        sessionUpdate: "task_completed",
+        task_snapshot: {
+          task_id: "01a0d660-f98d-7ef3-a291-97af1c2b6455",
+          output: "tick 1\ntick 2\ntick 3\n",
           exit_code: 0,
         },
       },
     };
-    expect(isXAiMonitorTool(toolCall)).toBe(true);
-    expect(normalizeXAiAcpToolCallState(toolCall).status).toBe("completed");
+    expect(xAiBackgroundTaskLifecycleMutation(completed, "completed")).toEqual({
+      sessionId: "01a0d660-c1bb-7842-91a3-02d91dc8b0d2",
+      taskId: "01a0d660-f98d-7ef3-a291-97af1c2b6455",
+      status: "completed",
+      output: "tick 1\ntick 2\ntick 3\n",
+    });
+    expect(
+      xAiBackgroundTaskLifecycleMutation(
+        {
+          ...completed,
+          update: { ...completed.update, task_snapshot: { task_id: "t", exit_code: 2 } },
+        },
+        "completed",
+      )?.status,
+    ).toBe("failed");
   });
 
   it("detects Monitor start ACKs from structured rawOutput when title is generic", () => {
@@ -450,14 +517,13 @@ describe("XAiAcpExtension", () => {
     expect(extractXAiMonitorTaskId(toolCall)).toBe("019f44a5-87d1-7640-8e35-6a4667ffc873");
   });
 
-  it("completes wake re-reports of finished commands despite generic titles", () => {
-    // Post-settle wake replay: the finished monitor is re-reported with empty
-    // rawInput and a generic title, so monitor detection cannot match; the
-    // structured Bash result with exit_code must still terminalize it.
+  it("completes status-less Bash results despite generic titles", () => {
+    // A Bash result that carries no status (empty rawInput, generic title) is
+    // terminalized from its exit_code. An explicit in_progress status wins:
+    // that is how Grok streams a still-running monitor.
     const toolCall = {
       toolCallId: "call-wake-1",
       title: "Tool",
-      status: "inProgress" as const,
       data: {
         rawInput: {},
         rawOutput: {
@@ -818,7 +884,7 @@ describe("XAiAcpExtension", () => {
       const mutations: Array<{
         readonly sessionId: string;
         readonly taskId: string;
-        readonly status: "running" | "completed";
+        readonly status: "running" | "completed" | "failed";
       }> = [];
       const runtime = {
         handleExtNotification: (
@@ -1389,6 +1455,113 @@ describe("XAiAcpExtension", () => {
         code: -32003,
         errorMessage: "Grok usage limit reached. Try again later.",
       });
+    }),
+  );
+
+  it("maps subagent_finished to a notice only for statuses Grok defines", () => {
+    // Recorded from Grok 1.0.41 (ids normalized); statuses per grok-build
+    // xai-grok-tools/.../task/types.rs `status()`.
+    const finished = (update: Record<string, unknown>) =>
+      xAiSubagentFinishedNotice({
+        sessionId: "root-session",
+        update: {
+          sessionUpdate: "subagent_finished",
+          subagent_id: "child-session",
+          child_session_id: "child-session",
+          tool_calls: 2,
+          turns: 1,
+          duration_ms: 23734,
+          ...update,
+        } as never,
+      });
+    expect(finished({ status: "completed", output: "SUBAGENT_DONE", will_wake: true })).toEqual({
+      sessionId: "root-session",
+      childSessionId: "child-session",
+      status: "completed",
+      result: "SUBAGENT_DONE",
+    });
+    expect(finished({ status: "failed", error: "tool crashed" })).toMatchObject({
+      status: "failed",
+      result: "tool crashed",
+    });
+    expect(
+      finished({ status: "cancelled", error: "interrupted by process restart" }),
+    ).toMatchObject({ status: "cancelled", result: "interrupted by process restart" });
+    // A failed subagent's error is its result; `output` only accompanies success.
+    expect(finished({ status: "failed", output: "partial" })).toMatchObject({ result: null });
+    expect(finished({ status: "timed_out" })).toBeNull();
+    expect(finished({})).toBeNull();
+    expect(finished({ status: "completed", child_session_id: undefined })).toBeNull();
+  });
+
+  it.effect("settles prompts and finishes subagents from the same session notifications", () =>
+    Effect.gen(function* () {
+      const handlers = new Map<string, (notification: unknown) => Effect.Effect<void>>();
+      let capturedMeta: Record<string, unknown> | null | undefined;
+      const hungPrompt = yield* Deferred.make<never>();
+      const baseRuntime = {
+        start: () =>
+          Effect.succeed({
+            sessionId: "root-session",
+            initializeResult: {},
+            sessionSetupResult: {},
+            modelConfigId: undefined,
+          }),
+        prompt: (payload: { readonly _meta?: Record<string, unknown> | null }) => {
+          capturedMeta = payload._meta ?? null;
+          return Deferred.await(hungPrompt);
+        },
+        cancel: Effect.void,
+        handleExtNotification: (
+          method: string,
+          _schema: unknown,
+          handler: (notification: unknown) => Effect.Effect<void>,
+        ) => {
+          handlers.set(method, handler);
+          return Effect.void;
+        },
+      } as unknown as AcpSessionRuntime.AcpSessionRuntime["Service"];
+      const runtime = yield* makeXAiPromptCompletionRuntime(baseRuntime);
+      const notices: Array<unknown> = [];
+      // Registered after the wrapper, as the adapter does: it must not replace
+      // the wrapper's prompt completion on the shared method.
+      yield* registerXAiSubagentFinished(runtime, (notice) =>
+        Effect.sync(() => notices.push(notice)),
+      );
+      const sessionNotification = handlers.get("_x.ai/session_notification")!;
+      yield* sessionNotification({
+        sessionId: "root-session",
+        update: {
+          sessionUpdate: "subagent_finished",
+          child_session_id: "child-session",
+          status: "completed",
+          output: "SUBAGENT_DONE",
+        },
+      });
+      expect(notices).toEqual([
+        {
+          sessionId: "root-session",
+          childSessionId: "child-session",
+          status: "completed",
+          result: "SUBAGENT_DONE",
+        },
+      ]);
+
+      const promptFiber = yield* runtime
+        .prompt({ prompt: [{ type: "text", text: "hi" }] })
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* sessionNotification({
+        sessionId: "root-session",
+        update: {
+          sessionUpdate: "turn_completed",
+          prompt_id: capturedMeta?.promptId,
+          stop_reason: "end_turn",
+        },
+      });
+      const response = yield* Fiber.join(promptFiber);
+      expect(response.stopReason).toBe("end_turn");
+      expect(notices).toHaveLength(1);
     }),
   );
 

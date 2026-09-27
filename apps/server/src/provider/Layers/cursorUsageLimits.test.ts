@@ -119,6 +119,10 @@ describe("Cursor usage limits", () => {
                   AGENT_CLI_CREDENTIAL_STORE: platform === "linux" ? "memory" : "default",
                   ...(token ? { CURSOR_AUTH_TOKEN: token } : {}),
                 },
+                false,
+                async () => {
+                  throw new Error("must not read Keychain before opt-in");
+                },
               ).pipe(
                 Effect.provideService(HostProcessPlatform, platform),
                 Effect.provideService(
@@ -184,6 +188,77 @@ describe("Cursor usage limits", () => {
         ),
       );
       expect(limits.unavailable?.reason).toBe("unsupported");
+    }),
+  );
+
+  it.effect("reads the default macOS Cursor login from Keychain for limits", () =>
+    Effect.gen(function* () {
+      const limits = yield* withNodeServices(
+        readCursorUsageLimits({ apiEndpoint: "" }, {}, true, async () => "keychain-token").pipe(
+          Effect.provideService(HostProcessPlatform, "darwin"),
+          Effect.provideService(
+            FileSystem.FileSystem,
+            FileSystem.makeNoop({
+              readFileString: () => Effect.die("must not read a stale credential file"),
+            }),
+          ),
+          Effect.provideService(
+            HttpClient.HttpClient,
+            HttpClient.make((request) => {
+              expect(request.headers.authorization).toBe("Bearer keychain-token");
+              return Effect.succeed(
+                HttpClientResponse.fromWeb(
+                  request,
+                  Response.json({ planUsage: { totalPercentUsed: 42 } }),
+                ),
+              );
+            }),
+          ),
+        ),
+      );
+      expect(limits.windows[0]?.usedPercent).toBe(42);
+    }),
+  );
+
+  it.effect("reports a Keychain initialization failure without failing the provider refresh", () =>
+    Effect.gen(function* () {
+      const limits = yield* withNodeServices(
+        readCursorUsageLimits({ apiEndpoint: "" }, {}, true, async () => {
+          throw new Error("Keychain initialization failed");
+        }).pipe(
+          Effect.provideService(HostProcessPlatform, "darwin"),
+          Effect.provideService(
+            HttpClient.HttpClient,
+            HttpClient.make(() => Effect.die("must not request limits without a login")),
+          ),
+        ),
+      );
+      expect(limits.unavailable?.reason).toBe("probeFailed");
+    }),
+  );
+
+  it.effect("does not read Keychain or send its token to a custom endpoint", () =>
+    Effect.gen(function* () {
+      for (const [apiEndpoint, environment] of [
+        ["http://localhost:3000", {}],
+        ["", { CURSOR_API_ENDPOINT: "http://localhost:3000" }],
+        ["https://cursor-proxy.example", {}],
+        ["", { CURSOR_API_ENDPOINT: "https://cursor-proxy.example" }],
+      ] as const) {
+        const limits = yield* withNodeServices(
+          readCursorUsageLimits({ apiEndpoint }, environment, true, async () => {
+            throw new Error("must not read Keychain for a custom endpoint");
+          }).pipe(
+            Effect.provideService(HostProcessPlatform, "darwin"),
+            Effect.provideService(
+              HttpClient.HttpClient,
+              HttpClient.make(() => Effect.die("must not send a Keychain credential to a proxy")),
+            ),
+          ),
+        );
+        expect(limits.unavailable?.reason).toBe("unsupported");
+        expect(limits.unavailable?.message).toContain("default Cursor endpoint");
+      }
     }),
   );
 });

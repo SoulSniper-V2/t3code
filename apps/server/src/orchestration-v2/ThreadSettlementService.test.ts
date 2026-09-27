@@ -1,10 +1,11 @@
-import { assert, describe, expect, it, vi } from "@effect/vitest";
+import { assert, describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import {
   DEFAULT_SERVER_SETTINGS,
-  EventId,
   ProjectId,
+  EventId,
   ProviderInstanceId,
+  ProviderSessionId,
   ThreadId,
   type OrchestrationProjectShell,
   type OrchestrationV2AppThread,
@@ -35,7 +36,7 @@ import {
 } from "../pullRequest/PullRequestService.ts";
 import { ServerActivation } from "../serverActivation.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import * as TerminalManager from "../terminal/Manager.ts";
+import { TerminalManager } from "../terminal/Manager.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestratorV2, type OrchestratorV2Shape } from "./Orchestrator.ts";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
@@ -111,8 +112,8 @@ describe("isAutoSettlementCandidate", () => {
     expect(isAutoSettlementCandidate(shell({ archivedAt: at(-1) }), NOW_MS)).toBe(false);
     expect(isAutoSettlementCandidate(shell({ settledOverride: "settled" }), NOW_MS)).toBe(false);
     expect(isAutoSettlementCandidate(shell({ settledOverride: "active" }), NOW_MS)).toBe(false);
-    expect(isAutoSettlementCandidate(shell({ autoSettleDisabledAt: at(-1) }), NOW_MS)).toBe(false);
     expect(isAutoSettlementCandidate(shell({ pinnedAt: at(-1) }), NOW_MS)).toBe(false);
+    expect(isAutoSettlementCandidate(shell({ autoSettleDisabledAt: at(-1) }), NOW_MS)).toBe(false);
     expect(isAutoSettlementCandidate(shell({ activityRunStatus: "running" }), NOW_MS)).toBe(false);
     expect(
       isAutoSettlementCandidate(
@@ -409,14 +410,13 @@ function makeBranchPullRequest(state: "open" | "closed" | "merged") {
 
 interface HarnessOptions {
   readonly snapshot: OrchestrationV2ShellSnapshot;
-  readonly domainEvents?: Stream.Stream<OrchestrationV2DomainEvent>;
-  readonly threadShell?: OrchestrationV2ThreadShell | null;
-  readonly closeIdle?: TerminalManager.TerminalManager["Service"]["closeIdle"];
   readonly settings?: ServerSettings;
   readonly branchPullRequest?: GitManager["Service"]["branchPullRequest"];
   readonly pullRequestSummary?: PullRequestService["Service"]["summary"];
   readonly existingWorktreePaths?: ReadonlyArray<string>;
   readonly onDispatch?: (command: AutoSettleCommand) => Effect.Effect<void>;
+  /** Threads `getThread` returns when a `thread.settled` event is handled. */
+  readonly currentThreads?: ReadonlyArray<OrchestrationV2AppThread>;
 }
 
 const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options: HarnessOptions) {
@@ -424,6 +424,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
   const snapshots = yield* Ref.make(options.snapshot);
   const snapshotReadCount = yield* Ref.make(0);
   const snapshotReads = yield* Queue.unbounded<number>();
+  const candidateReads = yield* Ref.make<ReadonlyArray<string | undefined>>([]);
   const settings = yield* Ref.make(options.settings ?? DEFAULT_SERVER_SETTINGS);
   const settingsChanges = yield* PubSub.unbounded<ServerSettings>();
   const mergedPullRequests = yield* PubSub.unbounded<PullRequestMergeEvent>();
@@ -440,6 +441,8 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
   >([]);
   const summaryRecovery = yield* Ref.make<ReadonlyArray<boolean | undefined>>([]);
   const invalidatedCwds = yield* Ref.make<ReadonlyArray<string>>([]);
+  const domainEvents = yield* PubSub.unbounded<OrchestrationV2DomainEvent>();
+  const closedIdle = yield* Queue.unbounded<{ readonly threadId: string }>();
 
   const updateSettings = (patch: ServerSettingsPatch) =>
     Effect.gen(function* () {
@@ -500,21 +503,30 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
         Ref.get(snapshots).pipe(Effect.map((snapshot) => snapshot.projects)),
     }),
     Layer.mock(ProjectionStoreV2)({
-      getSettlementCandidates: () =>
-        Ref.updateAndGet(snapshotReadCount, (count) => count + 1).pipe(
+      getSettlementCandidates: (threadId) =>
+        Ref.update(candidateReads, (reads) => [...reads, threadId]).pipe(
+          Effect.andThen(Ref.updateAndGet(snapshotReadCount, (count) => count + 1)),
           Effect.tap((count) => Queue.offer(snapshotReads, count)),
           Effect.andThen(Ref.get(snapshots)),
-          Effect.map((snapshot) => snapshot.threads),
+          Effect.map((snapshot) =>
+            threadId === undefined
+              ? snapshot.threads
+              : snapshot.threads.filter((thread) => thread.id === threadId),
+          ),
         ),
-      getThreadShell: (threadId) =>
-        Effect.succeed(options.threadShell?.id === threadId ? options.threadShell : null),
+      getThread: (threadId) => {
+        const thread = options.currentThreads?.find((candidate) => candidate.id === threadId);
+        return thread
+          ? Effect.succeed(thread)
+          : Effect.die(new Error(`Unexpected thread read: ${threadId}`));
+      },
     }),
     Layer.mock(OrchestratorV2)({
-      streamDomainEvents: options.domainEvents ?? Stream.empty,
+      streamDomainEvents: Stream.fromPubSub(domainEvents),
       dispatch,
     }),
-    Layer.mock(TerminalManager.TerminalManager)({
-      closeIdle: options.closeIdle ?? (() => Effect.void),
+    Layer.mock(TerminalManager)({
+      closeIdle: (input) => Queue.offer(closedIdle, input).pipe(Effect.asVoid),
     }),
     Layer.mock(GitManager)({
       branchPullRequest,
@@ -539,11 +551,14 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     snapshots,
     snapshotReadCount,
     snapshotReads,
+    candidateReads,
     commands,
     branchCalls,
     summaryCalls,
     summaryRecovery,
     invalidatedCwds,
+    closedIdle,
+    publishEvent: (event: OrchestrationV2DomainEvent) => PubSub.publish(domainEvents, event),
     updateSettings,
     publishMerge: PubSub.publish(mergedPullRequests, {
       projectId: PROJECT_ID,
@@ -567,38 +582,6 @@ const startHarness = Effect.fn("startThreadSettlementHarness")(function* (
 });
 
 describe("ThreadSettlementServiceV2 worker", () => {
-  it.effect("closes idle terminal shells after a thread settles", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const thread = makeThread("settled-with-idle-shell", { settledOverride: "settled" });
-        const terminalClosed = yield* Deferred.make<void>();
-        const closeIdle = vi.fn(() =>
-          Deferred.succeed(terminalClosed, undefined).pipe(Effect.asVoid),
-        );
-        const event = {
-          id: EventId.make("thread-settled-event"),
-          type: "thread.settled",
-          threadId: thread.id,
-          occurredAt: thread.updatedAt,
-          payload: {} as OrchestrationV2AppThread,
-        } satisfies OrchestrationV2DomainEvent;
-        const fixture = yield* makeHarness({
-          snapshot: makeSnapshot([]),
-          domainEvents: Stream.succeed(event),
-          threadShell: thread,
-          closeIdle,
-        });
-
-        yield* Effect.gen(function* () {
-          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
-          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
-          yield* Deferred.await(terminalClosed);
-          expect(closeIdle).toHaveBeenCalledWith({ threadId: thread.id });
-        }).pipe(Effect.provide(fixture.layer));
-      }),
-    ),
-  );
-
   it.effect("settles a merged pull request stored only in the thread links", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -944,6 +927,123 @@ describe("ThreadSettlementServiceV2 worker", () => {
               { cwd: "/workspace/project-root", branch: "feature/deleted" },
             ]),
           );
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+});
+
+describe("ThreadSettlementServiceV2 terminals", () => {
+  const appThread = (
+    id: string,
+    settledOverride: OrchestrationV2AppThread["settledOverride"],
+  ): OrchestrationV2AppThread => {
+    const threadId = ThreadId.make(id);
+    return {
+      createdBy: "user",
+      creationSource: "web",
+      id: threadId,
+      projectId: PROJECT_ID,
+      title: id,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      activeProviderThreadId: null,
+      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+      forkedFrom: null,
+      createdAt: DateTime.makeUnsafe(NOW),
+      updatedAt: DateTime.makeUnsafe(NOW),
+      archivedAt: null,
+      settledOverride,
+      settledAt: settledOverride === "settled" ? DateTime.makeUnsafe(NOW) : null,
+      lastVisitedAt: null,
+      deletedAt: null,
+    };
+  };
+  const settledEvent = (thread: OrchestrationV2AppThread): OrchestrationV2DomainEvent => ({
+    type: "thread.settled",
+    id: EventId.make(`event:settled:${thread.id}`),
+    threadId: thread.id,
+    occurredAt: DateTime.makeUnsafe(NOW),
+    payload: thread,
+  });
+
+  it.effect("closes the thread's idle terminals when it settles", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = appThread("settled-thread", "settled");
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([]),
+          currentThreads: [thread],
+        });
+
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+          yield* fixture.publishEvent(settledEvent(thread));
+          assert.deepStrictEqual(yield* Queue.take(fixture.closedIdle), { threadId: thread.id });
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect("keeps the terminals of a thread re-engaged before the event ran", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const settled = appThread("reengaged-thread", "settled");
+        const reengaged = appThread("reengaged-thread", "active");
+        const marker = appThread("marker-thread", "settled");
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([]),
+          currentThreads: [reengaged, marker],
+        });
+
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+          yield* fixture.publishEvent(settledEvent(settled));
+          // Events run in order, so the first close belongs to the later
+          // event only if the re-engaged thread was skipped.
+          yield* fixture.publishEvent(settledEvent(marker));
+          assert.deepStrictEqual(yield* Queue.take(fixture.closedIdle), { threadId: marker.id });
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+});
+
+describe("ThreadSettlementServiceV2 single-thread sweeps", () => {
+  it.effect("a finished run reads only its own thread's settlement candidate", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const finished = makeThread("finished-run");
+        const other = makeThread("other-thread");
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([finished, other]),
+          settings: { ...DEFAULT_SERVER_SETTINGS, sidebarAutoSettleAfterDays: 3 },
+        });
+
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+          yield* Ref.set(fixture.candidateReads, []);
+          yield* fixture.publishEvent({
+            type: "provider-session.detached",
+            id: EventId.make("event:detached"),
+            threadId: finished.id,
+            occurredAt: DateTime.makeUnsafe(NOW),
+            payload: {
+              providerSessionId: ProviderSessionId.make("provider-session:finished"),
+              detachedAt: DateTime.makeUnsafe(NOW),
+            },
+          });
+          yield* Queue.take(fixture.snapshotReads);
+          yield* service.drain;
+          assert.deepStrictEqual(yield* Ref.get(fixture.candidateReads), [finished.id]);
         }).pipe(Effect.provide(fixture.layer));
       }),
     ),

@@ -14,7 +14,7 @@ import {
   makeUnavailableUsageLimits,
   makeUsageLimits,
 } from "../providerUsageLimits.ts";
-import { readMacCursorAccessToken } from "../CursorUsageCredentialStore.ts";
+import { readMacCursorAccessToken } from "../cursorKeychainToken.ts";
 
 const CursorCredentials = Schema.Struct({ accessToken: Schema.optional(Schema.String) });
 const DEFAULT_CURSOR_API_ENDPOINT = "https://api2.cursor.sh";

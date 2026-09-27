@@ -143,8 +143,7 @@ const availableArea = (
 /**
  * Width is the player's only free dimension; height always follows the source
  * aspect ratio so the webview fills the box without letterboxing. The player
- * never grows past the source's own size (the guest keeps its CSS viewport, so
- * going bigger would only upscale), and a tight container wins over the minimum.
+ * may upscale the source, and a tight container wins over the minimum.
  */
 function fitPreviewMiniPlayerWidth(
   desiredWidth: number,
@@ -158,7 +157,6 @@ function fitPreviewMiniPlayerWidth(
       PREVIEW_MINI_PLAYER_MIN_SIZE.width,
       PREVIEW_MINI_PLAYER_MIN_SIZE.height * aspectRatio,
     ),
-    source.width,
     Math.max(1, max.width),
     Math.max(1, max.height * aspectRatio),
   );
@@ -368,18 +366,16 @@ export function resizePreviewMiniPlayer(input: {
   const desiredHeight = start.height + (south ? delta.y : north ? -delta.y : 0);
   const horizontal = east || west;
   const vertical = north || south;
-  const widthLeads =
-    horizontal && !vertical
-      ? true
-      : vertical && !horizontal
-        ? false
-        : Math.abs(desiredWidth - start.width) / start.width >=
-          Math.abs(desiredHeight - start.height) / start.height;
-  const size = fitPreviewMiniPlayerWidth(
-    widthLeads ? desiredWidth : (desiredHeight * source.width) / source.height,
-    source,
-    max,
-  );
+  const aspectRatio = source.width / source.height;
+  // Project corner motion onto the aspect-ratio diagonal. Switching between
+  // dominant axes jumps when one axis grows while the other shrinks.
+  const desired =
+    horizontal && vertical
+      ? (desiredWidth + desiredHeight / aspectRatio) / (1 + 1 / aspectRatio ** 2)
+      : horizontal
+        ? desiredWidth
+        : desiredHeight * aspectRatio;
+  const size = fitPreviewMiniPlayerWidth(desired, source, max);
   const position = clampPreviewMiniPlayerPosition(
     { x: west ? right - size.width : start.x, y: north ? bottom - size.height : start.y },
     container,

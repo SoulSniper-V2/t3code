@@ -45,18 +45,21 @@ export function assertSubagentOutput(
     projection.subagents.map((subagent) => subagent.status),
     ["completed", "completed"],
   );
+  // Each child was handed one file and reported contents only that file holds.
   assert.isTrue(
     projection.subagents.some(
       (subagent) =>
-        subagent.prompt.includes("Read package.json only") &&
-        subagent.result?.includes("Package name: `effect-codex-app-server`"),
+        subagent.prompt.includes("package.json") &&
+        !subagent.prompt.includes("tsconfig.json") &&
+        subagent.result?.includes("effect-codex-app-server"),
     ),
   );
   assert.isTrue(
     projection.subagents.some(
       (subagent) =>
-        subagent.prompt.includes("Read tsconfig.json only") &&
-        subagent.result?.includes("`extends`: `../../tsconfig.base.json`"),
+        subagent.prompt.includes("tsconfig.json") &&
+        !subagent.prompt.includes("package.json") &&
+        subagent.result?.includes("../../tsconfig.base.json"),
     ),
   );
 

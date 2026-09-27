@@ -437,15 +437,12 @@ function makeBrowserAccessProject(projectId: ProjectId): Project {
   };
 }
 
-function runAgentAccessScenario(input: {
+function runBrowserAccessScenario(input: {
   readonly enableAgentBrowserAccess: boolean;
   readonly projectOverride: boolean;
   readonly deviceOverride?: boolean;
-  readonly enableAgentComputerAccess?: boolean;
-  readonly computerOverride?: boolean;
   readonly createThread?: boolean;
   readonly projectExists?: boolean;
-  readonly settingsAvailable?: boolean;
 }) {
   return Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);
@@ -487,25 +484,17 @@ function runAgentAccessScenario(input: {
           idleTimeoutMs: 1_000,
           mcpConfigs,
           projectServiceLayer,
-          ...(input.settingsAvailable === false
-            ? {}
-            : {
-                serverSettingsLayer: ServerSettings.layerTest({
-                  enableAgentBrowserAccess: input.enableAgentBrowserAccess,
-                  enableAgentComputerAccess: input.enableAgentComputerAccess ?? false,
-                  projectSettingsOverrides: {
-                    [projectId]: {
-                      enableAgentBrowserAccess: input.projectOverride,
-                      ...(input.deviceOverride === undefined
-                        ? {}
-                        : { enableAgentDeviceAccess: input.deviceOverride }),
-                      ...(input.computerOverride === undefined
-                        ? {}
-                        : { enableAgentComputerAccess: input.computerOverride }),
-                    },
-                  },
-                }),
-              }),
+          serverSettingsLayer: ServerSettings.layerTest({
+            enableAgentBrowserAccess: input.enableAgentBrowserAccess,
+            projectSettingsOverrides: {
+              [projectId]: {
+                enableAgentBrowserAccess: input.projectOverride,
+                ...(input.deviceOverride === undefined
+                  ? {}
+                  : { enableAgentDeviceAccess: input.deviceOverride }),
+              },
+            },
+          }),
         }),
       ),
     );
@@ -1027,7 +1016,7 @@ it.effect(
         assert.equal(resolved?.threadId, threadId);
         assert.deepEqual(
           resolved?.capabilities,
-          new Set(["preview", "orchestration", "worktree", "pull-requests", "threads"]),
+          new Set(["preview", "orchestration", "worktree", "pull-requests"]),
         );
 
         yield* manager.close(providerSessionId);
@@ -1084,7 +1073,7 @@ it.effect(
         const resolved = yield* registry.resolve(token!);
         assert.deepEqual(
           resolved?.capabilities,
-          new Set(["orchestration", "worktree", "pull-requests", "threads"]),
+          new Set(["orchestration", "worktree", "pull-requests"]),
         );
 
         yield* manager.close(providerSessionId);
@@ -1109,7 +1098,7 @@ it.effect(
 
 it.effect("ProviderSessionManagerV2 honors a project browser-access opt-out", () =>
   Effect.gen(function* () {
-    const captured = yield* runAgentAccessScenario({
+    const captured = yield* runBrowserAccessScenario({
       enableAgentBrowserAccess: true,
       projectOverride: false,
     });
@@ -1120,7 +1109,7 @@ it.effect("ProviderSessionManagerV2 honors a project browser-access opt-out", ()
 
 it.effect("ProviderSessionManagerV2 honors a project browser-access opt-in", () =>
   Effect.gen(function* () {
-    const captured = yield* runAgentAccessScenario({
+    const captured = yield* runBrowserAccessScenario({
       enableAgentBrowserAccess: false,
       projectOverride: true,
     });
@@ -1131,7 +1120,7 @@ it.effect("ProviderSessionManagerV2 honors a project browser-access opt-in", () 
 
 it.effect("ProviderSessionManagerV2 fails browser access closed for a missing project", () =>
   Effect.gen(function* () {
-    const captured = yield* runAgentAccessScenario({
+    const captured = yield* runBrowserAccessScenario({
       enableAgentBrowserAccess: true,
       projectOverride: true,
       projectExists: false,
@@ -1143,7 +1132,7 @@ it.effect("ProviderSessionManagerV2 fails browser access closed for a missing pr
 
 it.effect("ProviderSessionManagerV2 fails browser access closed for a missing thread", () =>
   Effect.gen(function* () {
-    const captured = yield* runAgentAccessScenario({
+    const captured = yield* runBrowserAccessScenario({
       enableAgentBrowserAccess: true,
       projectOverride: true,
       createThread: false,
@@ -2999,82 +2988,19 @@ it.effect(
   "ProviderSessionManagerV2 applies project device access independently of browser access",
   () =>
     Effect.gen(function* () {
-      const enabled = yield* runAgentAccessScenario({
+      const enabled = yield* runBrowserAccessScenario({
         enableAgentBrowserAccess: false,
         projectOverride: false,
         deviceOverride: true,
-        enableAgentComputerAccess: false,
-        computerOverride: true,
       });
       assert.isTrue(enabled?.capabilities?.has("device"));
-      assert.isTrue(enabled?.capabilities?.has("computer"));
       assert.isFalse(enabled?.browserToolsAvailable);
-      const denied = yield* runAgentAccessScenario({
+      const denied = yield* runBrowserAccessScenario({
         enableAgentBrowserAccess: false,
         projectOverride: false,
         deviceOverride: true,
-        enableAgentComputerAccess: false,
-        computerOverride: true,
         projectExists: false,
       });
       assert.isFalse(denied?.capabilities?.has("device"));
-      assert.isFalse(denied?.capabilities?.has("computer"));
     }),
-);
-
-it.effect("ProviderSessionManagerV2 honors environment and project computer-access settings", () =>
-  Effect.gen(function* () {
-    const environmentEnabled = yield* runAgentAccessScenario({
-      enableAgentBrowserAccess: false,
-      projectOverride: false,
-      enableAgentComputerAccess: true,
-    });
-    assert.isTrue(environmentEnabled?.capabilities?.has("computer"));
-
-    const projectOptOut = yield* runAgentAccessScenario({
-      enableAgentBrowserAccess: false,
-      projectOverride: false,
-      enableAgentComputerAccess: true,
-      computerOverride: false,
-    });
-    assert.isFalse(projectOptOut?.capabilities?.has("computer"));
-
-    const projectOptIn = yield* runAgentAccessScenario({
-      enableAgentBrowserAccess: false,
-      projectOverride: false,
-      enableAgentComputerAccess: false,
-      computerOverride: true,
-    });
-    assert.isTrue(projectOptIn?.capabilities?.has("computer"));
-  }),
-);
-
-it.effect("ProviderSessionManagerV2 withholds computer access when settings cannot be resolved", () =>
-  Effect.gen(function* () {
-    const missingSettings = yield* runAgentAccessScenario({
-      enableAgentBrowserAccess: false,
-      projectOverride: false,
-      enableAgentComputerAccess: true,
-      settingsAvailable: false,
-    });
-    assert.isFalse(missingSettings?.capabilities?.has("computer"));
-
-    const missingProject = yield* runAgentAccessScenario({
-      enableAgentBrowserAccess: false,
-      projectOverride: false,
-      enableAgentComputerAccess: true,
-      computerOverride: true,
-      projectExists: false,
-    });
-    assert.isFalse(missingProject?.capabilities?.has("computer"));
-
-    const missingThread = yield* runAgentAccessScenario({
-      enableAgentBrowserAccess: false,
-      projectOverride: false,
-      enableAgentComputerAccess: true,
-      computerOverride: true,
-      createThread: false,
-    });
-    assert.isFalse(missingThread?.capabilities?.has("computer"));
-  }),
 );

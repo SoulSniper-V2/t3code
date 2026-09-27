@@ -363,8 +363,8 @@ const ensureContextHandoff: CommandPolicyV2Shape["ensureContextHandoff"] = (inpu
 };
 
 const decideForkExecution: CommandPolicyV2Shape["decideForkExecution"] = (input) => {
-  // Unsuccessful runs may lack a native turn cursor; native-head forks could
-  // include later turns, so keep those forks bounded to portable transcript.
+  // Unsuccessful runs may have no native turn or assistant cursor. Forking
+  // those at native head can include later turns, so use the bounded transcript.
   const canForkNatively =
     (input.sourceRunStatus === "completed" || input.sourceRunStatus === "waiting") &&
     input.sameProvider &&

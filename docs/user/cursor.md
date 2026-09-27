@@ -55,8 +55,8 @@ instructions must carry forward.
 
 Cursor task events include an `agentId`, but the local SDK does not register that identifier as a
 resumable agent: `Agent.resume()` returns `AgentNotFoundError`. The adapter therefore does not attach
-a provider thread to native task projections or advertise subagent thread IDs. Sending a new message
-from a projected child starts a new Cursor agent rather than pretending to resume the task runtime.
+a provider thread to native task projections or advertise subagent thread IDs. A projected child is
+read-only: send messages from the parent thread.
 
 Runtime modes map to the controls the local SDK exposes: full access disables its sandbox, while
 restricted modes and explicit non-full-access sandbox policies enable it. Explicit approval policy
@@ -75,7 +75,7 @@ orchestrator, event store, projections, and checkpoint logic still run in tests.
 Record a fixture against the real SDK with:
 
 ```bash
-pnpm --filter t3 record:cursor-replay -- --scenario simple
+pnpm --filter t3 record:cursor-replay --scenario simple
 ```
 
 Use `--out <path>` to record a temporary probe without replacing a checked-in fixture. Supported

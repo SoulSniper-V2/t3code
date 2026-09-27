@@ -3,7 +3,7 @@
  * through the real orchestrator and the real PiAdapterV2 against a live
  * `pi --mode rpc`. The adapter's spawner tees every stdin/stdout record.
  *
- *   node scripts/record-pi-rpc-replay-fixture.ts --scenario simple --out /tmp/pi-simple.ndjson --acknowledge-unsandboxed-pi
+ *   node scripts/record-pi-rpc-replay-fixture.ts --scenario simple
  *
  * The model is pinned to the fixture's Pi model selection through launch
  * arguments and `set_model`. Sessions go to a temporary directory, never the
@@ -59,17 +59,6 @@ function readArgValue(name: string): string | undefined {
 }
 
 const scenario = readArgValue("--scenario");
-const outputPath = readArgValue("--out");
-if (!process.argv.includes("--acknowledge-unsandboxed-pi")) {
-  throw new Error(
-    "Pi recording runs a live agent with --approve and is not OS-sandboxed. Run it only inside a disposable OS/container sandbox with limited credentials, then pass --acknowledge-unsandboxed-pi.",
-  );
-}
-if (outputPath === undefined) {
-  throw new Error(
-    "Pass --out with a temporary review path. Inspect and scrub the transcript before copying it into a checked-in fixture.",
-  );
-}
 const fixture = ORCHESTRATOR_REPLAY_FIXTURES.find((entry) => entry.name === scenario);
 const variant = fixture?.providers.find((provider) => provider.driver === PI_PROVIDER);
 if (fixture === undefined || variant === undefined) {
@@ -236,7 +225,7 @@ const record = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const piVersion = yield* readPiVersion;
-  const transcriptOutputPath = outputPath;
+  const outputPath = readArgValue("--out") ?? (yield* path.fromFileUrl(variant.transcriptFile));
   const fixtureInput = fixture.buildInput();
   const workspace = yield* Effect.promise(() =>
     makeCheckpointWorkspace(`pi-rpc-record-${fixture.name}`, fixtureInput.workspaceFiles),
@@ -346,11 +335,9 @@ const record = Effect.gen(function* () {
     variant.assertOutput(replayResult, transcript);
   }).pipe(Effect.scoped, provideDeterministicTestRuntime);
 
-  yield* fs.makeDirectory(path.dirname(transcriptOutputPath), { recursive: true });
-  yield* fs.writeFileString(transcriptOutputPath, encodeTranscriptNdjson(transcript));
-  yield* Console.log(
-    `Wrote ${transcript.entries.length} Pi RPC replay entries to ${transcriptOutputPath}`,
-  );
+  yield* fs.makeDirectory(path.dirname(outputPath), { recursive: true });
+  yield* fs.writeFileString(outputPath, encodeTranscriptNdjson(transcript));
+  yield* Console.log(`Wrote ${transcript.entries.length} Pi RPC replay entries to ${outputPath}`);
 });
 
 await Effect.runPromise(record.pipe(Effect.scoped, Effect.provide(NodeServices.layer)));

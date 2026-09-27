@@ -133,13 +133,9 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         providerSessionId,
         providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
         capabilities: new Set<McpInvocationContext.McpCapability>([
-          // These are the core server-owned tools available to every agent
-          // session. Keep thread tools here as well: older fork providers rely
-          // on them, while V2 orchestration/worktree tools are now first-class.
           "orchestration",
           "worktree",
           "pull-requests",
-          "threads",
           ...(request.capabilities ?? (browserToolsAvailable ? (["preview"] as const) : [])),
         ]),
         issuedAt,

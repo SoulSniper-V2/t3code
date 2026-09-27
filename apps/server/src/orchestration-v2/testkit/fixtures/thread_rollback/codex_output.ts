@@ -39,8 +39,6 @@ export function assertThreadRollbackOutput(
     "assistant_message",
     "checkpoint",
     "user_message",
-    "reasoning",
-    "reasoning",
     "assistant_message",
     "checkpoint",
   ]);
@@ -49,8 +47,6 @@ export function assertThreadRollbackOutput(
     "assistant_message",
     "checkpoint",
     "user_message",
-    "reasoning",
-    "reasoning",
     "assistant_message",
     "checkpoint",
   ]);

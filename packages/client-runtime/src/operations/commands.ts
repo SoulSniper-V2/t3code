@@ -85,10 +85,6 @@ export type ArchiveThreadInput = ThreadCommandInput;
 export type UnarchiveThreadInput = ThreadCommandInput;
 export type SettleThreadInput = ThreadCommandInput;
 
-export interface SetThreadAutoSettleInput extends ThreadCommandInput {
-  readonly enabled: boolean;
-}
-
 export interface UnsettleThreadInput extends ThreadCommandInput {
   readonly reason: "user";
 }
@@ -167,6 +163,7 @@ interface StartThreadBootstrap {
 }
 
 export interface StartThreadTurnInput extends ThreadCommandInput {
+  readonly manualContinuationOfRunId?: RunId;
   readonly message: {
     readonly messageId: MessageId;
     readonly role: "user";
@@ -446,18 +443,6 @@ export const settleThread = Effect.fn("EnvironmentCommands.settleThread")(functi
   return yield* simpleThreadCommand("thread.settle", input);
 });
 
-export const setThreadAutoSettle = Effect.fn("EnvironmentCommands.setThreadAutoSettle")(function* (
-  input: SetThreadAutoSettleInput,
-) {
-  const commandId = yield* allocateCommandId(input);
-  return yield* dispatch({
-    type: "thread.auto-settle.set",
-    commandId,
-    threadId: input.threadId,
-    enabled: input.enabled,
-  });
-});
-
 export const pinThread = Effect.fn("EnvironmentCommands.pinThread")(function* (
   input: PinThreadInput,
 ) {
@@ -467,6 +452,20 @@ export const pinThread = Effect.fn("EnvironmentCommands.pinThread")(function* (
     commandId,
     threadId: input.threadId,
     ...(input.orderKey === undefined ? {} : { orderKey: input.orderKey }),
+  });
+});
+
+export interface SetThreadAutoSettleInput extends ThreadCommandInput {
+  readonly enabled: boolean;
+}
+export const setThreadAutoSettle = Effect.fn("EnvironmentCommands.setThreadAutoSettle")(function* (
+  input: SetThreadAutoSettleInput,
+) {
+  return yield* dispatch({
+    type: "thread.auto-settle.set",
+    commandId: yield* allocateCommandId(input),
+    threadId: input.threadId,
+    enabled: input.enabled,
   });
 });
 
@@ -691,6 +690,9 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
       creationSource: input.creationSource ?? "web",
       threadId: input.threadId,
       messageId: input.message.messageId,
+      ...(input.manualContinuationOfRunId === undefined
+        ? {}
+        : { manualContinuationOfRunId: input.manualContinuationOfRunId }),
       text: input.message.text,
       ...(context ? { context } : {}),
       attachments,
@@ -799,6 +801,7 @@ export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThrea
     commandId: yield* allocateCommandId(input),
     threadId: input.threadId,
     runId,
+    holdQueue: true,
   });
 });
 

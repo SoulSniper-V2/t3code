@@ -128,12 +128,12 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
         data-composer-context-control
         onContextMenu={handleWorkspaceContextMenu}
       >
-        {forceNewWorktree ? (
-          <FolderGit2Icon
+        {activeWorktreePath ? (
+          <FolderGitIcon
             className={displayMode === "panel" ? THREAD_DETAILS_PANEL_ICON_CLASS : "size-3"}
           />
-        ) : activeWorktreePath ? (
-          <FolderGitIcon
+        ) : effectiveEnvMode === "worktree" ? (
+          <FolderGit2Icon
             className={displayMode === "panel" ? THREAD_DETAILS_PANEL_ICON_CLASS : "size-3"}
           />
         ) : (

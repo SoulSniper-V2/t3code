@@ -2019,17 +2019,14 @@ code {
   --diff-deletion-foreground: light-dark(var(--color-red-600), var(--color-red-400));
 }
 
-/* Chat timeline and composer column width, set from the Chat width setting. */
-:root {
-  --chat-max-width: 48rem;
-}
-
+/* Chat width setting. Comfortable keeps the default --chat-content-max-width,
+   which sizes the timeline lane, the composer, and ChatCanvas's width probe. */
 :root[data-chat-width="wide"] {
-  --chat-max-width: 72rem;
+  --chat-content-max-width: 72rem;
 }
 
 :root[data-chat-width="full"] {
-  --chat-max-width: 100%;
+  --chat-content-max-width: 100%;
 }
 
 :root[data-diff-color-scheme="blue-orange"] {

@@ -68,6 +68,7 @@ import {
   CLAUDE_BACKGROUND_SUBAGENT_LIFECYCLE_STOP_PROMPT,
 } from "../src/orchestration-v2/testkit/fixtures/claude_background_subagent_lifecycle/input.ts";
 import { CLAUDE_BACKGROUND_TASK_INTERRUPT_PROMPT } from "../src/orchestration-v2/testkit/fixtures/claude_background_task_interrupt/input.ts";
+import { CLAUDE_BACKGROUND_WAKE_BEFORE_QUEUED_PROMPT_LAUNCH_PROMPT } from "../src/orchestration-v2/testkit/fixtures/claude_background_wake_before_queued_prompt/input.ts";
 import {
   CLAUDE_BACKGROUND_TASK_WAKE_FOLLOW_UP_PROMPT,
   CLAUDE_BACKGROUND_TASK_WAKE_PROMPT,
@@ -81,14 +82,6 @@ import {
   validateClaudeReplayRecordingSelection,
   type ClaudeRecordingQueryMode,
 } from "./claudeReplayRecordingConfig.ts";
-
-// This recorder makes live model calls and runs the agent with real CLI
-// credentials. Its workspace is temporary, but it is not an OS sandbox.
-if (!process.argv.includes("--acknowledge-unsandboxed-claude")) {
-  throw new Error(
-    "Claude recording runs a live agent with the host user's permissions and is not OS-sandboxed. Run it only inside a disposable OS/container sandbox with limited credentials, then pass --acknowledge-unsandboxed-claude.",
-  );
-}
 
 const CLAUDE_RECORDINGS = {
   simple: {
@@ -210,6 +203,23 @@ const CLAUDE_RECORDINGS = {
     queryMode: "streaming",
     enableTools: true,
     backgroundWakeCounts: [1, 0, 1, 0],
+  },
+  // Each prompt is offered as soon as its turn and the wakes counted here
+  // settle, so a wake queued during a turn (Agent B's "stopped" notice) is
+  // still pending in the CLI when the next prompt arrives, and runs first.
+  claude_background_wake_before_queued_prompt: {
+    prompts: [
+      CLAUDE_BACKGROUND_WAKE_BEFORE_QUEUED_PROMPT_LAUNCH_PROMPT,
+      CLAUDE_BACKGROUND_SUBAGENT_LIFECYCLE_STOP_PROMPT,
+      CLAUDE_BACKGROUND_SUBAGENT_LIFECYCLE_RESUME_PROMPT,
+      CLAUDE_BACKGROUND_SUBAGENT_LIFECYCLE_FINAL_PROMPT,
+    ],
+    defaultTranscriptFile:
+      "fixtures/claude_background_wake_before_queued_prompt/claude_transcript.ndjson",
+    queryMode: "streaming",
+    enableTools: true,
+    backgroundWakeCounts: [1, 0, 1, 0],
+    offerNextPromptImmediately: true,
   },
   claude_background_task_interrupt: {
     prompts: [CLAUDE_BACKGROUND_TASK_INTERRUPT_PROMPT],
@@ -337,15 +347,21 @@ if (recording === undefined) {
   throw new Error(`Claude replay fixture '${scenario}' is not configured.`);
 }
 
-const outputPath = readArgValue("--out");
-if (outputPath === undefined || outputPath.startsWith("--")) {
-  throw new Error(
-    "Pass --out with a temporary review path. Inspect and scrub the transcript before copying it into a checked-in fixture.",
-  );
-}
+const positionalOutputPath = process.argv[2]?.startsWith("--") ? undefined : process.argv[2];
 const path = await Effect.runPromise(
   Effect.service(Path.Path).pipe(Effect.provide(NodeServices.layer)),
 );
+const outputPath =
+  readArgValue("--out") ??
+  positionalOutputPath ??
+  (await Effect.runPromise(
+    path.fromFileUrl(
+      new URL(
+        `../src/orchestration-v2/testkit/${recording.defaultTranscriptFile}`,
+        import.meta.url,
+      ),
+    ),
+  ));
 
 function encodeTranscriptNdjson(
   transcript: Awaited<ReturnType<typeof recordClaudeAgentSdkReplayTranscript>>,
@@ -520,6 +536,9 @@ try {
       : {}),
     ...("backgroundWakeCounts" in recording
       ? { backgroundWakeCounts: recording.backgroundWakeCounts }
+      : {}),
+    ...("offerNextPromptImmediately" in recording
+      ? { offerNextPromptImmediately: recording.offerNextPromptImmediately }
       : {}),
   });
   await assertWorkspacePathsAbsent("after");

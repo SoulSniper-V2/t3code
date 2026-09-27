@@ -16,7 +16,13 @@ function isInsideRoot(path: Path.Path, root: string, candidate: string): boolean
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-/** Resolves an agent-supplied path and rejects anything outside the session roots. */
+/**
+ * Resolves an agent-supplied path and rejects anything outside the session
+ * roots. Symlinks resolve before the check, including the final component, so
+ * a link inside the workspace cannot read or write through to a file outside
+ * it. An entry that exists but cannot be resolved, like a dangling link, is
+ * rejected rather than written through.
+ */
 const resolveClientFilePath = Effect.fn("AntigravityClientFiles.resolveClientFilePath")(
   function* (input: {
     readonly fileSystem: FileSystem.FileSystem;
@@ -26,18 +32,55 @@ const resolveClientFilePath = Effect.fn("AntigravityClientFiles.resolveClientFil
   }) {
     const { path } = input;
     const resolved = path.resolve(input.requestPath);
-    // Follow symlinks on the parent so a link out of the workspace cannot escape it.
-    const parent = yield* input.fileSystem
-      .realPath(path.dirname(resolved))
-      .pipe(Effect.orElseSucceed(() => path.dirname(resolved)));
-    const real = path.join(parent, path.basename(resolved));
+    const outside = EffectAcpErrors.AcpRequestError.invalidParams(
+      `Path '${input.requestPath}' is outside the session workspace.`,
+    );
+    const real = yield* input.fileSystem.realPath(resolved).pipe(
+      Effect.catch(() =>
+        Effect.gen(function* () {
+          // New files can be nested below directories that do not exist yet.
+          // Walk up to the nearest existing ancestor so realPath also resolves
+          // host aliases such as macOS /var -> /private/var before checking
+          // containment. Existing or dangling symlinks are never treated as a
+          // missing path; canonicalize them when valid, or reject them.
+          const entryExists = yield* input.fileSystem.readLink(resolved).pipe(
+            Effect.as(true),
+            Effect.catch(() => input.fileSystem.exists(resolved)),
+            Effect.orElseSucceed(() => true),
+          );
+          if (entryExists) return yield* outside;
+          const missingSegments = [path.basename(resolved)];
+          let ancestor = path.dirname(resolved);
+          while (true) {
+            const realAncestor = yield* input.fileSystem.realPath(ancestor).pipe(
+              Effect.catch(() =>
+                Effect.gen(function* () {
+                  const entryExists = yield* input.fileSystem.readLink(ancestor).pipe(
+                    Effect.as(true),
+                    Effect.catch(() => input.fileSystem.exists(ancestor)),
+                    Effect.orElseSucceed(() => true),
+                  );
+                  if (entryExists) return yield* outside;
+                  const parent = path.dirname(ancestor);
+                  if (parent === ancestor) return yield* outside;
+                  missingSegments.unshift(path.basename(ancestor));
+                  ancestor = parent;
+                  return null;
+                }),
+              ),
+            );
+            if (realAncestor !== null) {
+              return path.resolve(realAncestor, ...missingSegments);
+            }
+          }
+        }),
+      ),
+    );
     const roots = yield* Effect.forEach(input.allowedRoots, (root) =>
       input.fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root)),
     );
     if (!roots.some((root) => isInsideRoot(path, root, real))) {
-      return yield* EffectAcpErrors.AcpRequestError.invalidParams(
-        `Path '${input.requestPath}' is outside the session workspace.`,
-      );
+      return yield* outside;
     }
     return real;
   },

@@ -96,8 +96,8 @@ export function threadSupportsProviderHandoff(projection: Projection | null | un
   if (resolveActiveThreadRun(projection) !== null) return false;
   if (projection.thread.historyOrigin === "v1_import" || projection.runs.length === 0) return true;
 
-  // A detached session is removed from the projection, but a strong native
-  // thread reference can still provide portable context for the next turn.
+  // Detaching a stopped session removes it from the projection, but its native
+  // provider thread remains available for the next turn's portable handoff.
   return projection.providerThreads.some(
     (thread) =>
       thread.id === projection.thread.activeProviderThreadId &&

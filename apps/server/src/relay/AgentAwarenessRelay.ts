@@ -53,8 +53,9 @@ export class AgentAwarenessRelay extends Context.Service<
   AgentAwarenessRelay,
   {
     readonly publishThread: (threadId: ThreadId) => Effect.Effect<void>;
-    readonly requestCatchUp: () => Effect.Effect<void>;
     readonly drain: Effect.Effect<void>;
+    /** Retries a pending catch-up publish now. Call after this process links or enables publishing. */
+    readonly requestCatchUp: () => Effect.Effect<void>;
     readonly start: () => Effect.Effect<void, never, Scope.Scope>;
   }
 >()("t3/relay/AgentAwarenessRelay") {}
@@ -94,13 +95,13 @@ export function shouldPublishAgentAwarenessEvent(
     case "thread.unsettled":
     case "thread.snoozed":
     case "thread.unsnoozed":
+    case "thread.auto-settle-set":
     case "thread.pinned":
     case "thread.unpinned":
     case "thread.pin-reordered":
     case "thread.active-reordered":
     case "thread.visited":
     case "thread.marked-unread":
-    case "thread.auto-settle-set":
     case "thread.runtime-mode-updated":
     case "thread.interaction-mode-updated":
     case "run-attempt.created":
@@ -713,7 +714,7 @@ export const make = Effect.gen(function* () {
     });
     yield* Effect.forEach(activeThreadIds, enqueueThreadPublish, { discard: true });
     yield* worker.drain;
-    return true;
+    return "published" as const;
   });
 
   const publishActiveThreadsOnceWhenConfigured = (logEnabledWhenReady: boolean) =>
@@ -740,9 +741,6 @@ export const make = Effect.gen(function* () {
         }
       }
     });
-
-  const requestCatchUp: AgentAwarenessRelay["Service"]["requestCatchUp"] = () =>
-    Queue.offer(catchUpRequests, undefined).pipe(Effect.asVoid);
 
   schedulePublishConfirm = (threadId) =>
     Effect.forkIn(
@@ -805,8 +803,8 @@ export const make = Effect.gen(function* () {
 
   return AgentAwarenessRelay.of({
     publishThread,
-    requestCatchUp,
     drain: worker.drain,
+    requestCatchUp: () => Queue.offer(catchUpRequests, undefined).pipe(Effect.asVoid),
     start,
   });
 });

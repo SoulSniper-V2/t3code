@@ -44,6 +44,7 @@ import { useAttachmentUploadStore } from "../lib/attachmentUploadQueue";
 import {
   type AssistantCitation,
   type ChatFileAttachment,
+  CommandId,
   DEFAULT_MODEL,
   type ChatAttachment as ContractChatAttachment,
   type EnvironmentId,
@@ -7706,13 +7707,25 @@ export default function ChatView(props: ChatViewProps) {
             "Make room for this message's attachments in the composer before rewinding.",
           );
         }
-        await waitForRevertedMessage(routeThreadRef, messageId, turnCount, async () => {
-          const result = await revertThreadCheckpoint({
-            environmentId,
-            input: { threadId: activeThread.id, turnCount, restoreFiles },
-          });
-          if (result._tag === "Failure") throw squashAtomCommandFailure(result);
-        });
+        const rollbackCommandId = CommandId.make(randomUUID());
+        await waitForRevertedMessage(
+          routeThreadRef,
+          messageId,
+          turnCount,
+          rollbackCommandId,
+          async () => {
+            const result = await revertThreadCheckpoint({
+              environmentId,
+              input: {
+                threadId: activeThread.id,
+                turnCount,
+                restoreFiles,
+                commandId: rollbackCommandId,
+              },
+            });
+            if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+          },
+        );
         const currentPrompt = store.getComposerDraft(composerDraftTarget)?.prompt ?? "";
         const restoredPrompt = recallableComposerPrompt(message.text);
         const nextPrompt =

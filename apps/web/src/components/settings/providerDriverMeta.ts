@@ -12,17 +12,6 @@ import {
   ProviderDriverKind,
 } from "@t3tools/contracts";
 import type * as Schema from "effect/Schema";
-import {
-  AntigravityIcon,
-  ClaudeAI,
-  ClineIcon,
-  CommandCodeIcon,
-  CursorIcon,
-  GrokIcon,
-  type Icon,
-  OpenAI,
-  OpenCodeIcon,
-} from "../Icons";
 
 type ProviderSettingsSchema = {
   readonly fields: Readonly<Record<string, Schema.Top>>;
@@ -37,7 +26,6 @@ type ProviderSettingsSchema = {
 export interface ProviderClientDefinition {
   readonly value: ProviderDriverKind;
   readonly label: string;
-  readonly icon?: Icon;
   readonly settingsSchema: ProviderSettingsSchema;
   readonly environmentFields?: readonly ProviderEnvironmentFieldDefinition[];
   /** Whether this driver has a built-in default instance backed by legacy settings. */
@@ -64,19 +52,16 @@ const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = [
   {
     value: ProviderDriverKind.make("codex"),
     label: "Codex",
-    icon: OpenAI,
     settingsSchema: CodexSettings,
   },
   {
     value: ProviderDriverKind.make("claudeAgent"),
     label: "Claude",
-    icon: ClaudeAI,
     settingsSchema: ClaudeSettings,
   },
   {
     value: ProviderDriverKind.make("cursor"),
     label: "Cursor",
-    icon: CursorIcon,
     settingsSchema: CursorSettings,
     environmentFields: [
       {
@@ -91,32 +76,17 @@ const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = [
   {
     value: ProviderDriverKind.make("grok"),
     label: "Grok",
-    icon: GrokIcon,
     settingsSchema: GrokSettings,
   },
   {
     value: ProviderDriverKind.make("opencode"),
     label: "OpenCode",
-    icon: OpenCodeIcon,
     settingsSchema: OpenCodeSettings,
   },
   {
     value: ProviderDriverKind.make("antigravity"),
     label: "Antigravity",
-    icon: AntigravityIcon,
     settingsSchema: AntigravitySettings,
-  },
-  {
-    value: ProviderDriverKind.make("commandCode"),
-    label: "Command Code",
-    icon: CommandCodeIcon,
-    settingsSchema: CommandCodeSettings,
-  },
-  {
-    value: ProviderDriverKind.make("cline"),
-    label: "Cline",
-    icon: ClineIcon,
-    settingsSchema: ClineSettings,
   },
   {
     value: ProviderDriverKind.make("pi"),

@@ -16,6 +16,7 @@ const capabilityKeys = [
   "threadSettlement",
   "threadSnooze",
   "threadPinning",
+  "threadAutoSettleOptOut",
   "threadPinReorder",
   "threadActiveReorder",
   "threadTitleRegeneration",
@@ -64,6 +65,7 @@ function collectEnvironments(environments: ReadonlyMap<EnvironmentId, ListEnviro
   const settlementEnvironmentIds = new Set<EnvironmentId>();
   const snoozeEnvironmentIds = new Set<EnvironmentId>();
   const pinningEnvironmentIds = new Set<EnvironmentId>();
+  const autoSettleOptOutEnvironmentIds = new Set<EnvironmentId>();
   const pinReorderEnvironmentIds = new Set<EnvironmentId>();
   const activeReorderEnvironmentIds = new Set<EnvironmentId>();
   const titleRegenerationEnvironmentIds = new Set<EnvironmentId>();
@@ -72,6 +74,7 @@ function collectEnvironments(environments: ReadonlyMap<EnvironmentId, ListEnviro
     machineByEnvironmentId.set(id, machineKind);
     if (capabilities.threadSettlement === true) settlementEnvironmentIds.add(id);
     if (capabilities.threadSnooze === true) snoozeEnvironmentIds.add(id);
+    if (capabilities.threadAutoSettleOptOut === true) autoSettleOptOutEnvironmentIds.add(id);
     if (capabilities.threadPinning === true) pinningEnvironmentIds.add(id);
     if (capabilities.threadPinReorder === true) pinReorderEnvironmentIds.add(id);
     if (capabilities.threadActiveReorder === true) activeReorderEnvironmentIds.add(id);
@@ -83,6 +86,7 @@ function collectEnvironments(environments: ReadonlyMap<EnvironmentId, ListEnviro
     settlementEnvironmentIds,
     snoozeEnvironmentIds,
     pinningEnvironmentIds,
+    autoSettleOptOutEnvironmentIds,
     pinReorderEnvironmentIds,
     activeReorderEnvironmentIds,
     titleRegenerationEnvironmentIds,

@@ -54,7 +54,6 @@ export const v2ThreadShell: OrchestrationV2ThreadShell = {
   archivedAt: null,
   settledOverride: null,
   settledAt: null,
-  autoSettleDisabledAt: null,
   lastVisitedAt: null,
   deletedAt: null,
 };
@@ -80,7 +79,6 @@ export const v2Projection: OrchestrationV2ThreadProjection = {
     archivedAt: null,
     settledOverride: null,
     settledAt: null,
-    autoSettleDisabledAt: null,
     lastVisitedAt: null,
     deletedAt: null,
   },

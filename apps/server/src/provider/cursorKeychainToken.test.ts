@@ -3,7 +3,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   CursorKeychainTimeoutError,
   makeCachedCursorAccessTokenReader,
-} from "./CursorUsageCredentialStore.ts";
+} from "./cursorKeychainToken.ts";
 
 describe("Cursor Keychain reader", () => {
   it("shares concurrent reads and rechecks after the cache expires", async () => {
@@ -23,7 +23,7 @@ describe("Cursor Keychain reader", () => {
     assert.strictEqual(await read(), "token-2");
   });
 
-  it("gives up on an unanswered prompt and reuses it on the next read", async () => {
+  it("times out callers without starting a duplicate Keychain prompt", async () => {
     let reads = 0;
     let allow: (token: string) => void = () => {};
     const read = makeCachedCursorAccessTokenReader(

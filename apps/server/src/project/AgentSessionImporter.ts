@@ -186,7 +186,6 @@ const make = Effect.gen(function* () {
   const eventSink = yield* EventSinkV2;
   const idAllocator = yield* IdAllocatorV2;
   const runtimes = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
-
   const completedSourcesForWorkspace = Effect.fn("completedAgentSessionSourcesForWorkspace")(
     function* (workspaceRoot: string) {
       const rows = yield* runtimes
@@ -315,7 +314,25 @@ const make = Effect.gen(function* () {
     ) {
       return yield* new AgentSessionImportProjectChangedError({ projectId: input.projectId });
     }
-    const completedSources = yield* completedSourcesForWorkspace(project.workspaceRoot);
+    const runtimeRows = yield* runtimes
+      .list()
+      .pipe(
+        Effect.mapError(
+          (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
+        ),
+      );
+    const completedSources = runtimeRows.flatMap((runtime) => {
+      const payload = decodeImportedTranscriptPayload(runtime.runtimePayload);
+      if (
+        Option.isNone(payload) ||
+        payload.value.cwd === undefined ||
+        normalizeProjectPathForComparison(payload.value.cwd) !==
+          normalizeProjectPathForComparison(project.workspaceRoot)
+      ) {
+        return [];
+      }
+      return payload.value.importedTranscripts ?? [];
+    });
     const selectedKeys =
       input.selectedSessions === undefined
         ? null
@@ -337,12 +354,13 @@ const make = Effect.gen(function* () {
         }
         const source = outcome.source;
         if (selectedKeys !== null) {
-          const key = sessionSelectionKey({
-            provider: source.provider,
-            providerInstanceId: source.providerInstanceId,
-            providerSessionId: source.providerSessionId,
-          });
-          seenSelectedKeys.add(key);
+          seenSelectedKeys.add(
+            sessionSelectionKey({
+              provider: source.provider,
+              providerInstanceId: source.providerInstanceId,
+              providerSessionId: source.providerSessionId,
+            }),
+          );
         }
         const threadId = ThreadId.make(
           `import:${source.providerInstanceId}:${source.providerSessionId}`,

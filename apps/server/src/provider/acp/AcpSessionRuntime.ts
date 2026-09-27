@@ -98,6 +98,8 @@ export interface AcpSessionRuntimeOptions {
   readonly interruptPromptOnCancel?: boolean;
   /** Optional provider metadata forwarded on `session/cancel`. */
   readonly cancelMeta?: EffectAcpSchema.CancelNotification["_meta"];
+  /** Optional provider metadata forwarded on `initialize`. */
+  readonly initializeMeta?: EffectAcpSchema.InitializeRequest["_meta"];
   readonly ownDetachedProcessGroup?: boolean;
   readonly ownDescendantProcessGroups?: boolean;
   readonly processGroupPlatform?: NodeJS.Platform;
@@ -2156,6 +2158,7 @@ export const make = (
         protocolVersion: 2,
         clientCapabilities: initializeClientCapabilities,
         clientInfo: options.clientInfo,
+        ...(options.initializeMeta === undefined ? {} : { _meta: options.initializeMeta }),
       } satisfies EffectAcpSchema.InitializeRequest;
 
       const initializeResult = yield* runLoggedRequest(
@@ -2213,28 +2216,6 @@ export const make = (
       }
       return activationOptions?.mcpServers ?? options.mcpServers ?? [];
     };
-
-    const runResumeSessionWithTimeout = (
-      payload: EffectAcpSchema.ResumeSessionRequest,
-    ): Effect.Effect<EffectAcpSchema.ResumeSessionResponse, EffectAcpErrors.AcpError> =>
-      runLoggedRequest(
-        "session/resume",
-        payload,
-        acp.agent.resumeSession(payload).pipe(
-          Effect.timeoutOption(options.sessionLoadTimeout ?? defaultSessionLoadTimeout),
-          Effect.flatMap(
-            Effect.fromOption(
-              () =>
-                new EffectAcpErrors.AcpTransportError({
-                  operation: "call-rpc",
-                  method: "session/resume",
-                  detail: "session/resume timed out waiting for the agent response.",
-                  cause: undefined,
-                }),
-            ),
-          ),
-        ),
-      );
 
     const startOnce = Effect.gen(function* () {
       const initializeResult = yield* initialize;
@@ -2313,7 +2294,11 @@ export const make = (
               ...additionalDirectories,
               mcpServers: sessionMcpServers(initializeResult),
             } satisfies EffectAcpSchema.ResumeSessionRequest;
-            sessionSetupResult = yield* runResumeSessionWithTimeout(resumePayload);
+            sessionSetupResult = yield* runLoggedRequest(
+              "session/resume",
+              resumePayload,
+              acp.agent.resumeSession(resumePayload),
+            );
           } else {
             return yield* new EffectAcpErrors.AcpRequestError({
               code: -32601,
@@ -2549,7 +2534,11 @@ export const make = (
               cwd: options.cwd,
               mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
             } satisfies EffectAcpSchema.ResumeSessionRequest;
-            return runResumeSessionWithTimeout(requestPayload);
+            return runLoggedRequest(
+              "session/resume",
+              requestPayload,
+              acp.agent.resumeSession(requestPayload),
+            );
           }),
           Effect.flatMap((response) => adoptSession(sessionId, response)),
         ),
@@ -2716,13 +2705,12 @@ export const make = (
             ),
             (activePrompt) =>
               Fiber.join(activePrompt.fiber).pipe(
-                Effect.catchCauseIf(
-                  (cause) =>
-                    options.cancelBehavior !== "wait-for-prompt" && Cause.hasInterruptsOnly(cause),
-                  () =>
-                    Effect.succeed({
-                      stopReason: "cancelled",
-                    } satisfies EffectAcpSchema.PromptResponse),
+                Effect.catchCause((cause) =>
+                  options.cancelBehavior !== "wait-for-prompt" && Cause.hasInterruptsOnly(cause)
+                    ? Effect.succeed({
+                        stopReason: "cancelled",
+                      } satisfies EffectAcpSchema.PromptResponse)
+                    : Effect.failCause(cause),
                 ),
                 Effect.tap(() =>
                   closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef }),
@@ -2754,18 +2742,36 @@ export const make = (
           ? promptDispatchSemaphore.withPermit(cancel)
           : cancel,
       ...(options.ownDetachedProcessGroup === true ? { terminateProcessGroup } : {}),
+      // A session's mode is its `category: "mode"` config option. ACP v1 agents
+      // that only advertise `modes` (gemini-cli) take `session/set_mode`
+      // instead, which ACP v2 removed.
       setMode: (modeId) =>
-        Ref.get(modeStateRef).pipe(
-          Effect.flatMap((modeState) => {
-            if (modeState?.currentModeId === modeId) {
-              return Effect.succeed({} satisfies EffectAcpSchema.SetSessionModeResponse);
-            }
-            return setConfigOption("mode", modeId).pipe(
-              Effect.tap(() => updateCurrentModeId(modeId)),
-              Effect.as({} satisfies EffectAcpSchema.SetSessionModeResponse),
-            );
-          }),
-        ),
+        Effect.gen(function* () {
+          const modeState = yield* Ref.get(modeStateRef);
+          if (modeState?.currentModeId === modeId) {
+            return {} satisfies EffectAcpSchema.SetSessionModeResponse;
+          }
+          const modeConfigOption = (yield* Ref.get(configOptionsRef))?.find(
+            (option) => option.category === "mode" && option.type === "select",
+          );
+          if (modeConfigOption === undefined && modeState !== undefined) {
+            const started = yield* getStartedState;
+            const payload = { sessionId: started.sessionId, modeId };
+            yield* runLoggedRequest("session/set_mode", payload, acp.agent.setSessionMode(payload));
+            yield* updateCurrentModeId(modeId);
+            return {} satisfies EffectAcpSchema.SetSessionModeResponse;
+          }
+          const response = yield* setConfigOption(modeConfigOption?.id ?? "mode", modeId);
+          // The agent answers with its config options, so the mode it reports
+          // is the mode it runs in, even when it kept another one.
+          const reported = parseSessionModeState({ configOptions: response.configOptions });
+          if (reported === undefined) {
+            yield* updateCurrentModeId(modeId);
+          } else {
+            yield* updateCurrentModeId(reported.currentModeId);
+          }
+          return {} satisfies EffectAcpSchema.SetSessionModeResponse;
+        }),
       setSessionModel: (modelId, meta) =>
         getStartedState.pipe(
           Effect.flatMap((started) => {

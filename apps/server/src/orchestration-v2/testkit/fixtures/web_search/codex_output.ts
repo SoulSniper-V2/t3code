@@ -28,7 +28,8 @@ export function assertWebSearchOutput(
   assertSemanticProjectionIntegrity(projection);
   assertVisibleTurnItemsMirrorLocalTurnItems(projection);
   assertExecutionNodeKinds(projection, ["root_turn", "tool_call", "assistant_message"]);
-  assertConversationMessageRoles(projection, ["user", "assistant"]);
+  // gpt-6 models announce the search in a commentary message before the final answer.
+  assertConversationMessageRoles(projection, ["user", "assistant", "assistant"]);
   assertTurnItemTypes(projection, ["user_message", "web_search", "assistant_message"]);
   assertRuntimeRequestCounts(projection, { total: 0 });
   assertUserMessagesInclude(projection, [WEB_SEARCH_PROMPT]);

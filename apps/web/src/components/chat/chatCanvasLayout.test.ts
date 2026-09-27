@@ -23,6 +23,32 @@ const expectClear = (result: ReturnType<typeof resolve>) => {
 };
 
 describe("chat canvas layout", () => {
+  it("lifts a growing preview above the composer without snapping at the chat boundary", () => {
+    let previous: ReturnType<typeof resolve> | undefined;
+    for (let width = 480; width <= 1100; width++) {
+      const result = resolve(1344, {
+        ...preview,
+        width,
+        lastInteraction: "resize",
+        position: { x: 1332 - width, y: 888 - Math.round(width / 1.6) },
+      });
+      const frame = result.frame!;
+      if (frame.x < result.chat.left + result.chat.width + 12) {
+        expect(frame.y + frame.height).toBeLessThanOrEqual(708);
+      }
+      expect(result.chat.left).toBeLessThanOrEqual(288);
+      expect(result.chat.width).toBeGreaterThanOrEqual(640);
+      if (previous) {
+        expect(Math.abs(frame.y - previous.frame!.y)).toBeLessThanOrEqual(3);
+        expect(Math.abs(frame.width - previous.frame!.width)).toBeLessThanOrEqual(2);
+        expect(Math.abs(result.chat.width - previous.chat.width)).toBeLessThanOrEqual(1);
+      }
+      previous = result;
+    }
+    expect(previous!.overlapsChat).toBe(true);
+    expect(previous!.frame!.width).toBe(1100);
+  });
+
   it("centers chat in the whole container without a preview", () => {
     expect(resolve(1344, null).chat).toEqual({ left: 288, width: 768, insetStart: 0, insetEnd: 0 });
     expect(resolve(390, null).chat).toEqual({ left: 20, width: 350, insetStart: 0, insetEnd: 0 });
@@ -127,7 +153,7 @@ describe("chat canvas layout", () => {
       const resized = resizePreviewMiniPlayer({
         start: { x: 1332, y: 610, width: 240, height: 366 },
         direction: "northwest",
-        delta: { x: 240 - width, y: 0 },
+        delta: { x: 240 - width, y: ((240 - width) * source.height) / source.width },
         container,
         source,
       });

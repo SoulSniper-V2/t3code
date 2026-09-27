@@ -50,11 +50,11 @@ interface LegacyThreadRow {
   readonly archived_at: string | null;
   readonly settled_override: string | null;
   readonly settled_at: string | null;
-  readonly auto_settle_disabled_at: string | null;
   readonly unsettled_at: string | null;
   readonly snoozed_until: string | null;
   readonly snoozed_at: string | null;
   readonly pinned_at: string | null;
+  readonly auto_settle_disabled_at: string | null;
   readonly pin_order_key: string | null;
   readonly pull_requests_json: string;
   readonly linked_pull_request_json: string | null;
@@ -231,11 +231,11 @@ function importedThread(row: LegacyThreadRow): OrchestrationV2AppThread {
     archivedAt: nullableDateTime(row.archived_at),
     settledOverride: settledOverrideFor(row.settled_override),
     settledAt: nullableDateTime(row.settled_at),
-    autoSettleDisabledAt: nullableDateTime(row.auto_settle_disabled_at),
     unsettledAt: nullableDateTime(row.unsettled_at),
     snoozedUntil: nullableDateTime(row.snoozed_until),
     snoozedAt: nullableDateTime(row.snoozed_at),
     pinnedAt: nullableDateTime(row.pinned_at),
+    autoSettleDisabledAt: nullableDateTime(row.auto_settle_disabled_at),
     pinOrderKey: row.pin_order_key?.trim() || null,
     lastVisitedAt: null,
     deletedAt: nullableDateTime(row.deleted_at),
@@ -457,11 +457,11 @@ const make = Effect.gen(function* () {
         thread.archived_at,
         thread.settled_override,
         thread.settled_at,
-        thread.auto_settle_disabled_at,
         thread.unsettled_at,
         thread.snoozed_until,
         thread.snoozed_at,
         thread.pinned_at,
+        thread.auto_settle_disabled_at,
         thread.pin_order_key,
         (SELECT json_group_array(json_object('host', pr.host, 'repository', pr.repository, 'number', pr.number, 'url', pr.url, 'source', pr.source, 'linkedAt', pr.linked_at, 'snapshot', json(pr.snapshot_json), 'stack', json(pr.stack_json))) FROM projection_thread_pull_requests pr WHERE pr.thread_id = thread.thread_id) AS pull_requests_json,
         thread.linked_pull_request_json,
@@ -479,7 +479,6 @@ const make = Effect.gen(function* () {
          OR json_type(projection.payload_json, '$.snoozedUntil') IS NULL
          OR json_type(projection.payload_json, '$.snoozedAt') IS NULL
          OR json_type(projection.payload_json, '$.unsettledAt') IS NULL
-         OR json_type(projection.payload_json, '$.autoSettleDisabledAt') IS NULL
          OR json_type(projection.payload_json, '$.linkedPullRequest') IS NULL
          OR json_type(projection.payload_json, '$.pullRequests') IS NULL
          OR json_type(projection.payload_json, '$.branchPullRequest') IS NULL
@@ -492,15 +491,14 @@ const make = Effect.gen(function* () {
       if (Option.isNone(decoded)) continue;
       const current = decoded.value;
       const legacy = importedThread(row);
-      const storedThreadJson = parseJson(row.payload_json);
-      const storedAutoSettleField =
-        storedThreadJson !== null && typeof storedThreadJson === "object"
-          ? Object.hasOwn(storedThreadJson, "autoSettleDisabledAt")
-          : false;
       const legacyPullRequests = legacy.pullRequests ?? [];
       const repaired: OrchestrationV2AppThread = {
         ...current,
         pinnedAt: current.pinnedAt === undefined ? legacy.pinnedAt : current.pinnedAt,
+        autoSettleDisabledAt:
+          current.autoSettleDisabledAt === undefined
+            ? legacy.autoSettleDisabledAt
+            : current.autoSettleDisabledAt,
         pinOrderKey: current.pinOrderKey === undefined ? legacy.pinOrderKey : current.pinOrderKey,
         snoozedUntil:
           current.snoozedUntil === undefined ? legacy.snoozedUntil : current.snoozedUntil,
@@ -529,9 +527,6 @@ const make = Effect.gen(function* () {
             : current.branchPullRequest,
         activeOrderKey:
           current.activeOrderKey === undefined ? legacy.activeOrderKey : current.activeOrderKey,
-        autoSettleDisabledAt: !storedAutoSettleField
-          ? legacy.autoSettleDisabledAt
-          : current.autoSettleDisabledAt,
       };
       // Later schema additions can require another repair for the same thread.
       const repairId = yield* randomUuidV4;
@@ -566,11 +561,11 @@ const make = Effect.gen(function* () {
         thread.archived_at,
         thread.settled_override,
         thread.settled_at,
-        thread.auto_settle_disabled_at,
         thread.unsettled_at,
         thread.snoozed_until,
         thread.snoozed_at,
         thread.pinned_at,
+        thread.auto_settle_disabled_at,
         thread.pin_order_key,
         (SELECT json_group_array(json_object('host', pr.host, 'repository', pr.repository, 'number', pr.number, 'url', pr.url, 'source', pr.source, 'linkedAt', pr.linked_at, 'snapshot', json(pr.snapshot_json), 'stack', json(pr.stack_json))) FROM projection_thread_pull_requests pr WHERE pr.thread_id = thread.thread_id) AS pull_requests_json,
         thread.linked_pull_request_json,

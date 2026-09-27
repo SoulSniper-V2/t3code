@@ -1,4 +1,4 @@
-import { MessageId, ProjectId, RunId } from "@t3tools/contracts";
+import { ProjectId, RunId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -17,6 +17,17 @@ import {
   type ThreadSortInput,
 } from "./threadSort.ts";
 import type { ThreadRunSummary } from "./models.ts";
+
+describe("activeThreadAnchorTimestampMs", () => {
+  it("uses the later unsettle time when an old thread re-enters the active list", () => {
+    expect(
+      activeThreadAnchorTimestampMs({
+        createdAt: "2026-01-01T00:00:00.000Z",
+        unsettledAt: "2026-08-01T00:00:00.000Z",
+      }),
+    ).toBe(Date.parse("2026-08-01T00:00:00.000Z"));
+  });
+});
 
 describe("activeThreadAnchorTimestampMs", () => {
   it("uses the later unsettle time when an old thread re-enters the active list", () => {
@@ -79,7 +90,7 @@ describe("sortSettledThreads", () => {
     id: string;
     settledAt?: string | null;
     latestUserMessageAt?: string | null;
-    latestRun?: ThreadRunSummary | null;
+    latestRun?: SettledThreadTimestampInput["latestRun"];
     updatedAt?: string;
   }) => ({
     id: input.id,

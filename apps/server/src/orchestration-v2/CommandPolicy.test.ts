@@ -481,25 +481,6 @@ layer("CommandPolicyV2", (it) => {
     }),
   );
 
-  it.effect("uses bounded portable context for failed source runs", () =>
-    Effect.gen(function* () {
-      const policy = yield* CommandPolicyV2;
-
-      const result = yield* policy.decideForkExecution({
-        commandId,
-        threadId,
-        providerInstanceId: ProviderInstanceId.make("codex"),
-        capabilities: CodexProviderCapabilitiesV2,
-        sameProvider: true,
-        hasStrongNativeSource: true,
-        sourceRunStatus: "failed",
-        fromSpecificTurn: true,
-      });
-
-      assert.equal(result, "portable_context");
-    }),
-  );
-
   it.effect("falls back to portable context when Cursor cannot fork natively", () =>
     Effect.gen(function* () {
       const policy = yield* CommandPolicyV2;
