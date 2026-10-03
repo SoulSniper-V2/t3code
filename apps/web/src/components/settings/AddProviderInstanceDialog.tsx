@@ -110,6 +110,7 @@ export function AddProviderInstanceDialog({
   const persistProviderInstance = usePersistEnvironmentProviderInstanceMutation(environmentId);
 
   const [wizardStep, setWizardStep] = useState(0);
+  const [addingChatGptAccount, setAddingChatGptAccount] = useState(false);
   const [driver, setDriver] = useState<ProviderDriverKind>(DEFAULT_DRIVER_KIND);
   const [identityByDriver, setIdentityByDriver] = useState<Record<string, ProviderIdentityDraft>>(
     {},
@@ -323,6 +324,15 @@ export function AddProviderInstanceDialog({
     });
     onOpenChange(false);
   };
+
+  if (addingChatGptAccount) {
+    return (
+      <AddManagedCodexAccountDialog
+        environmentId={environmentId}
+        onClose={() => onOpenChange(false)}
+      />
+    );
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

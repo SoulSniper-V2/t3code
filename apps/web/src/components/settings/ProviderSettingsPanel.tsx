@@ -275,6 +275,7 @@ interface ProviderSettingsTarget {
   readonly environmentId?: EnvironmentId;
   readonly instanceId?: ProviderInstanceId;
   readonly scoped?: boolean;
+  readonly environmentIds?: readonly EnvironmentId[];
 }
 
 export function ProviderSettingsPanel(target: ProviderSettingsTarget) {
@@ -293,8 +294,9 @@ function ProviderSettingsPanelContent(target: ProviderSettingsTarget) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const searchTargetId = useSettingsSearchTargetId();
   const options = useMemo(
-    () => buildProviderEnvironmentOptions(environments, primaryEnvironmentId),
-    [environments, primaryEnvironmentId],
+    () =>
+      buildProviderEnvironmentOptions(environments, primaryEnvironmentId, target.environmentIds),
+    [environments, primaryEnvironmentId, target.environmentIds],
   );
   // Raw user intent; the effective selection is re-derived every render so a
   // device that drops out of the catalog falls back without erasing the pick —
@@ -1045,6 +1047,17 @@ export function EnvironmentProviderSettings({
         selected={mode === "list" && selectedRow?.instanceId === row.instanceId}
         onSelect={mode === "list" ? () => setSelectedInstanceId(row.instanceId) : undefined}
         readOnly={readOnly}
+        runtime={
+          mode === "editor" &&
+          row.driver === "codex" &&
+          readCodexSetupMode(row.instance.config) === "managed" ? (
+            <CodexManagedRuntimeFields
+              environmentId={environmentId}
+              instanceId={row.instanceId}
+              provider={liveProvider}
+            />
+          ) : undefined
+        }
         setup={
           mode === "editor" && row.driver === "antigravity" ? (
             <ProviderSetupSection
@@ -1150,10 +1163,11 @@ export function EnvironmentProviderSettings({
 
   return (
     <>
-      <SettingsSection {...searchableSetting("providers")} variant="plain">
-        <div className="flex min-h-11 min-w-0 items-center gap-2 px-3 sm:px-4">
-          {deviceTabs}
-          <div className="ml-auto flex min-w-0 shrink-0 items-center gap-2">
+      <SettingsSection
+        {...searchableSetting("providers")}
+        variant="plain"
+        headerAction={
+          <div className="flex min-w-0 items-center gap-2">
             {readOnly ? (
               <span className="min-w-0 truncate text-xs text-muted-foreground">
                 <ProviderLastChecked lastCheckedAt={lastCheckedAt} />
@@ -1202,7 +1216,11 @@ export function EnvironmentProviderSettings({
               </>
             )}
           </div>
-        </div>
+        }
+      >
+        {deviceTabs ? (
+          <div className="flex min-h-11 min-w-0 items-center gap-2 px-3 sm:px-4">{deviceTabs}</div>
+        ) : null}
         {readOnly ? (
           <SettingsGroup divided={false} className="overflow-hidden">
             <SettingsRow
