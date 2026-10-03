@@ -31,6 +31,8 @@ export type BuiltInDriversEnv =
 export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv>> = [
   CodexDriver,
   ClaudeDriver,
+  ClineDriver,
+  CommandCodeDriver,
   CursorDriver,
   GrokDriver,
   OpenCodeDriver,

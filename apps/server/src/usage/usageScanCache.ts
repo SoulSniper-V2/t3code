@@ -17,7 +17,12 @@
 import type { UsageProviderKind } from "@t3tools/contracts";
 
 import { GUARD_LENGTH, type TranscriptParsePosition } from "./usageTranscriptReader.ts";
-import type { CodexScanState, UsageRecord, UsageSpeed } from "./usageTranscripts.ts";
+import type {
+  CodexScanState,
+  CommandCodeScanState,
+  UsageRecord,
+  UsageSpeed,
+} from "./usageTranscripts.ts";
 
 // v2: Codex fork-copy suppression changed what a file parses to, so v1
 // entries would keep serving double-counted records forever.
@@ -300,8 +305,20 @@ export function decodeScanCache(document: unknown): ScanCache {
       records,
       tailRecords,
       position: legacyCodex
-        ? { resumeOffset: 0, guardLength: 0, guardHash: 0, codexState: null }
-        : { resumeOffset: entry.o, guardLength: entry.gl, guardHash: entry.gh, codexState },
+        ? {
+            resumeOffset: 0,
+            guardLength: 0,
+            guardHash: 0,
+            codexState: null,
+            commandCodeState: null,
+          }
+        : {
+            resumeOffset: entry.o,
+            guardLength: entry.gl,
+            guardHash: entry.gh,
+            codexState,
+            commandCodeState,
+          },
     });
   }
 
