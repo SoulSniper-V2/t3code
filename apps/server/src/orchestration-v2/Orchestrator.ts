@@ -17,6 +17,8 @@ import {
   MessageId,
   type ModelSelection,
   OrchestrationV2Command,
+  type OrchestrationV2InternalCommand,
+  type OrchestrationV2ServerCommand,
   type OrchestrationV2AppThread,
   type OrchestrationV2ContextHandoff,
   type OrchestrationV2ContextSourcePoint,
@@ -44,18 +46,22 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
-import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import {
+  derivePendingBackgroundWork,
+  pendingBackgroundTurnItems,
+} from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
-import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
+import * as ProjectStore from "./ProjectStore.ts";
 import {
   isCheckpointRestoreIsolated,
   SHARED_WORKSPACE_RESTORE_MESSAGE,
@@ -65,6 +71,7 @@ import { CommandPolicyV2, resolveMessageDispatchIntent } from "./CommandPolicy.t
 import { CommandReceiptStoreV2 } from "./CommandReceiptStore.ts";
 import { ContextHandoffServiceV2 } from "./ContextHandoffService.ts";
 import { notificationTurnItem } from "./Notification.ts";
+import { isRestartNoteSource } from "./RestartBackgroundNote.ts";
 import { isUndeliveredMailboxSteer } from "./NotificationMailbox.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
@@ -233,7 +240,7 @@ export interface OrchestratorV2DispatchResult {
 export interface OrchestratorV2Shape {
   readonly resumeQueuedRuns: Effect.Effect<number, OrchestratorV2Error>;
   readonly dispatch: (
-    command: OrchestrationV2Command,
+    command: OrchestrationV2ServerCommand,
   ) => Effect.Effect<OrchestratorV2DispatchResult, OrchestratorV2Error>;
   readonly getTimelinePage: (
     threadId: ThreadId,
@@ -310,7 +317,7 @@ function isNativeMaintenanceCommand(message: {
 
 const threadPullRequestLinksEqual = Schema.toEquivalence(Schema.NullOr(ThreadLinkedPullRequest));
 
-function commandThreadId(command: OrchestrationV2Command): ThreadId {
+function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
   switch (command.type) {
     case "thread.create":
     case "thread.archive":
@@ -353,6 +360,7 @@ function commandThreadId(command: OrchestrationV2Command): ThreadId {
     case "thread.user-input.dismiss":
     case "checkpoint.rollback":
     case "checkpoint.rollback.fail":
+    case "thread.background-work.settle":
     case "provider.switch":
       return command.threadId;
     case "delegated_task.request":
@@ -643,7 +651,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const eventSink = yield* EventSinkV2;
   const commandReceipts = yield* CommandReceiptStoreV2;
   const idAllocator = yield* IdAllocatorV2;
-  const projects = yield* ProjectionProjectRepository;
+  const projects = yield* ProjectStore.ProjectStoreV2;
   const projectionStore = yield* ProjectionStoreV2;
   const nextTurnItemOrdinal = (
     projection: Pick<OrchestrationV2ThreadProjection, "thread"> &
@@ -662,6 +670,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
 
   const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const providerAdapters = yield* ProviderAdapterRegistryV2;
   const continuationRequests = yield* ProviderContinuationRequests;
   const providerSessions = yield* ProviderSessionManagerV2;
@@ -671,7 +680,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const threadDispatch = yield* ThreadCommandExecutor;
 
   const mapDispatchError =
-    (command: OrchestrationV2Command) =>
+    (command: OrchestrationV2ServerCommand) =>
     <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, OrchestratorDispatchError, R> =>
       effect.pipe(
         Effect.mapError(
@@ -731,7 +740,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
 
   const makeEvent = <Event extends OrchestrationV2DomainEvent>(
-    command: OrchestrationV2Command,
+    command: OrchestrationV2ServerCommand,
     event: Omit<Event, "id">,
   ) =>
     Effect.gen(function* () {
@@ -748,7 +757,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
 
   const emit =
-    (events: Ref.Ref<Array<OrchestrationV2DomainEvent>>, command: OrchestrationV2Command) =>
+    (events: Ref.Ref<Array<OrchestrationV2DomainEvent>>, command: OrchestrationV2ServerCommand) =>
     <Event extends OrchestrationV2DomainEvent>(event: Omit<Event, "id">) =>
       Effect.gen(function* () {
         const withId = yield* makeEvent(command, event);
@@ -2269,9 +2278,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     if (command.type === "thread.pull-request.sync") {
-      const project = yield* projects
-        .getById({ projectId: command.projectId })
-        .pipe(mapDispatchError(command));
+      const project = yield* projects.get(command.projectId).pipe(mapDispatchError(command));
       const currentSequence = yield* eventSink.latestSequence({ threadId: command.threadId }).pipe(
         Effect.mapError(
           (cause) =>
@@ -3601,17 +3608,53 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           });
         });
 
+      // A selection the provider applies on its next turn restarts the run when
+      // the provider can restart it. Otherwise the steer joins the running turn
+      // and the selection waits for the next one, rather than failing the steer.
+      const turnCapabilities = session.providerSession.capabilities.turns;
+      const selectionMustApplyNow =
+        selectionChanged &&
+        (providerInstanceChanged || selectionTransition?.type !== "apply_on_next_turn");
       const steeringPolicy = yield* enforceCommandPolicy(input.command)(
         commandPolicy.decideSteeringExecution({
           commandId: input.command.commandId,
           threadId: input.command.threadId,
           providerInstanceId: targetRun.providerInstanceId,
           capabilities: session.providerSession.capabilities,
-          forceRestart: input.forceRestart || selectionChanged,
+          forceRestart:
+            input.forceRestart ||
+            selectionMustApplyNow ||
+            (selectionChanged &&
+              turnCapabilities.supportsInterrupt &&
+              turnCapabilities.supportsSteeringByInterruptRestart),
         }),
       );
 
       if (steeringPolicy === "active_steering") {
+        // The steer's selection becomes the saved next-turn choice, even when it
+        // matches the running run again. A delegated completion carries the
+        // run's selection, not a user choice, so it never replaces the saved one.
+        // The saved choice may name another instance, so it moves with the steer.
+        const instanceChanged =
+          input.projection.thread.providerInstanceId !== input.modelSelection.instanceId;
+        if (
+          input.delegatedCompletion === undefined &&
+          (instanceChanged ||
+            !modelSelectionsEqual(input.projection.thread.modelSelection, input.modelSelection))
+        ) {
+          yield* emitEvent({
+            type: instanceChanged ? "thread.provider-switched" : "thread.model-selection-updated",
+            threadId: input.command.threadId,
+            providerInstanceId: input.modelSelection.instanceId,
+            occurredAt: now,
+            payload: {
+              ...input.projection.thread,
+              providerInstanceId: input.modelSelection.instanceId,
+              modelSelection: input.modelSelection,
+              updatedAt: now,
+            },
+          });
+        }
         yield* appendSteeringMessage({
           runId: targetRun.id,
           nodeId: rootNodeId,
@@ -4126,7 +4169,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const source = projection.runs.find((run) => run.id === command.restartContinuationOfRunId);
         if (
           !source ||
-          source.status !== "cancelled" ||
+          (source.status !== "cancelled" &&
+            !isRestartNoteSource(source, projection.providerTurns)) ||
           projection.thread.archivedAt !== null ||
           projection.thread.deletedAt !== null ||
           projection.thread.providerInstanceId !== source.providerInstanceId ||
@@ -7497,6 +7541,150 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     });
 
+  /**
+   * Ends the background work a settled thread still shows that no provider
+   * process will report on: work on the provider thread whose interrupt just
+   * returned (`stoppedProviderThreadId`), and work on provider threads with no
+   * live session at all. Only the stopped run's work and older runs' is ended
+   * (`throughRunOrdinal`); a later run's work is its own. A dead process's
+   * roster goes too, as on restart.
+   */
+  const settleBackgroundWork = (input: {
+    readonly command: Extract<
+      OrchestrationV2ServerCommand,
+      { readonly type: "run.interrupt" | "thread.background-work.settle" }
+    >;
+    readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
+    readonly projection: Pick<
+      OrchestrationV2ThreadProjection,
+      "runs" | "turnItems" | "providerThreads"
+    >;
+    readonly stoppedProviderThreadId: OrchestrationV2ProviderThread["id"] | null;
+    readonly throughRunOrdinal: number;
+    readonly now: DateTime.Utc;
+  }) =>
+    Effect.gen(function* () {
+      const emitEvent = emit(input.events, input.command);
+      const runOrdinals = new Map(input.projection.runs.map((run) => [run.id, run.ordinal]));
+      const liveness = new Map<string, boolean>();
+      const hasLiveSession = (providerThreadId: OrchestrationV2ProviderThread["id"]) =>
+        Effect.gen(function* () {
+          const known = liveness.get(providerThreadId);
+          if (known !== undefined) return known;
+          const sessionId = input.projection.providerThreads.find(
+            (candidate) => candidate.id === providerThreadId,
+          )?.providerSessionId;
+          const live =
+            sessionId !== null &&
+            sessionId !== undefined &&
+            Option.isSome(
+              yield* providerSessions
+                .get(sessionId)
+                .pipe(Effect.orElseSucceed(() => Option.none())),
+            );
+          liveness.set(providerThreadId, live);
+          return live;
+        });
+      for (const item of pendingBackgroundTurnItems({
+        turnItems: input.projection.turnItems,
+        runs: input.projection.runs,
+      })) {
+        // An item without a run counts as the stopped run's.
+        const itemRunOrdinal = item.runId === null ? undefined : runOrdinals.get(item.runId);
+        if (itemRunOrdinal !== undefined && itemRunOrdinal > input.throughRunOrdinal) continue;
+        const providerThreadId = item.providerThreadId ?? null;
+        if (
+          providerThreadId !== null &&
+          providerThreadId !== input.stoppedProviderThreadId &&
+          (yield* hasLiveSession(providerThreadId))
+        ) {
+          continue;
+        }
+        const run = input.projection.runs.find((candidate) => candidate.id === item.runId);
+        yield* emitEvent({
+          type: "turn-item.updated",
+          threadId: input.command.threadId,
+          ...(item.runId === null ? {} : { runId: item.runId }),
+          ...(item.nodeId === null ? {} : { nodeId: item.nodeId }),
+          ...(run === undefined ? {} : { providerInstanceId: run.providerInstanceId }),
+          occurredAt: input.now,
+          payload: {
+            ...item,
+            status: "interrupted",
+            completedAt: input.now,
+            updatedAt: input.now,
+          },
+        });
+      }
+      for (const providerThread of input.projection.providerThreads) {
+        // A live process owns its roster and reports clearing it.
+        if (
+          (providerThread.pendingBackgroundTasks?.length ?? 0) === 0 ||
+          (yield* hasLiveSession(providerThread.id))
+        ) {
+          continue;
+        }
+        yield* emitEvent({
+          type: "provider-thread.updated",
+          threadId: input.command.threadId,
+          driver: providerThread.driver,
+          providerInstanceId: providerThread.providerInstanceId,
+          occurredAt: input.now,
+          payload: { ...providerThread, pendingBackgroundTasks: [], updatedAt: input.now },
+        });
+      }
+    });
+
+  const dispatchBackgroundWorkSettle = (
+    command: Extract<
+      OrchestrationV2InternalCommand,
+      { readonly type: "thread.background-work.settle" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) =>
+    Effect.gen(function* () {
+      const [projection, stopped] = yield* Effect.all([
+        projectionStore.getThreadRecords(
+          command.threadId,
+          ["runs", "attempts", "turnItems", "providerThreads"],
+          {
+            turnItemTypes: ["command_execution", "dynamic_tool", "subagent"],
+            turnItemStatuses: ["pending", "running", "waiting"],
+          },
+        ),
+        projectionStore.getProviderControlContext(command.threadId, {
+          providerThreadId: command.providerThreadId,
+          providerTurnId: command.providerTurnId,
+        }),
+      ]).pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+        ),
+      );
+      const stoppedRunId = projection.attempts.find(
+        (attempt) => attempt.id === stopped.providerTurn?.runAttemptId,
+      )?.runId;
+      const stoppedRun = projection.runs.find((run) => run.id === stoppedRunId);
+      // A new turn may have started since Stop; its work is not this Stop's.
+      if (
+        stoppedRun === undefined ||
+        projection.runs.some(
+          (run) =>
+            run.status === "preparing" || run.status === "starting" || run.status === "running",
+        )
+      ) {
+        return;
+      }
+      yield* settleBackgroundWork({
+        command,
+        events,
+        projection,
+        stoppedProviderThreadId: command.providerThreadId,
+        throughRunOrdinal: stoppedRun.ordinal,
+        now: yield* DateTime.now,
+      });
+    });
+
   const dispatchRunInterrupt = (
     command: Extract<OrchestrationV2Command, { readonly type: "run.interrupt" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -7515,9 +7703,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           "turnItems",
           "subagents",
         ],
+        // Thread-wide, like the Waiting strip: a settled thread's background
+        // work can belong to an earlier run than the one Stop targets.
         {
-          turnItemTypes: ["command_execution", "run_interrupt_request", "run_interrupt_result"],
-          turnItemRunId: command.runId,
+          turnItemTypes: ["command_execution", "dynamic_tool", "subagent"],
+          turnItemStatuses: ["pending", "running", "waiting"],
         },
       );
       const run = projection.runs.find((candidate) => candidate.id === command.runId);
@@ -7733,6 +7923,39 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Run ${command.runId} is not interruptible.`,
         });
       }
+      // Stop on a settled thread's background work. Its process may be gone
+      // (released, restarted) and only the projection still shows the work;
+      // the settle follow-up ends whatever no provider reports ending.
+      const settleOnly =
+        providerTurn.status !== "running" &&
+        (providerThread.providerSessionId === null ||
+          Option.isNone(
+            yield* providerSessions
+              .get(providerThread.providerSessionId)
+              .pipe(Effect.orElseSucceed(() => Option.none())),
+          ));
+      if (settleOnly) {
+        yield* emitEvent({
+          type: "turn-item.updated",
+          threadId: command.threadId,
+          runId: run.id,
+          nodeId: rootNode.id,
+          providerInstanceId: run.providerInstanceId,
+          occurredAt: now,
+          payload: interruptRequestItem,
+        });
+        if (command.holdQueue === true) yield* holdQueuedRuns;
+        yield* stopCompletionCohort();
+        yield* settleBackgroundWork({
+          command,
+          events,
+          projection,
+          stoppedProviderThreadId: providerThread.id,
+          throughRunOrdinal: run.ordinal,
+          now,
+        });
+        return undefined;
+      }
       if (providerThread.providerSessionId === null) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
@@ -7907,6 +8130,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       if (command.restoreFiles !== false) {
         const isolated = yield* isCheckpointRestoreIsolated(projection.thread, targetScope, {
+          projects,
+          path,
           fileSystem,
           projections: projectionStore,
         }).pipe(
@@ -7949,18 +8174,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
 
       const now = yield* DateTime.now;
-      if (projection.thread.rollbackFailure != null) {
-        yield* emit(
-          events,
-          command,
-        )({
-          type: "thread.metadata-updated",
-          threadId: command.threadId,
-          providerInstanceId: projection.thread.providerInstanceId,
-          occurredAt: now,
-          payload: { ...projection.thread, rollbackFailure: null, updatedAt: now },
-        });
-      }
+      // This rollback becomes the only one whose failure the thread records.
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "thread.metadata-updated",
+        threadId: command.threadId,
+        providerInstanceId: projection.thread.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...projection.thread,
+          rollbackRequestId: command.commandId,
+          rollbackFailure: null,
+          updatedAt: now,
+        },
+      });
       yield* emit(
         events,
         command,
@@ -7994,10 +8223,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   /**
    * Records a provider rollback that failed after every retry, so clients
-   * waiting on it stop and show the reason. A newer rollback clears it.
+   * waiting on it stop and show the reason. A newer rollback clears it, and a
+   * late failure from a rollback it superseded is rejected.
    */
   const dispatchCheckpointRollbackFail = (
-    command: Extract<OrchestrationV2Command, { readonly type: "checkpoint.rollback.fail" }>,
+    command: Extract<OrchestrationV2InternalCommand, { readonly type: "checkpoint.rollback.fail" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
   ) =>
     Effect.gen(function* () {
@@ -8005,6 +8235,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         .getThread(command.threadId)
         .pipe(mapDispatchError(command));
       if (thread.deletedAt !== null) return;
+      if (thread.rollbackRequestId !== command.requestId) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Rollback ${command.requestId} is no longer the thread's current rollback.`,
+        });
+      }
       const now = yield* DateTime.now;
       yield* emit(
         events,
@@ -8760,7 +8997,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
   });
 
-  const dispatchUnsupported = (command: OrchestrationV2Command) =>
+  const dispatchUnsupported = (command: OrchestrationV2ServerCommand) =>
     Effect.fail(
       new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -8769,7 +9006,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
 
   const dispatchOnce = Effect.fn("orchestrationV2.dispatch.once")(function* (
-    command: OrchestrationV2Command,
+    command: OrchestrationV2ServerCommand,
   ): Effect.fn.Return<
     {
       readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
@@ -9006,6 +9243,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "checkpoint.rollback.fail":
         yield* dispatchCheckpointRollbackFail(command, events);
         break;
+      case "thread.background-work.settle":
+        yield* dispatchBackgroundWorkSettle(command, events);
+        break;
       case "thread.fork":
         yield* dispatchThreadFork(command, events);
         break;
@@ -9036,7 +9276,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   });
 
   const dispatchWithReceiptEffect = Effect.fn("orchestrationV2.dispatch.withReceipt")(function* (
-    command: OrchestrationV2Command,
+    command: OrchestrationV2ServerCommand,
   ): Effect.fn.Return<OrchestratorV2DispatchResult, OrchestratorV2Error> {
     yield* Effect.annotateCurrentSpan({
       "orchestration_v2.command_id": command.commandId,
@@ -9099,9 +9339,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
     const plan = yield* dispatchOnce(command).pipe(
       Effect.flatMap((planned) =>
-        // A Stop can race with terminal provider events. Its empty plan is an
-        // accepted idempotent outcome; every other command must still mutate.
-        planned.events.length > 0
+        // A settle that finds the provider already ended everything has
+        // nothing to record, which is its expected outcome, not a failure.
+        planned.events.length > 0 || command.type === "thread.background-work.settle"
           ? Effect.succeed(planned)
           : Effect.fail(
               new OrchestratorDispatchError({
@@ -9148,6 +9388,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     );
 
+    if (plan.events.length === 0) {
+      // A settle that ended nothing still records its receipt: a replayed Stop
+      // effect then finds it instead of settling work that appeared since.
+      const resultSequence = yield* Effect.gen(function* () {
+        const sequence = yield* eventSink.latestSequence({ threadId: commandThreadId(command) });
+        yield* commandReceipts.insertIfAbsent({
+          commandId: command.commandId,
+          threadId: commandThreadId(command),
+          commandType: command.type,
+          acceptedAt: yield* DateTime.now,
+          resultSequence: sequence,
+          status: "accepted",
+          error: null,
+        });
+        return sequence;
+      }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause,
+            }),
+        ),
+      );
+      return { sequence: resultSequence, storedEvents: [] } satisfies OrchestratorV2DispatchResult;
+    }
     const acceptedAt = plan.events.at(-1)?.occurredAt ?? (yield* DateTime.now);
     const committed = yield* eventSink
       .commitCommand({
@@ -9195,7 +9462,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     } satisfies OrchestratorV2DispatchResult;
   });
 
-  const dispatchWithReceipt = (command: OrchestrationV2Command) =>
+  const dispatchWithReceipt = (command: OrchestrationV2ServerCommand) =>
     threadDispatch.withLock(commandThreadId(command), dispatchWithReceiptEffect(command));
 
   const handleTerminalRun = (stored: OrchestrationV2StoredEvent) =>
@@ -9439,12 +9706,13 @@ export const layer: Layer.Layer<
   never,
   | CheckpointServiceV2
   | FileSystem.FileSystem
+  | Path.Path
   | CommandPolicyV2
   | CommandReceiptStoreV2
   | ContextHandoffServiceV2
   | EventSinkV2
   | IdAllocatorV2
-  | ProjectionProjectRepository
+  | ProjectStore.ProjectStoreV2
   | ProviderAdapterRegistryV2
   | ProviderSessionManagerV2
   | ProviderSwitchServiceV2

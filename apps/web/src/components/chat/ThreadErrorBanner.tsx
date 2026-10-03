@@ -40,6 +40,7 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   error,
   onDismiss,
   errorClass,
+  chatGptUsageLimit = false,
 }: {
   error: string | null;
   errorClass?: OrchestrationV2ProviderFailureClass | null;
@@ -51,7 +52,11 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   return (
     <div className="pointer-events-auto mx-auto w-fit max-w-[min(48rem,calc(100%-2rem))] pt-3">
       <Alert variant={variant} surface="glass" controlAlignment="first-line" data-variant={variant}>
-        <CircleAlertIcon />
+        {chatGptUsageLimit ? (
+          <OpenAI className="size-4 text-foreground!" aria-hidden="true" />
+        ) : (
+          <CircleAlertIcon />
+        )}
         <AlertDescription>
           {chatGptUsageLimit ? (
             <div className="space-y-1">
@@ -69,9 +74,12 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
         </AlertDescription>
         {(chatGptUsageLimit || onDismiss) && (
           <AlertAction>
-            <Button variant="ghost" size="icon-xs" aria-label="Dismiss error" onClick={onDismiss}>
-              <XIcon />
-            </Button>
+            {chatGptUsageLimit ? <ChatGptUsageButton variant="default" size="sm" /> : null}
+            {onDismiss ? (
+              <Button variant="ghost" size="icon-xs" aria-label="Dismiss error" onClick={onDismiss}>
+                <XIcon />
+              </Button>
+            ) : null}
           </AlertAction>
         )}
       </Alert>

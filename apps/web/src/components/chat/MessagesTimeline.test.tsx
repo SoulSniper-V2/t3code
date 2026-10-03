@@ -1,4 +1,5 @@
 import { CheckpointRef, EnvironmentId, MessageId, RunId, ThreadId } from "@t3tools/contracts";
+import { ApprovalRequestId } from "@t3tools/contracts";
 import {
   act,
   createRef,

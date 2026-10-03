@@ -35,14 +35,10 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
-import { ServerSettingsService } from "../serverSettings.ts";
-import { CheckpointServiceV2 } from "./CheckpointService.ts";
-import { EventSinkV2 } from "./EventSink.ts";
-import {
-  IdAllocatorV2,
-  type IdAllocatorV2AllocationError,
-  type IdAllocatorV2Shape,
-} from "./IdAllocator.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as CheckpointService from "./CheckpointService.ts";
+import * as EventSink from "./EventSink.ts";
+import * as IdAllocator from "./IdAllocator.ts";
 import type {
   ProviderAdapterV2Event,
   ProviderAdapterV2RuntimePolicy,
@@ -50,12 +46,15 @@ import type {
   ProviderAdapterV2TurnMessage,
 } from "./ProviderAdapter.ts";
 import { ProviderAdapterTurnStartError } from "./ProviderAdapter.ts";
-import { ProviderEventIngestorV2 } from "./ProviderEventIngestor.ts";
+import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import { makeProviderFailure, makeProviderFailureTurnItem } from "./ProviderFailure.ts";
-import { RunFinalizationObserver } from "./RunFinalizationService.ts";
+import * as RunFinalizationService from "./RunFinalizationService.ts";
 
 export interface ProviderEventRoutingState {
   readonly ownedThreadIds: ReadonlySet<ThreadId>;
+  // Set once this run's root turn ended. A child thread created after that
+  // belongs to the run that is live then, so this one no longer adopts it.
+  readonly rootTurnEnded: boolean;
   readonly ownedProviderThreadIds: ReadonlySet<ProviderThreadId>;
   readonly ownedProviderTurnIds: ReadonlySet<ProviderTurnId>;
   readonly inheritedBackgroundTurnItems: ReadonlyMap<TurnItemId, OrchestrationV2Run["id"]>;
@@ -169,8 +168,14 @@ function isRunOwnedSubagentTerminalStatus(
   return status === "interrupted" || status === "failed" || status === "cancelled";
 }
 
+/**
+ * Whether a new run takes over a subagent's child thread, so a later message
+ * can resume it there. A running subagent stays with the run that launched it,
+ * which keeps ingesting until it ends; taking it over too would store its
+ * events twice. An interrupted, failed or cancelled one is never resumed.
+ */
 export function canRouteRelatedSubagent(status: OrchestrationV2Subagent["status"]): boolean {
-  return status !== "interrupted" && status !== "failed" && status !== "cancelled";
+  return status === "completed";
 }
 
 function emptyOpenRunOwnedSubagentProjection(): OpenRunOwnedSubagentProjection {
@@ -200,8 +205,11 @@ export function cascadeTerminalizeRunOwnedSubagents(input: {
   readonly open: OpenRunOwnedSubagentProjection;
   readonly status: RunOwnedSubagentTerminalStatus;
   readonly completedAt: DateTime.Utc;
-  readonly allocateEventId: () => Effect.Effect<EventId, IdAllocatorV2AllocationError>;
-}): Effect.Effect<ReadonlyArray<OrchestrationV2DomainEvent>, IdAllocatorV2AllocationError> {
+  readonly allocateEventId: () => Effect.Effect<EventId, IdAllocator.IdAllocatorV2AllocationError>;
+}): Effect.Effect<
+  ReadonlyArray<OrchestrationV2DomainEvent>,
+  IdAllocator.IdAllocatorV2AllocationError
+> {
   return Effect.gen(function* () {
     const events: Array<OrchestrationV2DomainEvent> = [];
     // Prefer lifetime linkage over currently-open rows: subagent/turn-item
@@ -322,6 +330,7 @@ export function makeProviderEventRoutingState(input: {
 }): ProviderEventRoutingState {
   return {
     ownedThreadIds: new Set([input.identity.threadId, ...(input.relatedThreadIds ?? [])]),
+    rootTurnEnded: false,
     ownedProviderThreadIds: new Set([
       input.identity.providerThreadId,
       ...(input.relatedProviderThreadIds ?? []),
@@ -367,6 +376,7 @@ export function routeProviderEvent(
         return [true, state];
       }
       const isOwnedSubagent =
+        !state.rootTurnEnded &&
         event.appThread.lineage.relationshipToParent === "subagent" &&
         event.appThread.lineage.parentThreadId !== null &&
         ownsThread(event.appThread.lineage.parentThreadId);
@@ -440,7 +450,9 @@ export function routeProviderEvent(
         state,
       ];
     case "turn.terminal":
-      return [event.providerTurnId === state.rootProviderTurnId, state];
+      return event.providerTurnId === state.rootProviderTurnId
+        ? [true, { ...state, rootTurnEnded: true }]
+        : [false, state];
   }
 }
 
@@ -524,20 +536,20 @@ export class RunExecutionServiceV2 extends Context.Service<
 export const layer: Layer.Layer<
   RunExecutionServiceV2,
   never,
-  | CheckpointServiceV2
-  | EventSinkV2
-  | IdAllocatorV2
-  | ProviderEventIngestorV2
-  | ServerSettingsService
+  | CheckpointService.CheckpointServiceV2
+  | EventSink.EventSinkV2
+  | IdAllocator.IdAllocatorV2
+  | ProviderEventIngestor.ProviderEventIngestorV2
+  | ServerSettings.ServerSettingsService
 > = Layer.effect(
   RunExecutionServiceV2,
   Effect.gen(function* () {
-    const checkpointService = yield* CheckpointServiceV2;
-    const eventSink = yield* EventSinkV2;
-    const idAllocator = yield* IdAllocatorV2;
-    const providerEventIngestor = yield* ProviderEventIngestorV2;
-    const serverSettings = yield* ServerSettingsService;
-    const finalizationObserver = yield* RunFinalizationObserver;
+    const checkpointService = yield* CheckpointService.CheckpointServiceV2;
+    const eventSink = yield* EventSink.EventSinkV2;
+    const idAllocator = yield* IdAllocator.IdAllocatorV2;
+    const providerEventIngestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+    const serverSettings = yield* ServerSettings.ServerSettingsService;
+    const finalizationObserver = yield* RunFinalizationService.RunFinalizationObserver;
 
     const writeFinalRunEvents = (input: {
       readonly run: OrchestrationV2Run;
@@ -647,9 +659,14 @@ export const layer: Layer.Layer<
         const checkpointCaptureCommandId = CommandId.make(
           `command:effect:checkpoint.capture:${input.run.id}`,
         );
+        // Stopped runs capture too: their checkpoint is the rollback point for
+        // the next message. The capture is enqueued with these terminal events,
+        // ahead of any later run's start on this thread's effect lane.
         const finalization = {
           effects:
-            input.terminal.status === "completed"
+            input.terminal.status === "completed" ||
+            input.terminal.status === "interrupted" ||
+            input.terminal.status === "cancelled"
               ? [
                   {
                     id: `effect:checkpoint.capture:${input.run.id}`,
@@ -1417,7 +1434,7 @@ export const layer: Layer.Layer<
 );
 
 function makeInterruptResultTurnItem(input: {
-  readonly idAllocator: IdAllocatorV2Shape;
+  readonly idAllocator: IdAllocator.IdAllocatorV2Shape;
   readonly run: OrchestrationV2Run;
   readonly rootNode: OrchestrationV2ExecutionNode;
   readonly providerThread: OrchestrationV2ProviderThread;

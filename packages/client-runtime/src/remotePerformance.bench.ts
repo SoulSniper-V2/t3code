@@ -19,6 +19,7 @@ import { applyOrchestrationV2ProjectionEvent } from "./state/orchestrationV2Proj
 import { v2Projection, v2Now } from "./state/orchestrationV2TestFixtures.ts";
 
 const timestamp = "2026-09-01T00:00:00.000Z";
+const runOptions = { warmupTime: 1_000, time: 1_500 };
 const thread: OrchestrationV2ThreadProjection = {
   ...v2Projection,
   messages: Array.from({ length: 100 }, (_, index) => ({
@@ -117,9 +118,9 @@ describe("remote message replay", () => {
       ...delta,
       payload: { ...delta.payload, id: loaded.messages.at(-1)!.id },
     };
-    bench(
-      `apply 200 message updates to ${count} loaded messages`,
-      () => {
+    const name = `apply 200 message updates to ${count} loaded messages`;
+    test(name, async ({ bench }) => {
+      await bench(name, () => {
         let current: OrchestrationV2ThreadProjection = loaded;
         for (let index = 0; index < 200; index += 1) {
           current =

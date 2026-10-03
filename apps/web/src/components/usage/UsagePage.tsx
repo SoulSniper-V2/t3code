@@ -1,4 +1,5 @@
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
+import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -27,6 +28,7 @@ import {
   type HourlyTotals,
   type MergedUsage,
 } from "@t3tools/shared/usageMerge";
+import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
 
 import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";

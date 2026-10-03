@@ -45,6 +45,7 @@ const XAiSessionUpdateNotification = Schema.Struct({
     promptId: Schema.optional(Schema.String),
     stop_reason: Schema.optional(Schema.String),
     stopReason: Schema.optional(Schema.String),
+    agent_result: Schema.optional(Schema.NullOr(Schema.Unknown)),
     // subagent_finished
     child_session_id: Schema.optional(Schema.String),
     status: Schema.optional(Schema.String),
@@ -89,7 +90,19 @@ export function xAiPromptCompleteFromSessionUpdate(
     sessionId: notification.sessionId,
     promptId,
     ...(stopReason === undefined ? {} : { stopReason }),
+    ...(update.agent_result === undefined ? {} : { agentResult: update.agent_result }),
   };
+}
+
+/**
+ * Grok answers a finished background command in its own turn, tagging every
+ * frame with a `task-completed-*` prompt id instead of the one T3 sent.
+ */
+export function isXAiTaskCompletedWakeNotification(
+  notification: EffectAcpSchema.SessionNotification,
+): boolean {
+  const promptId = notification._meta?.promptId;
+  return typeof promptId === "string" && promptId.startsWith(XAI_TASK_COMPLETED_PROMPT_ID_PREFIX);
 }
 
 interface PendingXAiPromptCompletion {
@@ -406,11 +419,19 @@ const XAiTaskLifecycleNotification = Schema.Struct({
     sessionUpdate: Schema.String,
     task_id: Schema.optional(Schema.String),
     tool_call_id: Schema.optional(Schema.String),
+    command: Schema.optional(Schema.String),
+    description: Schema.optional(Schema.NullOr(Schema.String)),
+    monitor_description: Schema.optional(Schema.NullOr(Schema.String)),
     task_snapshot: Schema.optional(
       Schema.Struct({
         task_id: Schema.optional(Schema.String),
         output: Schema.optional(Schema.String),
         exit_code: Schema.optional(Schema.NullOr(Schema.Number)),
+        command: Schema.optional(Schema.String),
+        display_command: Schema.optional(Schema.NullOr(Schema.String)),
+        description: Schema.optional(Schema.NullOr(Schema.String)),
+        // `TaskKind` in grok-build crates/common/xai-tool-runtime/src/notification.rs.
+        kind: Schema.optional(Schema.String),
       }),
     ),
   }),
@@ -425,6 +446,37 @@ export interface XAiBackgroundTaskLifecycleMutation {
   readonly status: "running" | "completed" | "failed";
   /** Final output from `task_completed.task_snapshot`, when Grok sent one. */
   readonly output?: string;
+  /** What the task is and how to name it, when Grok said. */
+  readonly report?:
+    | { readonly kind: "command"; readonly label?: string; readonly exitCode?: number }
+    | { readonly kind: "monitor"; readonly label?: string };
+}
+
+function xAiBackgroundTaskReport(
+  update: XAiTaskLifecycleNotification["update"],
+): XAiBackgroundTaskLifecycleMutation["report"] {
+  const snapshot = update.task_snapshot;
+  const monitorDescription = nonEmptyString(update.monitor_description ?? undefined);
+  const displayCommand = nonEmptyString(snapshot?.display_command ?? undefined);
+  const isMonitor =
+    snapshot?.kind === "monitor" ||
+    monitorDescription !== undefined ||
+    displayCommand?.startsWith("[monitor]") === true;
+  // Grok's snapshot defaults `kind` to bash; anything that carries a command is one.
+  const isCommand =
+    snapshot?.kind === "bash" || snapshot?.command !== undefined || update.command !== undefined;
+  if (!isMonitor && !isCommand) return undefined;
+  const label =
+    monitorDescription ??
+    nonEmptyString(snapshot?.description ?? undefined) ??
+    nonEmptyString(update.description ?? undefined) ??
+    displayCommand?.replace(/^\[monitor\]\s*/, "") ??
+    nonEmptyString(snapshot?.command) ??
+    nonEmptyString(update.command);
+  const named = label === undefined ? {} : { label };
+  if (isMonitor) return { kind: "monitor", ...named };
+  const exitCode = snapshot?.exit_code;
+  return { kind: "command", ...named, ...(typeof exitCode === "number" ? { exitCode } : {}) };
 }
 
 export function xAiBackgroundTaskLifecycleMutation(
@@ -439,12 +491,14 @@ export function xAiBackgroundTaskLifecycleMutation(
   if (taskId === undefined) return null;
   const exitCode = update.task_snapshot?.exit_code;
   const output = update.task_snapshot?.output;
+  const report = xAiBackgroundTaskReport(update);
   return {
     sessionId: notification.sessionId,
     taskId,
     status:
       status === "completed" && typeof exitCode === "number" && exitCode !== 0 ? "failed" : status,
     ...(output === undefined ? {} : { output }),
+    ...(report === undefined ? {} : { report }),
   };
 }
 
@@ -1346,6 +1400,40 @@ function promptResponseFromXAi(
   };
 }
 
+/**
+ * Grok settles a failed prompt with `stopReason: "error"` and the provider's
+ * message in `agentResult` before its `session/prompt` RPC error arrives. The
+ * completion wins the race, so it must carry the failure itself.
+ */
+function xAiPromptFailure(
+  notification: XAiPromptCompleteNotification,
+): EffectAcpErrors.AcpRequestError | null {
+  if (notification.stopReason === "rate_limit") {
+    return new EffectAcpErrors.AcpRequestError({
+      code: xAiRateLimitedErrorCode,
+      errorMessage: "Grok usage limit reached. Try again later.",
+    });
+  }
+  if (notification.stopReason === "error") {
+    // Grok's raw result is unbounded provider text: keep it only as the cause.
+    const agentResult = nonEmptyString(notification.agentResult);
+    return new EffectAcpErrors.AcpRequestError({
+      code: -32603,
+      errorMessage: "Grok ended the turn with an error.",
+      operation: "receive-response",
+      ...(agentResult === undefined ? {} : { cause: new XAiPromptFailureText(agentResult) }),
+    });
+  }
+  return null;
+}
+
+/**
+ * Grok's own text for a failed prompt. A plain Error rather than a schema
+ * error so the unbounded provider text never becomes a structured attribute;
+ * it is read back only at the presentation boundary.
+ */
+export class XAiPromptFailureText extends Error {}
+
 const registerXAiPromptCompletionFallback = (
   pendingRef: Ref.Ref<ReadonlyArray<PendingXAiPromptCompletion>>,
   sessionId: string,
@@ -1440,15 +1528,10 @@ const resolveXAiPromptCompletionFallback = ({
         if (!entry) {
           return [Effect.void, pending] as const;
         }
+        const failure = xAiPromptFailure(notification);
         const settle =
-          notification.stopReason === "rate_limit"
-            ? Deferred.fail(
-                entry.deferred,
-                new EffectAcpErrors.AcpRequestError({
-                  code: xAiRateLimitedErrorCode,
-                  errorMessage: "Grok usage limit reached. Try again later.",
-                }),
-              ).pipe(Effect.asVoid)
+          failure !== null
+            ? Deferred.fail(entry.deferred, failure).pipe(Effect.asVoid)
             : Deferred.succeed(entry.deferred, promptResponseFromXAi(notification)).pipe(
                 Effect.asVoid,
               );

@@ -23,9 +23,9 @@ import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
-import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { OrchestratorV2 } from "./Orchestrator.ts";
-import { ProjectionStoreV2, type ProjectionSettlementCandidate } from "./ProjectionStore.ts";
+import * as ProjectStore from "./ProjectStore.ts";
+import * as Orchestrator from "./Orchestrator.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 
 export interface SettlementPullRequest {
   readonly state: "open" | "closed" | "merged";
@@ -131,7 +131,7 @@ function pullRequestSettles(
 
 /** Cheap checks that run before any source control lookup. */
 export function isAutoSettlementCandidate(
-  thread: ProjectionSettlementCandidate,
+  thread: ProjectionStore.ProjectionSettlementCandidate,
   nowMs: number,
 ): boolean {
   if (thread.archivedAt !== null || thread.settledOverride !== null) return false;
@@ -157,7 +157,7 @@ export function isAutoSettlementCandidate(
 }
 
 export function resolveAutoSettlementAt(input: {
-  readonly thread: ProjectionSettlementCandidate;
+  readonly thread: ProjectionStore.ProjectionSettlementCandidate;
   readonly pullRequest: SettlementPullRequest | null;
   readonly nowMs: number;
   readonly autoSettleAfterDays: number | null;
@@ -250,9 +250,9 @@ export function autoSettlementSettingsKey(
 }
 
 export const make = Effect.gen(function* () {
-  const orchestrator = yield* OrchestratorV2;
-  const projections = yield* ProjectionStoreV2;
-  const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const projectStore = yield* ProjectStore.ProjectStoreV2;
   const settingsService = yield* ServerSettings.ServerSettingsService;
   const git = yield* GitManager.GitManager;
   const pullRequests = yield* PullRequestService.PullRequestService;
@@ -271,7 +271,7 @@ export const make = Effect.gen(function* () {
     // A sweep for one thread reads only that thread's candidate row.
     const threads = yield* projections.getSettlementCandidates(threadId);
     if (threads.length === 0) return;
-    const projectShells = yield* snapshots.getProjectShellsWithoutEnrichment();
+    const projectShells = yield* projectStore.listShells();
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
     const projects = new Map(projectShells.map((project) => [project.id, project]));
     // A merge event re-sweeps every candidate, not just the threads linked to

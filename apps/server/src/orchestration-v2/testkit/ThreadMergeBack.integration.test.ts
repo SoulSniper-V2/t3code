@@ -15,11 +15,11 @@ import {
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import { ProviderAdapterRegistryV2 } from "../ProviderAdapterRegistry.ts";
+import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 
 import { ClaudeOrchestratorReplayHarness } from "../Adapters/ClaudeAdapterV2.testkit.ts";
 import { CodexOrchestratorReplayHarness } from "../Adapters/CodexAdapterV2.testkit.ts";
-import { IdAllocatorV2, layer as idAllocatorLayer } from "../IdAllocator.ts";
+import * as IdAllocator from "../IdAllocator.ts";
 import { provideDeterministicTestRuntime } from "./DeterministicRuntime.ts";
 import {
   CODEX_MODEL_SELECTION,
@@ -50,9 +50,9 @@ const CodexHistoryReplayHarness: typeof CodexOrchestratorReplayHarness = {
   ...CodexOrchestratorReplayHarness,
   makeProviderAdapterRegistryLayer: (transcript, options) =>
     Layer.effect(
-      ProviderAdapterRegistryV2,
+      ProviderAdapterRegistry.ProviderAdapterRegistryV2,
       Effect.gen(function* () {
-        const registry = yield* ProviderAdapterRegistryV2;
+        const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
         return {
           ...registry,
           get: (id) =>
@@ -257,12 +257,13 @@ function makeCreateCommand(input: {
 }
 
 describe("orchestration V2 merge-back provider replay", () => {
-  for (const variant of PROVIDERS) {
-    it.effect(`merges one fork delta back into the original ${variant.driver} thread`, () =>
+  it.effect.each(PROVIDERS)(
+    "merges one fork delta back into the original $driver thread",
+    (variant) =>
       Effect.gen(function* () {
         const rawTranscript = yield* readTranscript("thread_merge_back_continue", variant.driver);
         const materialized = yield* Effect.gen(function* () {
-          const ids = yield* IdAllocatorV2;
+          const ids = yield* IdAllocator.IdAllocatorV2;
           const projectId = yield* ids.allocate.project({
             fixtureName: `thread-merge-back-${variant.driver}`,
           });
@@ -363,7 +364,7 @@ describe("orchestration V2 merge-back provider replay", () => {
             },
           ] satisfies ReadonlyArray<OrchestrationV2Command>;
           return { commands, sourceThreadId, forkThreadId, forkRunId };
-        }).pipe(Effect.provide(idAllocatorLayer), provideDeterministicTestRuntime);
+        }).pipe(Effect.provide(IdAllocator.layer), provideDeterministicTestRuntime);
         const summary = forkDeltaSummary({
           sourceThreadId: materialized.forkThreadId,
           targetThreadId: materialized.sourceThreadId,
@@ -452,13 +453,15 @@ describe("orchestration V2 merge-back provider replay", () => {
         assert.notInclude(visibleConversationText(source), "Context handoff (");
         assert.include(visibleConversationText(fork), "merge fork stored");
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-    );
+  );
 
-    it.effect(`merges two sibling fork deltas into the original ${variant.driver} thread`, () =>
+  it.effect.each(PROVIDERS)(
+    "merges two sibling fork deltas into the original $driver thread",
+    (variant) =>
       Effect.gen(function* () {
         const rawTranscript = yield* readTranscript("thread_merge_back_siblings", variant.driver);
         const materialized = yield* Effect.gen(function* () {
-          const ids = yield* IdAllocatorV2;
+          const ids = yield* IdAllocator.IdAllocatorV2;
           const fixtureName = `thread-merge-back-siblings-${variant.driver}`;
           const projectId = yield* ids.allocate.project({ fixtureName });
           const sourceThreadId = yield* ids.allocate.thread({
@@ -597,7 +600,7 @@ describe("orchestration V2 merge-back provider replay", () => {
             firstForkRunId,
             secondForkRunId,
           };
-        }).pipe(Effect.provide(idAllocatorLayer), provideDeterministicTestRuntime);
+        }).pipe(Effect.provide(IdAllocator.layer), provideDeterministicTestRuntime);
         const firstSummary = forkDeltaSummary({
           sourceThreadId: materialized.firstForkThreadId,
           targetThreadId: materialized.sourceThreadId,
@@ -725,6 +728,5 @@ describe("orchestration V2 merge-back provider replay", () => {
         assert.include(visibleConversationText(secondFork), "second merge sibling stored");
         assert.notInclude(visibleConversationText(secondFork), "first merge sibling stored");
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-    );
-  }
+  );
 });

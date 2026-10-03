@@ -1,13 +1,13 @@
 # T3 Code
 
-> This is the [`SoulSniper-V2/t3code`](https://github.com/SoulSniper-V2/t3code) fork of [upstream T3 Code](https://github.com/pingdotgg/t3code). This fork currently includes the Orchestrator V2 implementation proposed in [upstream PR #2829](https://github.com/pingdotgg/t3code/pull/2829); that upstream-authored work is not a fork-only feature. The list below names additions maintained specifically by this fork.
+> This is the [`SoulSniper-V2/t3code`](https://github.com/SoulSniper-V2/t3code) fork of [upstream T3 Code](https://github.com/pingdotgg/t3code). It includes upstream's Orchestrator V2 implementation from [PR #2829](https://github.com/pingdotgg/t3code/pull/2829); that implementation is now part of upstream and is not a fork-only feature. The list below names additions maintained specifically by this fork.
 
 ## What this fork adds
 
 - **Side-by-side chat**: open two saved chats together in resizable panes, each with its own composer and session state.
 - **Cline and Command Code providers**, with V2 adapters, automatic local CLI discovery, usage reporting, reasoning controls, runtime identity prompts, and scoped MCP tool bridges.
-- **Selective session import** from Codex, Claude Code, Cline, Command Code, and OpenCode, with per-conversation previews and resumability where the source CLI supports it.
-- **Cross-chat compatibility for local CLI providers:** when a provider cannot use T3's MCP tools, an `@thread` reference supplies a bounded, recent excerpt; other V2 providers read attached threads on demand.
+- **More session import sources:** adds Cline and Command Code readers to upstream's selective import flow, with per-conversation previews and resumability where each CLI supports it.
+- **`@thread` composer mentions:** attach another conversation from the composer. The upstream V2 runtime supplies bounded excerpts to providers without T3 MCP access and lets MCP-capable providers read attached threads on demand.
 - **Inline skill search:** invoke a skill with `/skill-name` anywhere in a prompt and repeat the trigger to add multiple skills to one draft.
 - **Thread workflows:** set persistent goals with `/goal`, hand a thread to another provider with `/handoff`, fork it with `/fork`, or start an independent thread through the `start_thread` MCP tool in the Synara Agent Gateway integration.
 - **Native computer-use tools over MCP:** agents can inspect the active app's accessibility tree, capture screenshots, list or activate desktop apps, click, type, and press keys.
@@ -16,9 +16,10 @@
 - **Changes Walkthrough:** a guided review of the current diff.
 - **Issue references:** parse Linear, Jira, GitLab, and GitHub issue links and add their details to the agent's prompt.
 - **Provider account switching:** hot-swap between multiple configured provider accounts from the chat composer.
+- **Passkey bridge removal:** the desktop build blocks Clerk's native passkey bridge, which this fork cannot support.
 - **Nightly updater fix:** a newer installed nightly is not replaced by an older nightly release.
 
-> **Desktop distribution:** The package-manager commands below install upstream T3 Code. For this fork's additions, download its macOS nightly from [this fork's releases](https://github.com/SoulSniper-V2/t3code/releases). The nightly is Developer ID signed and Apple notarized, and its in-app updater follows this fork's nightly channel.
+> **Desktop distribution:** The package-manager commands below install upstream T3 Code. For this fork's additions, download a macOS build from [this fork's releases](https://github.com/SoulSniper-V2/t3code/releases). Its in-app updater follows this fork's nightly channel.
 
 T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
 

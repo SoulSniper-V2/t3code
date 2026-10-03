@@ -75,6 +75,13 @@ export type ComposerCommandItem =
       pullRequest: PullRequestContextMetadata;
       label: string;
       description: string;
+    }
+  | {
+      id: string;
+      type: "thread";
+      thread: ScopedThreadRef;
+      label: string;
+      description: string;
     };
 
 export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
@@ -246,6 +253,7 @@ const LISTBOX_LABEL_BY_TRIGGER: Record<ComposerTriggerKind, string> = {
   path: "Files and folders",
   "pull-request": "Pull requests",
   "slash-command": "Commands",
+  "slash-skill": "Skills",
   skill: "Skills",
 };
 

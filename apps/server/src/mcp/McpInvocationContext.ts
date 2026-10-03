@@ -13,9 +13,9 @@ const ALL_MCP_CAPABILITIES = [
   "orchestration",
   "worktree",
   "device",
-  "pull-requests",
   "computer",
   "threads",
+  "pull-requests",
 ] as const;
 export type McpCapability = (typeof ALL_MCP_CAPABILITIES)[number];
 

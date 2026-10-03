@@ -344,15 +344,7 @@ const composerContextPresentationRegistry = createContextPresentationRegistry<
   ComposerContextRenderContext,
   ReactElement
 >({
-  requiredKinds: [
-    "mention",
-    "image",
-    "file",
-    "terminal",
-    "review-comment",
-    "preview-annotation",
-    "thread",
-  ],
+  requiredKinds: ["image", "file", "terminal", "review-comment", "preview-annotation", "thread"],
   handlers: [
     {
       kind: "mention",

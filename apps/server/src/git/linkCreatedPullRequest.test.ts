@@ -4,25 +4,23 @@ import {
   ProviderInstanceId,
   ThreadId,
   type GitRunStackedActionResult,
-  type OrchestrationV2Command as OrchestrationCommand,
+  type OrchestrationV2ServerCommand as OrchestrationCommand,
   type OrchestrationProjectShell,
-  type OrchestrationThreadShell,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import {
-  OrchestratorV2,
-  type OrchestratorV2Shape,
-  OrchestratorDispatchError,
-} from "../orchestration-v2/Orchestrator.ts";
-import { v2PullRequestThread } from "../orchestration-v2/testkit/pullRequestFixtures.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+  type PullRequestTestThread,
+  v2PullRequestThread,
+} from "../orchestration-v2/testkit/pullRequestFixtures.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import { refreshPushedPullRequests } from "./refreshPushedPullRequests.ts";
-import { PullRequestService } from "../pullRequest/PullRequestService.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { createdPullRequestKey, linkCreatedPullRequest } from "./linkCreatedPullRequest.ts";
 
 const PROJECT_ID = ProjectId.make("project-1");
@@ -51,7 +49,7 @@ const project: OrchestrationProjectShell = {
   updatedAt: "2026-08-01T00:00:00.000Z",
 };
 
-const thread: OrchestrationThreadShell = {
+const thread: PullRequestTestThread = {
   id: THREAD_ID,
   projectId: PROJECT_ID,
   title: "Thread",
@@ -61,17 +59,12 @@ const thread: OrchestrationThreadShell = {
   branch: null,
   worktreePath: null,
   pullRequests: [],
-  latestTurn: null,
   createdAt: "2026-08-01T00:00:00.000Z",
   updatedAt: "2026-08-20T00:00:00.000Z",
   archivedAt: null,
   settledOverride: null,
   settledAt: null,
-  session: null,
   latestUserMessageAt: "2026-08-20T00:00:00.000Z",
-  hasPendingApprovals: false,
-  hasPendingUserInput: false,
-  hasActionableProposedPlan: false,
 };
 
 function prResult(pr: GitRunStackedActionResult["pr"]): Pick<GitRunStackedActionResult, "pr"> {
@@ -79,15 +72,14 @@ function prResult(pr: GitRunStackedActionResult["pr"]): Pick<GitRunStackedAction
 }
 
 const makeDependencies = (
-  dispatch: OrchestratorV2Shape["dispatch"],
-  threadShell: OrchestrationThreadShell | null = thread,
+  dispatch: Orchestrator.OrchestratorV2Shape["dispatch"],
+  threadShell: PullRequestTestThread | null = thread,
 ) =>
   Layer.mergeAll(
-    Layer.mock(ProjectionSnapshotQuery)({
-      getThreadShellById: () => Effect.succeed(Option.fromNullishOr(threadShell)),
-      getProjectShellById: () => Effect.succeedSome(project),
+    Layer.mock(ProjectService.ProjectService)({
+      getShell: () => Effect.succeedSome(project),
     }),
-    Layer.mock(OrchestratorV2)({
+    Layer.mock(Orchestrator.OrchestratorV2)({
       getThreadShell: () => Effect.succeed(threadShell ? v2PullRequestThread(threadShell) : null),
       dispatch,
     }),
@@ -95,7 +87,7 @@ const makeDependencies = (
 
 const recordingDispatch = Effect.fn("recordingDispatch")(function* () {
   const commands = yield* Ref.make<ReadonlyArray<OrchestrationCommand>>([]);
-  const dispatch: OrchestratorV2Shape["dispatch"] = (command) =>
+  const dispatch: Orchestrator.OrchestratorV2Shape["dispatch"] = (command) =>
     Ref.update(commands, (recorded) => [...recorded, command]).pipe(
       Effect.as({ sequence: 1, storedEvents: [] }),
     );
@@ -205,9 +197,9 @@ describe("linkCreatedPullRequest", () => {
 
   it.effect("swallows an already-linked rejection and other dispatch failures", () =>
     Effect.gen(function* () {
-      const rejecting: OrchestratorV2Shape["dispatch"] = (command) =>
+      const rejecting: Orchestrator.OrchestratorV2Shape["dispatch"] = (command) =>
         Effect.fail(
-          new OrchestratorDispatchError({
+          new Orchestrator.OrchestratorDispatchError({
             commandId: command.commandId,
             commandType: command.type,
             cause: "already linked",
@@ -238,13 +230,13 @@ it.effect(
     Effect.gen(function* () {
       const refreshed: string[] = [];
       const dependencies = Layer.mergeAll(
-        Layer.mock(OrchestratorV2)({
+        Layer.mock(Orchestrator.OrchestratorV2)({
           getThreadShell: () => Effect.succeed(v2PullRequestThread(thread)),
         }),
-        Layer.mock(ProjectionSnapshotQuery)({
-          getProjectShellsWithoutEnrichment: () => Effect.succeed([project]),
+        Layer.mock(ProjectStore.ProjectStoreV2)({
+          listShells: () => Effect.succeed([project]),
         }),
-        Layer.mock(PullRequestService)({
+        Layer.mock(PullRequestService.PullRequestService)({
           refreshAfterTurn: (id) =>
             Effect.sync(() => {
               refreshed.push(id);

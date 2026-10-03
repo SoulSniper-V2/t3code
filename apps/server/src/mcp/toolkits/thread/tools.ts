@@ -22,10 +22,10 @@ import * as Crypto from "effect/Crypto";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/unstable/ai";
 
-import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { ScheduledTaskService } from "../../../scheduledTasks/ScheduledTaskService.ts";
-import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
-import { McpInvocationContext } from "../../McpInvocationContext.ts";
+import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
+import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
+import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
   description:
@@ -48,7 +48,11 @@ const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
   success: OrchestrationV2DispatchCommandResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return" as const,
-  dependencies: [McpInvocationContext, ThreadManagementService, Crypto.Crypto],
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ThreadManagementService.ThreadManagementService,
+    Crypto.Crypto,
+  ],
 })
   .annotate(Tool.Title, "Organize a thread")
   .annotate(Tool.Destructive, true);
@@ -58,7 +62,11 @@ const commandTool = {
   success: OrchestrationV2DispatchCommandResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return" as const,
-  dependencies: [McpInvocationContext, ThreadManagementService, Crypto.Crypto],
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ThreadManagementService.ThreadManagementService,
+    Crypto.Crypto,
+  ],
 };
 const queueEntry = Schema.Struct({
   queuedRunId: RunId,
@@ -228,7 +236,7 @@ const ThreadSearchTool = Tool.make("t3_thread_search", {
     "Search active thread titles and content with the app's existing bounded search. Returns matches in the calling project from the global top matches; other-project matches are omitted, so this may return fewer than limit. No pagination or exhaustive-result guarantee.",
   parameters: OrchestrationSearchThreadsInput,
   success: OrchestrationSearchThreadsResult,
-  dependencies: [...commandTool.dependencies, ProjectionSnapshotQuery],
+  dependencies: [...commandTool.dependencies, ThreadSearch.ThreadSearch],
 })
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);
@@ -245,7 +253,7 @@ const ScheduledTaskRunTool = Tool.make("run_scheduled_task_now", {
     runCount: NonNegativeInt,
     nextRunAt: ScheduledTask.fields.nextRunAt,
   }),
-  dependencies: [...commandTool.dependencies, ScheduledTaskService],
+  dependencies: [...commandTool.dependencies, ScheduledTaskService.ScheduledTaskService],
 })
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);

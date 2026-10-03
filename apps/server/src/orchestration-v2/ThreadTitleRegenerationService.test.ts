@@ -17,7 +17,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
-import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
+import * as ProjectStore from "./ProjectStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -26,7 +26,6 @@ import type { ProviderAdapterV2Shape } from "./ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as ThreadTitleRegeneration from "./ThreadTitleRegenerationService.ts";
-import { formatThreadTitleContext } from "./ThreadTitleRegenerationService.ts";
 import { makeOrchestratorV2ReplayLayerWithRegistry } from "./testkit/ProviderReplayHarness.ts";
 
 const projectId = ProjectId.make("project:title-regeneration");
@@ -60,8 +59,8 @@ function makeHarness(
   const generateThreadTitle = vi.fn(
     options.generateTitle ?? (() => Effect.succeed({ title: "Generated title" })),
   );
-  const projectedProjects = Layer.mock(ProjectionProjectRepository)({
-    getById: ({ projectId: requestedProjectId }) =>
+  const projectedProjects = Layer.mock(ProjectStore.ProjectStoreV2)({
+    get: (requestedProjectId) =>
       Effect.succeed(
         requestedProjectId === projectId
           ? Option.some({
@@ -71,6 +70,8 @@ function makeHarness(
               defaultModelSelection: modelSelection,
               defaultThreadEnvMode: null,
               autoPull: false,
+              faviconPath: null,
+              projectIcon: null,
               scripts: [],
               createdAt: "2026-06-20T00:00:00.000Z",
               updatedAt: "2026-06-20T00:00:00.000Z",
@@ -163,7 +164,7 @@ describe("formatThreadTitleContext", () => {
   });
 
   it("builds a newest-first digest, skipping system messages and empty sections", () => {
-    const context = formatThreadTitleContext([
+    const context = ThreadTitleRegeneration.formatThreadTitleContext([
       { role: "user", text: "First question" },
       { role: "system", text: "Hidden instructions" },
       { role: "assistant", text: "" },
@@ -180,7 +181,7 @@ describe("formatThreadTitleContext", () => {
   });
 
   it("pins the first user message ahead of the retained tail once content stops fitting", () => {
-    const context = formatThreadTitleContext([
+    const context = ThreadTitleRegeneration.formatThreadTitleContext([
       { role: "user", text: `Ancient context that anchors the topic ${"x".repeat(600)}` },
       { role: "assistant", text: "y".repeat(6_000) },
       { role: "user", text: "z".repeat(1_500) },
@@ -191,7 +192,7 @@ describe("formatThreadTitleContext", () => {
   });
 
   it("truncates an oversized pinned first user message", () => {
-    const context = formatThreadTitleContext([
+    const context = ThreadTitleRegeneration.formatThreadTitleContext([
       { role: "user", text: `Topic anchor ${"a".repeat(4_000)}` },
       { role: "assistant", text: "y".repeat(9_000) },
       { role: "user", text: "z".repeat(1_500) },
@@ -202,7 +203,7 @@ describe("formatThreadTitleContext", () => {
   });
 
   it("retains at most four attachments from the newest messages", () => {
-    const context = formatThreadTitleContext([
+    const context = ThreadTitleRegeneration.formatThreadTitleContext([
       { role: "user", text: "older", attachments: [attachment("a"), attachment("b")] },
       {
         role: "user",
@@ -437,8 +438,9 @@ describe("ThreadTitleRegenerationService", () => {
   );
 });
 
-for (const outcome of ["success", "exhausted", "stale", "interrupted"] as const) {
-  it.effect(`initial title retry: ${outcome}`, () =>
+it.effect.each(["success", "exhausted", "stale", "interrupted"] as const)(
+  "initial title retry: %s",
+  (outcome) =>
     Effect.gen(function* () {
       const attempted = yield* Deferred.make<void>();
       let attempts = 0;
@@ -501,5 +503,4 @@ for (const outcome of ["success", "exhausted", "stale", "interrupted"] as const)
         else assert.isNotOk(projection.thread.titleRegeneration);
       }).pipe(Effect.provide(harness.layer));
     }),
-  );
-}
+);

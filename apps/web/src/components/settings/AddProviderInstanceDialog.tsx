@@ -24,6 +24,7 @@ import * as Equal from "effect/Equal";
 import { cn } from "../../lib/utils";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { Button } from "../ui/button";
+import { ChatGptConnectionButton } from "./ChatGptConnectionButton";
 import { Dialog } from "../ui/dialog";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
@@ -49,6 +50,7 @@ import { AddProviderInstanceWizardSteps } from "./AddProviderInstanceWizardSteps
 import { AcpRegistrySearchStep } from "./AcpRegistrySearchStep";
 import { ProviderWizardAuthenticationStep } from "./ProviderWizardAuthenticationStep";
 import { resolveOfficialAcpRegistryIconUrl } from "./AcpRegistryIcon";
+import { AddManagedCodexAccountDialog } from "./CodexSetupSection";
 
 /**
  * Normalize a user-provided label into a slug suffix for the instance id.
@@ -339,7 +341,7 @@ export function AddProviderInstanceDialog({
       <WizardPopup className="max-w-2xl">
         <WizardHeader
           title="Add provider"
-          description={<>Set up a provider on {environmentLabel}.</>}
+          description={<>Add an account or configure a provider on {environmentLabel}.</>}
         >
           {isAcpRegistry ? (
             <AddProviderInstanceWizardSteps
@@ -613,7 +615,7 @@ export function AddProviderInstanceDialog({
 
             <WizardFooter>
               <Button
-                variant="outline"
+                variant={wizardStep === 0 ? "ghost-muted" : "outline"}
                 size="sm"
                 disabled={isSaving || isPreparingRegistryAgent}
                 onClick={() => {
@@ -626,7 +628,17 @@ export function AddProviderInstanceDialog({
               >
                 {wizardStep === 0 ? "Cancel" : "Back"}
               </Button>
-              {wizardStep < (isAcpRegistry ? 1 : 2) ? (
+              {wizardStep === 0 && driver === "codex" ? (
+                <>
+                  <Button variant="outline" size="sm" onClick={() => navigateToStep(1)}>
+                    Configure manually
+                  </Button>
+                  <ChatGptConnectionButton
+                    size="sm"
+                    onClick={() => setAddingChatGptAccount(true)}
+                  />
+                </>
+              ) : wizardStep < (isAcpRegistry ? 1 : 2) ? (
                 <Button
                   size="sm"
                   disabled={isPreparingRegistryAgent}

@@ -33,6 +33,7 @@ import { buildTemporaryWorktreeBranchName, isTemporaryWorktreeBranch } from "@t3
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
@@ -154,6 +155,7 @@ const make = Effect.gen(function* () {
   const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
   const ids = yield* IdAllocator.IdAllocatorV2;
   const threads = yield* ThreadManagement.ThreadManagementService;
+  const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
   const preparationScope = yield* Scope.make("sequential");
   const scheduledLaunches = yield* Ref.make<ReadonlySet<CommandId>>(new Set());
   yield* Effect.addFinalizer(() => Scope.close(preparationScope, Exit.void));
@@ -671,11 +673,27 @@ const make = Effect.gen(function* () {
           yield* validateReusableThread(input, candidateThreadId);
         }
 
-        const initialBranch = input.workspaceStrategy.branch ?? null;
+        // A Scratch thread launched at the project root runs in a folder of its
+        // own. Only the first attempt claims one; a retry replays its create.
+        const workspaceStrategy: ThreadLaunchWorkspaceStrategy =
+          input.workspaceStrategy.type === "root" && Option.isNone(launchReceipt)
+            ? Option.match(
+                yield* managedFolders
+                  .folderForThread({
+                    projectId: input.projectId,
+                    threadId: candidateThreadId,
+                    text: input.initialMessage?.text ?? input.title,
+                  })
+                  .pipe(Effect.mapError(mapError(input, "provision-worktree", candidateThreadId))),
+                {
+                  onNone: () => input.workspaceStrategy,
+                  onSome: (worktreePath) => ({ type: "existing_worktree", worktreePath }),
+                },
+              )
+            : input.workspaceStrategy;
+        const initialBranch = workspaceStrategy.branch ?? null;
         const initialWorktreePath =
-          input.workspaceStrategy.type === "existing_worktree"
-            ? input.workspaceStrategy.worktreePath
-            : null;
+          workspaceStrategy.type === "existing_worktree" ? workspaceStrategy.worktreePath : null;
         const claimDispatch =
           input.reuseExistingThread === true
             ? threads.dispatch({
@@ -770,6 +788,19 @@ const make = Effect.gen(function* () {
           runId !== null &&
           projection.runs.some((run) => run.id === runId && run.status === "preparing");
         const shouldSchedule = runId === null ? Option.isNone(launchReceipt) : runIsPreparing;
+        // A retried root launch prepares the folder its first attempt bound, so
+        // a Scratch thread keeps its own. Other root launches bind no folder.
+        const boundWorktreePath = projection.thread.worktreePath;
+        const preparationStrategy: ThreadLaunchWorkspaceStrategy =
+          Option.isSome(launchReceipt) &&
+          workspaceStrategy.type === "root" &&
+          boundWorktreePath !== null
+            ? {
+                type: "existing_worktree",
+                worktreePath: boundWorktreePath,
+                branch: workspaceStrategy.branch,
+              }
+            : workspaceStrategy;
         if (shouldSchedule) {
           const ownsPreparation = yield* reservePreparation(input.commandId);
           if (ownsPreparation) {
@@ -784,7 +815,11 @@ const make = Effect.gen(function* () {
                       Effect.mapError(mapError(input, "update-thread", threadId)),
                     );
               if (preparationStillRequired) {
-                yield* schedulePreparation(input, threadId, runId);
+                yield* schedulePreparation(
+                  { ...input, workspaceStrategy: preparationStrategy },
+                  threadId,
+                  runId,
+                );
               } else {
                 yield* releasePreparation(input.commandId);
               }

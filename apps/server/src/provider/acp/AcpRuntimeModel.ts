@@ -898,9 +898,6 @@ function makeToolCallState(
   if (isRecord(input._meta)) {
     data.meta = input._meta;
   }
-  if (isRecord(input._meta)) {
-    data.meta = input._meta;
-  }
   const fallbackDetail = command ?? normalizedTitle ?? textContent;
   const hasPresentationSeed =
     title !== undefined ||

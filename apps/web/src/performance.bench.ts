@@ -65,8 +65,10 @@ describe("client performance", () => {
       getLatestThreadForProject(threads, projectId, "updated_at");
     }).run();
   });
-  bench("derive current plan from 5 normalized plans", () => {
-    deriveActivePlanState(projection, runId);
+  test("derive current plan from 5 normalized plans", async ({ bench }) => {
+    await bench("derive", () => {
+      deriveActivePlanState(projection, runId);
+    }).run();
   });
   test("format 24 hourly usage labels and tooltips", async ({ bench }) => {
     await bench("format", () => {

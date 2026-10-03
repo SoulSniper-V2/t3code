@@ -4,13 +4,12 @@ import {
 } from "@t3tools/client-runtime/state/threads";
 import {
   EnvironmentId,
-  ThreadId,
+  MessageId,
   RunId,
-  type OrchestrationSessionStatus,
+  ThreadId,
   type OrchestrationV2ThreadShell,
-  type OrchestrationV2RunStatus,
-  type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
+import { makeThreadProjectionFixture } from "../test-fixtures";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 import { describe, expect, it } from "vite-plus/test";
@@ -20,29 +19,42 @@ import { createRunningThreadKeepAliveAtom } from "./threads";
 const LOCAL = EnvironmentId.make("local");
 const REMOTE = EnvironmentId.make("remote");
 
-function shell(id: string, status: OrchestrationSessionStatus | null) {
-  const threadId = ThreadId.make(id);
-  return {
-    id: threadId,
-    activeRunId: status === "running" || status === "starting" ? RunId.make(`${id}-run`) : null,
-  } satisfies Pick<OrchestrationV2ThreadShell, "id" | "activeRunId">;
+type Status = "running" | "starting" | "idle";
+function shell(id: string, status: Status | null) {
+  return { id: ThreadId.make(id), status: status ?? "idle" } satisfies Pick<
+    OrchestrationV2ThreadShell,
+    "id" | "status"
+  >;
 }
-
-function detail(
-  id: string,
-  status: OrchestrationSessionStatus,
-  overrides: Partial<EnvironmentThreadState> = {},
-  runStatus: OrchestrationV2RunStatus = status === "running"
-    ? "running"
-    : status === "starting"
-      ? "starting"
-      : "completed",
-) {
+function detail(id: string, status: Status, overrides: Partial<EnvironmentThreadState> = {}) {
+  const projection = makeThreadProjectionFixture();
   const threadId = ThreadId.make(id);
   const thread = {
-    thread: { id: threadId },
-    runs: [{ status: runStatus }],
-  } as unknown as OrchestrationV2ThreadProjection;
+    ...projection,
+    thread: { ...projection.thread, id: threadId },
+    runs:
+      status === "idle"
+        ? []
+        : [
+            {
+              id: RunId.make(`run-${id}`),
+              threadId,
+              ordinal: 1,
+              providerInstanceId: projection.thread.providerInstanceId,
+              modelSelection: projection.thread.modelSelection,
+              providerThreadId: null,
+              userMessageId: MessageId.make(`message-${id}`),
+              rootNodeId: null,
+              activeAttemptId: null,
+              status,
+              requestedAt: projection.updatedAt,
+              startedAt: null,
+              completedAt: null,
+              checkpointId: null,
+              contextHandoffId: null,
+            },
+          ],
+  };
   return AsyncResult.success<EnvironmentThreadState>({
     ...EMPTY_ENVIRONMENT_THREAD_STATE,
     status: "live",
@@ -104,11 +116,7 @@ function makeHarness() {
 describe("createRunningThreadKeepAliveAtom", () => {
   it("keeps running threads open across shell updates and thread view visits", () => {
     const h = makeHarness();
-    h.registry.set(h.threads(LOCAL), [
-      shell("a", "running"),
-      shell("b", "ready"),
-      shell("c", null),
-    ]);
+    h.registry.set(h.threads(LOCAL), [shell("a", "running"), shell("b", "idle"), shell("c", null)]);
     h.registry.set(h.threads(REMOTE), [shell("d", "starting")]);
     expect(h.openStreams()).toEqual(["local:a", "remote:d"]);
 
@@ -119,7 +127,7 @@ describe("createRunningThreadKeepAliveAtom", () => {
 
     // A shell update that starts or stops nothing does not rebuild the set.
     const kept = h.registry.get(h.keepAlive);
-    h.registry.set(h.threads(LOCAL), [shell("a", "running"), shell("b", "ready")]);
+    h.registry.set(h.threads(LOCAL), [shell("a", "running"), shell("b", "idle")]);
     expect(h.registry.get(h.keepAlive)).toBe(kept);
     expect(h.openStreams()).toEqual(["local:a", "remote:d"]);
     expect(h.registry.get(h.stateAtom(LOCAL, "a"))).toBe(live);
@@ -141,33 +149,13 @@ describe("createRunningThreadKeepAliveAtom", () => {
 
     // The shell reports the stops first. A failed stream cannot deliver its
     // stop, so only it is released now.
-    h.registry.set(h.threads(LOCAL), [
-      shell("a", "ready"),
-      shell("b", "ready"),
-      shell("c", "ready"),
-    ]);
+    h.registry.set(h.threads(LOCAL), [shell("a", "idle"), shell("b", "idle"), shell("c", "idle")]);
     expect(h.openStreams()).toEqual(["local:a", "local:b"]);
 
-    h.registry.set(h.stateAtom(LOCAL, "a"), detail("a", "ready"));
-    h.registry.set(h.stateAtom(LOCAL, "b"), detail("b", "ready", { status: "synchronizing" }));
+    h.registry.set(h.stateAtom(LOCAL, "a"), detail("a", "idle"));
+    h.registry.set(h.stateAtom(LOCAL, "b"), detail("b", "idle", { status: "synchronizing" }));
     expect(h.openStreams()).toEqual(["local:b"]);
-    h.registry.set(h.stateAtom(LOCAL, "b"), detail("b", "ready"));
-    expect(h.openStreams()).toEqual([]);
-  });
-
-  it("keeps a settled shell mounted while the V2 run is queued or waiting", () => {
-    const h = makeHarness();
-    h.registry.set(h.threads(LOCAL), [shell("a", "running")]);
-    expect(h.openStreams()).toEqual(["local:a"]);
-
-    h.registry.set(h.stateAtom(LOCAL, "a"), detail("a", "ready", {}, "queued"));
-    h.registry.set(h.threads(LOCAL), [shell("a", "ready")]);
-    expect(h.openStreams()).toEqual(["local:a"]);
-
-    h.registry.set(h.stateAtom(LOCAL, "a"), detail("a", "ready", {}, "waiting"));
-    expect(h.openStreams()).toEqual(["local:a"]);
-
-    h.registry.set(h.stateAtom(LOCAL, "a"), detail("a", "ready", {}, "completed"));
+    h.registry.set(h.stateAtom(LOCAL, "b"), detail("b", "idle"));
     expect(h.openStreams()).toEqual([]);
   });
 
@@ -182,7 +170,7 @@ describe("createRunningThreadKeepAliveAtom", () => {
 
     // Removal drops every mount, including one still waiting for its stop.
     h.registry.set(h.stateAtom(REMOTE, "d"), detail("d", "running"));
-    h.registry.set(h.threads(REMOTE), [shell("d", "ready")]);
+    h.registry.set(h.threads(REMOTE), [shell("d", "idle")]);
     expect(h.openStreams()).toEqual(["remote:d"]);
     h.registry.set(h.environmentIds, [LOCAL]);
     expect(h.openStreams()).toEqual([]);

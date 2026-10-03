@@ -37,17 +37,14 @@ import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as Persistence from "../platform/persistence.ts";
 import * as RpcSession from "../rpc/session.ts";
 import { v2Projection, v2ThreadId } from "./orchestrationV2TestFixtures.ts";
-import {
-  ThreadHistoryController,
-  threadHistoryControllerLayer,
-} from "./threadHistoryController.ts";
+import * as ThreadHistoryController from "./threadHistoryController.ts";
 import {
   EMPTY_ENVIRONMENT_THREAD_STATE,
   makeEnvironmentThreadState,
-  ThreadSnapshotLoader,
   type EnvironmentThreadState,
   type ThreadSnapshotLoadResult,
 } from "./threads.ts";
+import * as ThreadSnapshotLoader from "./threadSnapshotHttp.ts";
 
 const TARGET = new PrimaryConnectionTarget({
   environmentId: EnvironmentId.make("environment-1"),
@@ -160,7 +157,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   const prepared = yield* SubscriptionRef.make<Option.Option<PreparedConnection>>(
     Option.some(PREPARED),
   );
-  const snapshotLoader = ThreadSnapshotLoader.of({
+  const snapshotLoader = ThreadSnapshotLoader.ThreadSnapshotLoader.of({
     load: (_prepared, threadId) =>
       Ref.update(loaderCalls, (count) => count + 1).pipe(
         Effect.as(
@@ -221,7 +218,7 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   let makeThreadState = makeEnvironmentThreadState(THREAD_ID, options?.resumeCache).pipe(
     Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
     Effect.provideService(Persistence.EnvironmentCacheStore, cache),
-    Effect.provideService(ThreadSnapshotLoader, snapshotLoader),
+    Effect.provideService(ThreadSnapshotLoader.ThreadSnapshotLoader, snapshotLoader),
     Effect.provideService(
       ConnectionWakeups.ConnectionWakeups,
       ConnectionWakeups.ConnectionWakeups.of({ changes: Stream.fromQueue(wakeups) }),
@@ -236,12 +233,12 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
       ),
     );
   }
-  const historyController = yield* ThreadHistoryController.pipe(
-    Effect.provide(threadHistoryControllerLayer),
+  const historyController = yield* ThreadHistoryController.ThreadHistoryController.pipe(
+    Effect.provide(ThreadHistoryController.layer),
   );
   if (options?.historyPaging !== "no-controller") {
     makeThreadState = makeThreadState.pipe(
-      Effect.provideService(ThreadHistoryController, historyController),
+      Effect.provideService(ThreadHistoryController.ThreadHistoryController, historyController),
     );
   }
   const threadState = yield* makeThreadState;
@@ -318,8 +315,9 @@ const deleted = (sequence = 3): OrchestrationV2ThreadStreamItem => {
 };
 
 describe("EnvironmentThreads", () => {
-  for (const source of ["disk", "HTTP"] as const) {
-    it.effect(`does not rewrite an unchanged ${source} snapshot on navigation or warm return`, () =>
+  it.effect.each(["disk", "HTTP"] as const)(
+    "does not rewrite an unchanged %s snapshot on navigation or warm return",
+    (source) =>
       Effect.gen(function* () {
         const resumeCache: NonNullable<Parameters<typeof makeEnvironmentThreadState>[1]> = {
           snapshot: undefined,
@@ -353,8 +351,39 @@ describe("EnvironmentThreads", () => {
         );
         expect(yield* Ref.get(nextSaved)).toEqual([]);
       }),
-    );
-  }
+  );
+
+  it.effect("persists a complete bounded HTTP window only once", () =>
+    Effect.gen(function* () {
+      const saved = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const h = yield* makeHarness({
+            httpSnapshot: {
+              _tag: "present",
+              snapshot: { snapshotSequence: 7, projection: BASE_PROJECTION },
+              history: {
+                historyCursor: null,
+                hasMoreHistory: false,
+                latestLocalTurnOrdinal: 12,
+              },
+            },
+          });
+          yield* awaitThreadState(h.observed, (value) => value.status === "live");
+          yield* TestClock.adjust("500 millis");
+          return h.savedThreads;
+        }),
+      );
+      expect(yield* Ref.get(saved)).toEqual([
+        {
+          snapshotSequence: 7,
+          projection: BASE_PROJECTION,
+          historyCursor: null,
+          hasMoreHistory: false,
+          latestLocalTurnOrdinal: 12,
+        },
+      ]);
+    }),
+  );
 
   it.effect("persists a complete bounded HTTP window only once", () =>
     Effect.gen(function* () {
@@ -1015,8 +1044,9 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
-  for (const cacheKind of ["disk", "retained"] as const) {
-    it.effect(`retains paging support through a complete bounded ${cacheKind} cache`, () =>
+  it.effect.each(["disk", "retained"] as const)(
+    "retains paging support through a complete bounded %s cache",
+    (cacheKind) =>
       Effect.gen(function* () {
         const resumeCache: NonNullable<Parameters<typeof makeEnvironmentThreadState>[1]> = {
           snapshot: undefined,
@@ -1074,11 +1104,11 @@ describe("EnvironmentThreads", () => {
         expect(yield* Ref.get(warm.lastSubscribeAfterSequence)).toBe(5);
         expect(yield* Ref.get(warm.lastAcceptBoundedSnapshot)).toBe(true);
       }),
-    );
-  }
+  );
 
-  for (const historyPaging of ["no-http", "no-controller"] as const) {
-    it.effect(`does not negotiate bounded fallbacks with ${historyPaging}`, () =>
+  it.effect.each(["no-http", "no-controller"] as const)(
+    "does not negotiate bounded fallbacks with %s",
+    (historyPaging) =>
       Effect.gen(function* () {
         for (const source of ["cache", "http"] as const) {
           const history = {
@@ -1108,8 +1138,7 @@ describe("EnvironmentThreads", () => {
           expect(yield* Ref.get(harness.lastAcceptBoundedSnapshot)).toBeUndefined();
         }
       }),
-    );
-  }
+  );
 
   it.effect("socket snapshot clears progressive history meta left from a bounded window", () =>
     Effect.gen(function* () {
@@ -1778,7 +1807,7 @@ describe("EnvironmentThreads", () => {
       const unknown = (sequence: number): OrchestrationV2ThreadStreamItem => ({
         kind: "unknown-event",
         sequence,
-        eventType: "run.background-work-cancelled",
+        eventType: "run.from-a-future-server",
       });
       const occurredAt = DateTime.makeUnsafe("2026-06-20T01:00:00.000Z");
       yield* Queue.offerAll(harness.inputs, [

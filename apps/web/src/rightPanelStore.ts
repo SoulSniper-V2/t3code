@@ -99,8 +99,7 @@ const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 // v11 stops persisting the pull-request list's shared panel, so a restart opens the page fresh.
 // v12 adds the device surface.
 // v14 removes the agents surface; lineage lives in the thread title bar.
-// v15 adds chat surfaces, each keyed by its scoped server-thread reference.
-const RIGHT_PANEL_STORAGE_VERSION = 15;
+const RIGHT_PANEL_STORAGE_VERSION = 14;
 
 /** A fixed workspace-level ref: each PR surface carries its own real environment. */
 export const PULL_REQUESTS_PANEL_REF = scopeThreadRef(
@@ -459,7 +458,6 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                 threadState && typeof threadState === "object" ? threadState : null;
               const surfaces = Array.isArray(validThreadState?.surfaces)
                 ? validThreadState.surfaces.flatMap<RightPanelSurface>((surface) => {
-                    if (!surface || typeof surface !== "object") return [];
                     // Removed surfaces: plans render inline, agents in thread lineage.
                     const kind = (surface as { kind?: string }).kind;
                     if (kind === "plan" || kind === "agents") return [];
@@ -1030,40 +1028,11 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
           if (
             !(threadKey in state.byThreadKey) &&
             !(threadKey in state.threadPanelVisibilityByThreadKey) &&
-            !(threadKey in state.userActionRevisionByThreadKey) &&
-            !hasSplitReferences
+            !(threadKey in state.userActionRevisionByThreadKey)
           ) {
             return state;
           }
           const { [threadKey]: _removed, ...byThreadKey } = state.byThreadKey;
-          for (const [parentThreadKey, panelState] of Object.entries(byThreadKey)) {
-            const surfaces = panelState.surfaces.filter(
-              (surface) =>
-                surface.kind !== "thread" || scopedThreadKey(surface.threadRef) !== threadKey,
-            );
-            if (surfaces.length === panelState.surfaces.length) continue;
-            const activeStillExists = surfaces.some(
-              (surface) => surface.id === panelState.activeSurfaceId,
-            );
-            const nextPanelState: ThreadRightPanelState = {
-              ...panelState,
-              isOpen: surfaces.length > 0 && panelState.isOpen,
-              surfaces,
-              activeSurfaceId: activeStillExists
-                ? panelState.activeSurfaceId
-                : (surfaces.at(-1)?.id ?? null),
-            };
-            if (
-              !nextPanelState.isOpen &&
-              nextPanelState.activeSurfaceId === null &&
-              nextPanelState.surfaces.length === 0 &&
-              !nextPanelState.dismissedDeviceSurfaceIds?.length
-            ) {
-              delete byThreadKey[parentThreadKey];
-            } else {
-              byThreadKey[parentThreadKey] = nextPanelState;
-            }
-          }
           const { [threadKey]: _visibility, ...threadPanelVisibilityByThreadKey } =
             state.threadPanelVisibilityByThreadKey;
           const { [threadKey]: _revision, ...userActionRevisionByThreadKey } =

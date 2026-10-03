@@ -1,4 +1,6 @@
-import { ProviderDriverKind, type UsageProviderKind } from "@t3tools/contracts";
+import type { UsageProviderKind } from "@t3tools/contracts";
+
+import { ProviderDriverKind } from "@t3tools/contracts";
 
 type UsageProviderPresentation = {
   readonly label: string;
@@ -38,11 +40,7 @@ export const PROVIDER_PRESENTATION = {
     color: "#14b8a6",
     driverKind: ProviderDriverKind.make("cline"),
   },
-  cursor: {
-    label: "Cursor",
-    color: "#8b8b8b",
-    driverKind: ProviderDriverKind.make("cursor"),
-  },
+  cursor: { label: "Cursor", color: "#8b8b8b", driverKind: ProviderDriverKind.make("cursor") },
   opencode: {
     label: "OpenCode",
     color: "#5b9bbd",

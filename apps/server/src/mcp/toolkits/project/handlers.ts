@@ -4,6 +4,7 @@ import * as Option from "effect/Option";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
+import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
 import { newCommandId, readCaller, readMutationCaller, unavailable } from "../../threadAccess.ts";
 import { ProjectToolkit } from "./tools.ts";
@@ -54,10 +55,32 @@ export const ProjectHandlersLive = ProjectToolkit.toLayer({
           code: "invalid_request",
           message: "A new thread accepts only pending attachment uploads.",
         });
+      if (
+        input.scratch === true &&
+        (input.projectId !== undefined || input.workspaceStrategy !== undefined)
+      )
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message:
+            "scratch:true picks its own project and folder; omit projectId and workspaceStrategy.",
+        });
+      const projectId =
+        input.scratch === true
+          ? (yield* ManagedProjectFolders.ManagedProjectFolders.pipe(
+              Effect.flatMap((folders) => folders.ensureScratchProject),
+              Effect.mapError(
+                (error) =>
+                  new OrchestratorMcpFailure({
+                    code: "orchestration_error",
+                    message: error.message,
+                  }),
+              ),
+            )).projectId
+          : (input.projectId ?? caller.projectId);
       const result = yield* ThreadMessageIntake.launchThread({
         commandId,
         threadId,
-        projectId: input.projectId ?? caller.projectId,
+        projectId,
         title: input.title,
         modelSelection: input.modelSelection ?? caller.modelSelection,
         runtimeMode: input.runtimeMode ?? caller.runtimeMode,
@@ -112,12 +135,47 @@ export const ProjectHandlersLive = ProjectToolkit.toLayer({
         });
       return result.value;
     }),
-  t3_project_create: (input) =>
+  t3_project_create: ({ workspaceRoot, ...input }) =>
     Effect.gen(function* () {
       const projects = yield* mutation;
+      if (workspaceRoot === undefined) {
+        // Project creation records no model default (only an update does), so
+        // reject what this mode would otherwise drop silently.
+        if (
+          input.scripts !== undefined ||
+          input.createWorkspaceRootIfMissing !== undefined ||
+          input.defaultModelSelection !== undefined
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message:
+              "A project started from its title takes only a title; set scripts or defaultModelSelection afterwards with t3_project_update.",
+          });
+        const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+        const created = yield* folders
+          .createNamedProject({ name: input.title })
+          .pipe(
+            Effect.mapError(
+              (error) =>
+                new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
+            ),
+          );
+        const project = yield* projects
+          .getById(created.projectId)
+          .pipe(
+            Effect.mapError(unavailable),
+            Effect.flatMap(
+              Option.match({ onNone: () => Effect.fail(unavailable()), onSome: Effect.succeed }),
+            ),
+          );
+        return {
+          ...project,
+          ...(created.commitError === undefined ? {} : { commitError: created.commitError }),
+        };
+      }
       const commandId = yield* newCommandId();
       return yield* projects
-        .create({ ...input, commandId, projectId: ProjectId.make(commandId) })
+        .create({ ...input, workspaceRoot, commandId, projectId: ProjectId.make(commandId) })
         .pipe(Effect.mapError(projectFailure));
     }),
   t3_project_update: (input) =>

@@ -89,3 +89,19 @@ export function usageLimitRunPresentedAsLatest(
   const blocked = usageLimitBlockedRun(runs, turnItems, sessionError);
   return blocked !== null && runs.some((run) => run.ordinal > blocked.ordinal) ? blocked : null;
 }
+
+/**
+ * The newest run that is not waiting in a held queue, or null when only held
+ * runs exist. A held queue waits for the user, so its runs never stand for the
+ * thread's outcome. The SQL thread shell selects the same run.
+ */
+export function latestUnheldRun(
+  runs: ReadonlyArray<OrchestrationV2Run>,
+): OrchestrationV2Run | null {
+  let latest: OrchestrationV2Run | null = null;
+  for (const run of runs) {
+    if (run.status === "queued" && run.queueHeld === true) continue;
+    if (latest === null || run.ordinal > latest.ordinal) latest = run;
+  }
+  return latest;
+}

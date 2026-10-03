@@ -22,14 +22,10 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Statement from "effect/unstable/sql/Statement";
 
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
-import {
-  ProjectionStoreV2,
-  layer as projectionStoreLayer,
-  layerMemory,
-} from "./ProjectionStore.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 import { isAutoSettlementCandidate, resolveAutoSettlementAt } from "./ThreadSettlementService.ts";
 
-const SqlLayer = projectionStoreLayer.pipe(Layer.provideMerge(SqlitePersistenceMemory));
+const SqlLayer = ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistenceMemory));
 const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
 const old = DateTime.subtract(now, { days: 10 });
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -40,7 +36,7 @@ const createThread = Effect.fn(function* (
   name: string,
   overrides: Partial<OrchestrationV2AppThread> = {},
 ) {
-  const store = yield* ProjectionStoreV2;
+  const store = yield* ProjectionStore.ProjectionStoreV2;
   const threadId = ThreadId.make(`thread:settlement:${name}`);
   const thread: OrchestrationV2AppThread = {
     createdBy: "user",
@@ -81,7 +77,7 @@ const createRun = Effect.fn(function* (
   status: OrchestrationV2Run["status"] = "completed",
   ordinal = 1,
 ) {
-  const store = yield* ProjectionStoreV2;
+  const store = yield* ProjectionStore.ProjectionStoreV2;
   const runId = RunId.make(`run:${threadId}:${ordinal}`);
   yield* store.apply({
     id: EventId.make(`event:${runId}`),
@@ -115,7 +111,7 @@ const createItem = Effect.fn(function* (
   status: "idle" | "running" | "completed",
   persistent = false,
 ) {
-  const store = yield* ProjectionStoreV2;
+  const store = yield* ProjectionStore.ProjectionStoreV2;
   yield* store.apply({
     id: EventId.make(`event:item:${runId}`),
     type: "turn-item.updated",
@@ -144,159 +140,157 @@ const createItem = Effect.fn(function* (
   });
 });
 
-for (const [name, testLayer] of [
+it.effect.each([
   ["sql", SqlLayer],
-  ["memory", layerMemory],
-] as const) {
-  it.effect(
-    `${name}: discovers settlement work with the same activity and background semantics as the shell`,
-    () =>
-      Effect.gen(function* () {
-        const store = yield* ProjectionStoreV2;
-        const idle = yield* createThread("idle");
-        const completed = yield* createThread("completed");
-        yield* createRun(completed);
-        for (const [name, overrides] of [
-          ["archived", { archivedAt: old }],
-          ["deleted", { deletedAt: old }],
-          ["settled", { settledOverride: "settled" }],
-          ["unsettled", { settledOverride: "active" }],
-          ["pinned", { pinnedAt: old }],
-          ["auto-settle-disabled", { autoSettleDisabledAt: old }],
-        ] satisfies ReadonlyArray<readonly [string, Partial<OrchestrationV2AppThread>]>) {
-          yield* createRun(yield* createThread(name, overrides));
-        }
-        for (const status of ["preparing", "starting", "running", "waiting"] as const) {
-          yield* createRun(yield* createThread(status), status);
-        }
-        const queued = yield* createThread("queued");
-        yield* createRun(queued, "queued");
-        const blocked = yield* createThread("blocked");
-        yield* store.apply({
-          id: EventId.make("event:settlement:request"),
-          type: "runtime-request.updated",
-          threadId: blocked,
-          occurredAt: old,
-          payload: {
-            id: RuntimeRequestId.make("request:settlement"),
-            nodeId: NodeId.make("node:settlement"),
-            providerTurnId: null,
-            nativeRequestRef: null,
-            kind: "user_input",
-            status: "pending",
-            responseCapability: { type: "not_resumable", reason: "Process stopped" },
-            createdAt: old,
-            resolvedAt: null,
-          },
-        });
-        const recent = yield* createThread("recent-message");
-        yield* createRun(recent);
-        yield* store.apply({
-          id: EventId.make("event:settlement:message"),
-          type: "message.updated",
+  ["memory", ProjectionStore.layerMemory],
+] as const)(
+  "%s: discovers settlement work with the same activity and background semantics as the shell",
+  ([, testLayer]) =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const idle = yield* createThread("idle");
+      const completed = yield* createThread("completed");
+      yield* createRun(completed);
+      for (const [name, overrides] of [
+        ["archived", { archivedAt: old }],
+        ["deleted", { deletedAt: old }],
+        ["settled", { settledOverride: "settled" }],
+        ["unsettled", { settledOverride: "active" }],
+        ["pinned", { pinnedAt: old }],
+        ["auto-settle-disabled", { autoSettleDisabledAt: old }],
+      ] satisfies ReadonlyArray<readonly [string, Partial<OrchestrationV2AppThread>]>) {
+        yield* createRun(yield* createThread(name, overrides));
+      }
+      for (const status of ["preparing", "starting", "running", "waiting"] as const) {
+        yield* createRun(yield* createThread(status), status);
+      }
+      const queued = yield* createThread("queued");
+      yield* createRun(queued, "queued");
+      const blocked = yield* createThread("blocked");
+      yield* store.apply({
+        id: EventId.make("event:settlement:request"),
+        type: "runtime-request.updated",
+        threadId: blocked,
+        occurredAt: old,
+        payload: {
+          id: RuntimeRequestId.make("request:settlement"),
+          nodeId: NodeId.make("node:settlement"),
+          providerTurnId: null,
+          nativeRequestRef: null,
+          kind: "user_input",
+          status: "pending",
+          responseCapability: { type: "not_resumable", reason: "Process stopped" },
+          createdAt: old,
+          resolvedAt: null,
+        },
+      });
+      const recent = yield* createThread("recent-message");
+      yield* createRun(recent);
+      yield* store.apply({
+        id: EventId.make("event:settlement:message"),
+        type: "message.updated",
+        threadId: recent,
+        occurredAt: now,
+        payload: {
+          createdBy: "user",
+          creationSource: "web",
+          id: MessageId.make("message:settlement:recent"),
           threadId: recent,
-          occurredAt: now,
-          payload: {
-            createdBy: "user",
-            creationSource: "web",
-            id: MessageId.make("message:settlement:recent"),
-            threadId: recent,
-            runId: null,
-            nodeId: null,
-            role: "user",
-            text: "Next turn",
-            attachments: [],
-            streaming: false,
-            createdAt: now,
-            updatedAt: now,
-          },
-        });
-        yield* createRun(
-          yield* createThread("snoozed", {
-            snoozedUntil: DateTime.add(now, { days: 1 }),
-            snoozedAt: now,
-          }),
-        );
-        const woke = yield* createThread("woke", {
+          runId: null,
+          nodeId: null,
+          role: "user",
+          text: "Next turn",
+          attachments: [],
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      yield* createRun(
+        yield* createThread("snoozed", {
           snoozedUntil: DateTime.add(now, { days: 1 }),
-          snoozedAt: DateTime.subtract(old, { days: 1 }),
-        });
-        yield* createRun(woke);
-        const background = yield* createThread("idle-background");
-        yield* createItem(background, yield* createRun(background), "idle");
-        const persistent = yield* createThread("persistent-monitor");
-        yield* createItem(persistent, yield* createRun(persistent), "running", true);
-        const rolledBack = yield* createThread("rolled-back-background");
-        yield* createItem(rolledBack, yield* createRun(rolledBack, "rolled_back"), "running");
-        yield* createRun(rolledBack, "completed", 2);
-        const roster = yield* createThread("provider-roster");
-        yield* createRun(roster);
-        yield* store.apply({
-          id: EventId.make("event:settlement:roster"),
-          type: "provider-thread.updated",
-          threadId: roster,
-          occurredAt: old,
-          payload: {
-            id: ProviderThreadId.make("provider-thread:settlement"),
-            appThreadId: roster,
-            ownerNodeId: null,
-            driver: ProviderDriverKind.make("codex"),
-            providerInstanceId,
-            providerSessionId: null,
-            nativeThreadRef: null,
-            nativeConversationHeadRef: null,
-            status: "idle",
-            firstRunOrdinal: null,
-            lastRunOrdinal: null,
-            handoffIds: [],
-            forkedFrom: null,
-            createdAt: old,
-            updatedAt: old,
-            pendingBackgroundTasks: [{ taskId: "running-task" }],
-          },
-        });
-        const candidates = yield* store.getSettlementCandidates();
-        const shell = yield* store.getShellSnapshot({ location: "active" });
-        const eligible = candidates.filter((thread) =>
-          isAutoSettlementCandidate(thread, DateTime.toEpochMillis(now)),
-        );
+          snoozedAt: now,
+        }),
+      );
+      const woke = yield* createThread("woke", {
+        snoozedUntil: DateTime.add(now, { days: 1 }),
+        snoozedAt: DateTime.subtract(old, { days: 1 }),
+      });
+      yield* createRun(woke);
+      const background = yield* createThread("idle-background");
+      yield* createItem(background, yield* createRun(background), "idle");
+      const persistent = yield* createThread("persistent-monitor");
+      yield* createItem(persistent, yield* createRun(persistent), "running", true);
+      const rolledBack = yield* createThread("rolled-back-background");
+      yield* createItem(rolledBack, yield* createRun(rolledBack, "rolled_back"), "running");
+      yield* createRun(rolledBack, "completed", 2);
+      const roster = yield* createThread("provider-roster");
+      yield* createRun(roster);
+      yield* store.apply({
+        id: EventId.make("event:settlement:roster"),
+        type: "provider-thread.updated",
+        threadId: roster,
+        occurredAt: old,
+        payload: {
+          id: ProviderThreadId.make("provider-thread:settlement"),
+          appThreadId: roster,
+          ownerNodeId: null,
+          driver: ProviderDriverKind.make("codex"),
+          providerInstanceId,
+          providerSessionId: null,
+          nativeThreadRef: null,
+          nativeConversationHeadRef: null,
+          status: "idle",
+          firstRunOrdinal: null,
+          lastRunOrdinal: null,
+          handoffIds: [],
+          forkedFrom: null,
+          createdAt: old,
+          updatedAt: old,
+          pendingBackgroundTasks: [{ taskId: "running-task", kind: "command" }],
+        },
+      });
+      const candidates = yield* store.getSettlementCandidates();
+      const shell = yield* store.getShellSnapshot({ location: "active" });
+      const eligible = candidates.filter((thread) =>
+        isAutoSettlementCandidate(thread, DateTime.toEpochMillis(now)),
+      );
+      assert.deepEqual(
+        new Set(eligible.map((thread) => thread.id)),
+        new Set([idle, completed, queued, woke, background, persistent, rolledBack]),
+      );
+      assert.deepEqual(
+        new Set(eligible.map((thread) => thread.id)),
+        new Set(
+          shell.threads
+            .filter((thread) => isAutoSettlementCandidate(thread, DateTime.toEpochMillis(now)))
+            .map((thread) => thread.id),
+        ),
+      );
+      for (const candidate of candidates) {
+        const expected = shell.threads.find((thread) => thread.id === candidate.id)!;
+        assert.deepEqual(candidate.pendingBackgroundTasks, expected.pendingBackgroundTasks);
+        const settings = {
+          pullRequest: null,
+          nowMs: DateTime.toEpochMillis(now),
+          autoSettleAfterDays: 7,
+          autoSettleOnMerge: false,
+        };
         assert.deepEqual(
-          new Set(eligible.map((thread) => thread.id)),
-          new Set([idle, completed, queued, woke, background, persistent, rolledBack]),
+          resolveAutoSettlementAt({ ...settings, thread: candidate }),
+          resolveAutoSettlementAt({ ...settings, thread: expected }),
         );
-        assert.deepEqual(
-          new Set(eligible.map((thread) => thread.id)),
-          new Set(
-            shell.threads
-              .filter((thread) => isAutoSettlementCandidate(thread, DateTime.toEpochMillis(now)))
-              .map((thread) => thread.id),
-          ),
-        );
-        for (const candidate of candidates) {
-          const expected = shell.threads.find((thread) => thread.id === candidate.id)!;
-          assert.deepEqual(candidate.pendingBackgroundTasks, expected.pendingBackgroundTasks);
-          const settings = {
-            pullRequest: null,
-            nowMs: DateTime.toEpochMillis(now),
-            autoSettleAfterDays: 7,
-            autoSettleOnMerge: false,
-          };
-          assert.deepEqual(
-            resolveAutoSettlementAt({ ...settings, thread: candidate }),
-            resolveAutoSettlementAt({ ...settings, thread: expected }),
-          );
-        }
-        assert.equal(
-          DateTime.formatIso((yield* store.getThread(completed)).createdAt),
-          DateTime.formatIso(old),
-        );
-        assert.equal(
-          (yield* store.getThread(ThreadId.make("missing")).pipe(Effect.flip))._tag,
-          "ProjectionStoreThreadNotFoundError",
-        );
-      }).pipe(Effect.provide(testLayer)),
-  );
-}
+      }
+      assert.equal(
+        DateTime.formatIso((yield* store.getThread(completed)).createdAt),
+        DateTime.formatIso(old),
+      );
+      assert.equal(
+        (yield* store.getThread(ThreadId.make("missing")).pipe(Effect.flip))._tag,
+        "ProjectionStoreThreadNotFoundError",
+      );
+    }).pipe(Effect.provide(testLayer)),
+);
 
 const pullRequestLink = (number: number) => ({
   host: "github.com",
@@ -309,13 +303,14 @@ const pullRequestLink = (number: number) => ({
   stack: null,
 });
 
-for (const [name, testLayer] of [
+it.effect.each([
   ["sql", SqlLayer],
-  ["memory", layerMemory],
-] as const) {
-  it.effect(`${name}: lists only active threads with pull request links, oldest first`, () =>
+  ["memory", ProjectionStore.layerMemory],
+] as const)(
+  "%s: lists only active threads with pull request links, oldest first",
+  ([, testLayer]) =>
     Effect.gen(function* () {
-      const store = yield* ProjectionStoreV2;
+      const store = yield* ProjectionStore.ProjectionStoreV2;
       yield* createThread("no-links");
       yield* createThread("empty-links", { pullRequests: [] });
       yield* createThread("archived-link", {
@@ -341,39 +336,33 @@ for (const [name, testLayer] of [
         ],
       );
     }).pipe(Effect.provide(testLayer)),
-  );
-}
+);
 
-for (const [name, testLayer] of [
+it.effect.each([
   ["sql", SqlLayer],
-  ["memory", layerMemory],
-] as const) {
-  it.effect(`${name}: an unsettled-only shell read skips settled threads`, () =>
-    Effect.gen(function* () {
-      const store = yield* ProjectionStoreV2;
-      const open = yield* createThread("unsettled-open");
-      const reopened = yield* createThread("unsettled-reopened", { settledOverride: "active" });
-      yield* createThread("unsettled-manual", { settledOverride: "settled", settledAt: old });
-      yield* createThread("unsettled-auto", { settledAt: old });
-      yield* createThread("unsettled-archived", { archivedAt: old });
+  ["memory", ProjectionStore.layerMemory],
+] as const)("%s: an unsettled-only shell read skips settled threads", ([, testLayer]) =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const open = yield* createThread("unsettled-open");
+    const reopened = yield* createThread("unsettled-reopened", { settledOverride: "active" });
+    yield* createThread("unsettled-manual", { settledOverride: "settled", settledAt: old });
+    yield* createThread("unsettled-auto", { settledAt: old });
+    yield* createThread("unsettled-archived", { archivedAt: old });
 
-      const shell = yield* store.getShellSnapshot({ location: "active", unsettledOnly: true });
-      assert.deepEqual(
-        new Set(shell.threads.map((thread) => thread.id)),
-        new Set([open, reopened]),
-      );
-      assert.equal(shell.archivedThreads.length, 0);
-      const all = yield* store.getShellSnapshot({ location: "active" });
-      assert.equal(all.threads.length, 4);
-    }).pipe(Effect.provide(testLayer)),
-  );
-}
+    const shell = yield* store.getShellSnapshot({ location: "active", unsettledOnly: true });
+    assert.deepEqual(new Set(shell.threads.map((thread) => thread.id)), new Set([open, reopened]));
+    assert.equal(shell.archivedThreads.length, 0);
+    const all = yield* store.getShellSnapshot({ location: "active" });
+    assert.equal(all.threads.length, 4);
+  }).pipe(Effect.provide(testLayer)),
+);
 
 it.effect(
   "reads settlement candidates and thread metadata without loading historical or archived payloads",
   () =>
     Effect.gen(function* () {
-      const store = yield* ProjectionStoreV2;
+      const store = yield* ProjectionStore.ProjectionStoreV2;
       const sql = yield* SqlClient.SqlClient;
       const source = yield* createThread("historical-source", { archivedAt: old });
       const sourceRun = yield* createRun(source);
@@ -432,4 +421,39 @@ it.effect(
       assert.isTrue(messagePlan.some((row) => row.detail.includes("messages_latest_user_idx")));
       assert.isFalse(messagePlan.some((row) => row.detail.includes("TEMP B-TREE")));
     }).pipe(Effect.provide(SqlLayer)),
+);
+
+it.effect("shell failure lookups stay on the thread's own turn items", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const sql = yield* SqlClient.SqlClient;
+    const failed = yield* createThread("failed-latest");
+    yield* createRun(failed, "failed");
+    const queries: Array<readonly [string, ReadonlyArray<unknown>]> = [];
+    const record: Statement.Transformer = (statement) =>
+      Effect.sync(() => {
+        queries.push(statement.compile());
+        return statement;
+      });
+    const shell = yield* store
+      .getShellSnapshot()
+      .pipe(Effect.provideService(Statement.CurrentTransformer, record));
+    assert.deepEqual(
+      shell.threads.map((thread) => thread.id),
+      [failed],
+    );
+    const shellQuery = queries.find(([query]) =>
+      query.includes("AS blocking_failure_payload_json"),
+    );
+    assert.isDefined(shellQuery);
+    const plan = yield* sql.unsafe<{ readonly detail: string }>(
+      `EXPLAIN QUERY PLAN ${shellQuery![0]}`,
+      shellQuery![1],
+    );
+    // A failed run's root node is often null, and every runless item shares that
+    // node_id, so a node_ordinal lookup walks the whole history once per thread.
+    const itemLookups = plan.filter((row) => row.detail.startsWith("SEARCH item "));
+    assert.lengthOf(itemLookups, 2);
+    assert.isTrue(itemLookups.every((row) => row.detail.includes("turn_items_thread_run_idx")));
+  }).pipe(Effect.provide(SqlLayer)),
 );

@@ -311,7 +311,8 @@ before the agent starts. Creating a worktree in the task prompt does not update
 this binding.
 
 Pass the task in `message`. Project, model, and modes inherit when omitted;
-workspace does not. For stacked PRs, use the parent branch as `baseRef` with
+workspace does not. `scratch: true` launches without a project, in a folder of
+its own under the environment's Scratch project. For stacked PRs, use the parent branch as `baseRef` with
 `startFromOrigin: false`. Launch requires a full-access/default caller and has
 no retry key, so inspect existing threads after a failed or lost response before
 launching again. `create_threads` remains the batch option for a shared checkout.

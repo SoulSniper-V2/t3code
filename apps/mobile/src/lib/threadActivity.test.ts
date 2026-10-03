@@ -309,33 +309,7 @@ describe("buildThreadFeed", () => {
     expect(messageEntry?.message.sourceThreadId).toBe(threadId);
   });
 
-  it("adds local feedback messages to an otherwise server-authored feed", () => {
-    const feed = buildThreadFeed([], {
-      localMessages: [
-        {
-          id: MessageId.make("feedback-local"),
-          role: "assistant",
-          text: "Feedback sent to OpenAI.\n\nThread ID: `codex-thread-1`",
-          turnId: null,
-          streaming: false,
-          createdAt: "2026-08-29T00:00:00.000Z",
-          updatedAt: "2026-08-29T00:00:00.000Z",
-        },
-      ],
-    });
-
-    expect(feed).toHaveLength(1);
-    expect(feed[0]).toMatchObject({
-      type: "message",
-      message: {
-        id: "feedback-local",
-        role: "assistant",
-        text: expect.stringContaining("codex-thread-1"),
-      },
-    });
-  });
-
-  it("anchors feedback before later committed turns and appends true optimistic messages", () => {
+  it("anchors feedback before later committed turns", () => {
     const laterUser = {
       ...userMessage("2026-08-29T00:00:05.000Z"),
       id: TurnItemId.make("item-later-user"),
@@ -371,12 +345,6 @@ describe("buildThreadFeed", () => {
           localMessage("feedback-assistant", "assistant"),
           localMessage("message-later-user", "user"),
         ],
-        localMessages: [
-          {
-            ...localMessage("optimistic-user", "user"),
-            createdAt: "2026-08-29T00:00:00.000Z",
-          },
-        ],
       },
     );
     const messages = feed.filter((entry) => entry.type === "message");
@@ -387,7 +355,6 @@ describe("buildThreadFeed", () => {
       "feedback-assistant",
       "message-later-user",
       "message-later-assistant",
-      "optimistic-user",
     ]);
     expect(
       messages
@@ -2172,6 +2139,60 @@ it.each(["First paragraph.\n\nSecond paragraph.", ""])(
     }
   },
 );
+
+it("stops stranded thinking after a steer and follows the next thought or tool", () => {
+  const at = "2026-06-20T00:00:02.000Z";
+  const thought = (id: string): OrchestrationV2TurnItem => ({
+    ...base(id, at, 1),
+    type: "reasoning",
+    status: "running",
+    completedAt: null,
+    streaming: true,
+    text: id,
+  });
+  const first = thought("first-thought");
+  const next = thought("next-thought");
+  const steer = { ...userMessage(at), inputIntent: "steer" as const };
+  const tool = { ...command(at), status: "running" as const, completedAt: null };
+  const rows = (items: ReadonlyArray<OrchestrationV2TurnItem>, expanded = new Set<string>()) =>
+    deriveThreadFeedPresentation(
+      buildThreadFeed(items.map((item, position) => projected(item, position))),
+      { runId, status: "running", startedAt: at, completedAt: null },
+      new Set(),
+      expanded,
+      at,
+    );
+  expect(rows([first]).find((row) => row.type === "work-toggle")).toMatchObject({
+    summary: "first-thought",
+    live: true,
+    shimmer: true,
+  });
+  const afterSteer = rows([first, steer]);
+  expect(afterSteer.find((row) => row.type === "work-toggle")).toMatchObject({
+    live: false,
+    shimmer: false,
+  });
+  expect(afterSteer.at(-1)?.type).toBe("thinking");
+  const header = afterSteer.find((row) => row.type === "work-toggle");
+  if (header?.type !== "work-toggle") throw new Error("Expected thought toggle");
+  const expanded = rows([first, steer], new Set([header.groupId]));
+  expect(expanded.find((row) => row.type === "work-toggle")).toMatchObject({ summary: "Thought" });
+  expect(expanded.find((row) => row.type === "activity-group")).toMatchObject({
+    activities: [{ lifecycleStatus: "completed", workEntry: { toolLifecycleStatus: "completed" } }],
+  });
+  for (const items of [
+    [first, steer, next],
+    [first, next],
+    [first, steer, next, tool],
+  ]) {
+    const live = rows(items).filter((row) => row.type === "work-toggle" && row.shimmer);
+    expect(live).toHaveLength(1);
+    expect(live[0]).toMatchObject({
+      summary: items.at(-1)!.type === "reasoning" ? "next-thought" : "Running vp",
+    });
+  }
+  expect(first.status).toBe("running");
+});
 
 it("previews a settled thought in its collapsed header and labels its expanded header", () => {
   const thought: OrchestrationV2TurnItem = {

@@ -15,10 +15,10 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
-import { CheckpointServiceV2 } from "./CheckpointService.ts";
-import { EventSinkV2 } from "./EventSink.ts";
-import { IdAllocatorV2, type IdAllocatorV2Shape } from "./IdAllocator.ts";
-import { ProjectionStoreV2 } from "./ProjectionStore.ts";
+import * as CheckpointService from "./CheckpointService.ts";
+import * as EventSink from "./EventSink.ts";
+import * as IdAllocator from "./IdAllocator.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 
 export class CheckpointCaptureExecutionError extends Schema.TaggedError<CheckpointCaptureExecutionError>()(
   "CheckpointCaptureExecutionError",
@@ -48,14 +48,17 @@ export class CheckpointCaptureServiceV2 extends Context.Service<
 export const layer: Layer.Layer<
   CheckpointCaptureServiceV2,
   never,
-  CheckpointServiceV2 | EventSinkV2 | IdAllocatorV2 | ProjectionStoreV2
+  | CheckpointService.CheckpointServiceV2
+  | EventSink.EventSinkV2
+  | IdAllocator.IdAllocatorV2
+  | ProjectionStore.ProjectionStoreV2
 > = Layer.effect(
   CheckpointCaptureServiceV2,
   Effect.gen(function* () {
-    const checkpoints = yield* CheckpointServiceV2;
-    const eventSink = yield* EventSinkV2;
-    const ids = yield* IdAllocatorV2;
-    const projections = yield* ProjectionStoreV2;
+    const checkpoints = yield* CheckpointService.CheckpointServiceV2;
+    const eventSink = yield* EventSink.EventSinkV2;
+    const ids = yield* IdAllocator.IdAllocatorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
 
     const execute = Effect.fn("orchestrationV2.checkpointCapture.execute")(function* (input: {
       readonly threadId: ThreadId;
@@ -64,16 +67,29 @@ export const layer: Layer.Layer<
     }) {
       const { run, rootNode, scope, providerThread, readyCheckpointOrdinals } =
         yield* projections.getCheckpointCaptureContext(input.threadId, input);
+      // A stopped run is already terminal. Its checkpoint is the rollback point
+      // for the message after it, so capture leaves its status alone.
+      const stopped = run?.status === "interrupted" || run?.status === "cancelled";
 
-      // The effect is at-least-once. A completed run with a checkpoint proves
+      // The effect is at-least-once. A settled run with a checkpoint proves
       // that an earlier execution committed its result.
-      if (run?.status === "completed" && run.checkpointId !== null) {
+      if (
+        run !== undefined &&
+        run.checkpointId !== null &&
+        (run.status === "completed" || stopped)
+      ) {
+        return;
+      }
+      // Rollback shares this effect lane, so it can only land before a capture
+      // runs, e.g. while a failed capture waits to retry. The workspace now
+      // holds the rollback target, and the run must stay discarded.
+      if (run?.status === "rolled_back") {
         return;
       }
 
       if (
         run === undefined ||
-        run.status !== "waiting" ||
+        (run.status !== "waiting" && !stopped) ||
         rootNode === undefined ||
         scope === undefined ||
         rootNode.checkpointScopeId !== scope.id ||
@@ -190,28 +206,34 @@ export const layer: Layer.Layer<
             nodeId: rootNode.id,
             providerInstanceId: run.providerInstanceId,
             occurredAt: capturedAt,
-            payload: {
-              ...runWithoutDelegatedCompletion,
-              status: "completed",
-              completedAt: capturedAt,
-              checkpointId: checkpoint.id,
-            },
+            payload: stopped
+              ? { ...runWithoutDelegatedCompletion, checkpointId: checkpoint.id }
+              : {
+                  ...runWithoutDelegatedCompletion,
+                  status: "completed",
+                  completedAt: capturedAt,
+                  checkpointId: checkpoint.id,
+                },
           },
-          {
-            id: yield* ids.allocate.event({ threadId: input.threadId, commandId }),
-            type: "node.updated",
-            threadId: input.threadId,
-            runId: run.id,
-            nodeId: rootNode.id,
-            providerInstanceId: run.providerInstanceId,
-            occurredAt: capturedAt,
-            payload: {
-              ...rootNode,
-              status: "completed",
-              completedAt: capturedAt,
-              checkpointScopeId: scope.id,
-            },
-          },
+          ...(stopped
+            ? []
+            : [
+                {
+                  id: yield* ids.allocate.event({ threadId: input.threadId, commandId }),
+                  type: "node.updated" as const,
+                  threadId: input.threadId,
+                  runId: run.id,
+                  nodeId: rootNode.id,
+                  providerInstanceId: run.providerInstanceId,
+                  occurredAt: capturedAt,
+                  payload: {
+                    ...rootNode,
+                    status: "completed" as const,
+                    completedAt: capturedAt,
+                    checkpointScopeId: scope.id,
+                  },
+                },
+              ]),
         ],
       });
     });
@@ -230,7 +252,7 @@ export const layer: Layer.Layer<
 );
 
 function makeCheckpointTurnItem(input: {
-  readonly idAllocator: IdAllocatorV2Shape;
+  readonly idAllocator: IdAllocator.IdAllocatorV2Shape;
   readonly run: OrchestrationV2Run;
   readonly rootNode: OrchestrationV2ExecutionNode;
   readonly providerThread: OrchestrationV2ProviderThread;

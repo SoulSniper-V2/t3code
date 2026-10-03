@@ -40,7 +40,7 @@ interface ChatHeaderProps {
   isServerThread: boolean;
   activeProject: EnvironmentProject | null;
   rightPanelOpen: boolean;
-  onNewThreadInProject?: (() => void) | undefined;
+  onNewThreadInProject: () => void;
   isSplitPane?: boolean;
   onOpenProjectSettings?: (() => void) | undefined;
 }
@@ -234,7 +234,7 @@ export const ChatHeader = memo(function ChatHeader({
     <div
       className={cn(
         "flex min-w-0 flex-1 items-center gap-2 sm:gap-3",
-        isSplitPane ? "pr-3" : rightPanelOpen ? "pr-16" : "pr-32",
+        rightPanelOpen ? "pr-10" : "pr-24",
       )}
       onContextMenu={handleHeaderContextMenu}
     >

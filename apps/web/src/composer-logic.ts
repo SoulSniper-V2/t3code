@@ -15,7 +15,12 @@ import {
 
 import { resolveShortcutCommand, type ShortcutEventLike } from "./keybindings";
 
-export type ComposerTriggerKind = Exclude<SharedComposerTrigger["kind"], "slash-model">;
+export type ComposerTriggerKind =
+  | "path"
+  | "pull-request"
+  | "slash-command"
+  | "slash-skill"
+  | "skill";
 export type ComposerSlashCommand =
   | "model"
   | "plan"

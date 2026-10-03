@@ -1,7 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { enabledEnvironmentIds } from "@t3tools/client-runtime/state/connections";
 import { arrayElementsEqual } from "@t3tools/client-runtime/state/entities";
-import { threadRunStatusIsActive } from "@t3tools/client-runtime/state/models";
 import {
   createEnvironmentThreadDetailAtoms,
   createEnvironmentThreadShellAtoms,
@@ -51,6 +50,9 @@ export function useEnvironmentThread(
   return state;
 }
 
+const isRunning = (status: string) =>
+  status === "preparing" || status === "starting" || status === "running";
+
 type KeptThreads = ReadonlyMap<EnvironmentId, ReadonlySet<ThreadId>>;
 
 // True once a thread's own stream no longer needs to stay open: it is in sync
@@ -62,9 +64,7 @@ function isDetailDone<E>(result: AsyncResult.AsyncResult<EnvironmentThreadState,
   if (status === "deleted" || Option.isSome(error)) return true;
   return (
     status === "live" &&
-    !Option.exists(data, (projection) =>
-      projection.runs.some((run) => threadRunStatusIsActive(run.status)),
-    )
+    !Option.exists(data, (thread) => thread.runs.some((run) => isRunning(run.status)))
   );
 }
 
@@ -81,7 +81,7 @@ export function createRunningThreadKeepAliveAtom<E>(input: {
   readonly environmentIdsAtom: Atom.Atom<ReadonlyArray<EnvironmentId>>;
   readonly threadsAtom: (
     environmentId: EnvironmentId,
-  ) => Atom.Atom<ReadonlyArray<Pick<OrchestrationV2ThreadShell, "id" | "activeRunId">>>;
+  ) => Atom.Atom<ReadonlyArray<Pick<OrchestrationV2ThreadShell, "id" | "status">>>;
   readonly stateAtom: (
     environmentId: EnvironmentId,
     threadId: ThreadId,
@@ -93,7 +93,7 @@ export function createRunningThreadKeepAliveAtom<E>(input: {
     let previous: ReadonlyArray<ThreadId> = [];
     return Atom.make((get) => {
       const running = get(input.threadsAtom(environmentId)).flatMap((thread) =>
-        thread.activeRunId !== null ? [thread.id] : [],
+        isRunning(thread.status) ? [thread.id] : [],
       );
       if (arrayElementsEqual(previous, running)) return previous;
       previous = running;

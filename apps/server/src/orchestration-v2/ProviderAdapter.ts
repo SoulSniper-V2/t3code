@@ -508,8 +508,15 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly hasPendingBackgroundWorkForThread?: (
     providerThread: OrchestrationV2ProviderThread,
   ) => Effect.Effect<boolean>;
-  /** Capacity for the requested model/options, independent of native thread usage. */
-  readonly getModelContextWindow?: (modelSelection: ModelSelection) => number | undefined;
+  /**
+   * Capacity for the requested model/options, independent of native thread usage.
+   * `cwd` is the thread's working directory, for providers whose project config
+   * can change a model's limits.
+   */
+  readonly getModelContextWindow?: (
+    modelSelection: ModelSelection,
+    cwd?: string | null,
+  ) => number | undefined;
   /** Whether an option-only change preserves measured native usage and capacity.
    * Compaction thresholds are still discarded. Unknown transitions invalidate usage.
    */
@@ -541,6 +548,14 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly interruptTurn: (
     input: ProviderAdapterV2InterruptInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /**
+   * Lets a runtime shared by several app threads unload one provider thread's
+   * native state (and its MCP servers) when that app thread detaches, while
+   * the runtime keeps serving the others. A later resume reloads it.
+   */
+  readonly unloadThread?: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+  }) => Effect.Effect<void, ProviderAdapterV2Error>;
   readonly respondToRuntimeRequest: (
     input: ProviderAdapterV2RuntimeRequestResponseInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;

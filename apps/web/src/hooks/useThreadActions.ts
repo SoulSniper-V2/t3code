@@ -948,8 +948,8 @@ export function useThreadActions() {
       confirmAndUnpinThread,
       reorderPinnedThread,
       reorderActiveThread,
-      setThreadAutoSettle,
       markThreadUnread,
+      setThreadAutoSettle,
     }),
     [
       archiveThread,

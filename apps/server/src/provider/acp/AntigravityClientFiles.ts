@@ -38,41 +38,18 @@ const resolveClientFilePath = Effect.fn("AntigravityClientFiles.resolveClientFil
     const real = yield* input.fileSystem.realPath(resolved).pipe(
       Effect.catch(() =>
         Effect.gen(function* () {
-          // New files can be nested below directories that do not exist yet.
-          // Walk up to the nearest existing ancestor so realPath also resolves
-          // host aliases such as macOS /var -> /private/var before checking
-          // containment. Existing or dangling symlinks are never treated as a
-          // missing path; canonicalize them when valid, or reject them.
+          // Only a missing file (a new write) falls back to its parent; a
+          // dangling or unreadable link must not be followed on write.
           const entryExists = yield* input.fileSystem.readLink(resolved).pipe(
             Effect.as(true),
             Effect.catch(() => input.fileSystem.exists(resolved)),
             Effect.orElseSucceed(() => true),
           );
           if (entryExists) return yield* outside;
-          const missingSegments = [path.basename(resolved)];
-          let ancestor = path.dirname(resolved);
-          while (true) {
-            const realAncestor = yield* input.fileSystem.realPath(ancestor).pipe(
-              Effect.catch(() =>
-                Effect.gen(function* () {
-                  const entryExists = yield* input.fileSystem.readLink(ancestor).pipe(
-                    Effect.as(true),
-                    Effect.catch(() => input.fileSystem.exists(ancestor)),
-                    Effect.orElseSucceed(() => true),
-                  );
-                  if (entryExists) return yield* outside;
-                  const parent = path.dirname(ancestor);
-                  if (parent === ancestor) return yield* outside;
-                  missingSegments.unshift(path.basename(ancestor));
-                  ancestor = parent;
-                  return null;
-                }),
-              ),
-            );
-            if (realAncestor !== null) {
-              return path.resolve(realAncestor, ...missingSegments);
-            }
-          }
+          const parent = yield* input.fileSystem
+            .realPath(path.dirname(resolved))
+            .pipe(Effect.orElseSucceed(() => path.dirname(resolved)));
+          return path.join(parent, path.basename(resolved));
         }),
       ),
     );

@@ -3,6 +3,7 @@ import {
   ModelSelection,
   OrchestrationV2DomainEvent,
   OrchestrationV2ProviderSession,
+  type OrchestrationV2ProviderThread,
   OrchestrationV2RuntimeRequest,
   ProviderInstanceId,
   ProviderSessionId,
@@ -31,10 +32,10 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as McpProviderSession from "../mcp/McpProviderSession.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
-import { EventSinkV2 } from "./EventSink.ts";
-import { IdAllocatorV2 } from "./IdAllocator.ts";
+import * as EventSink from "./EventSink.ts";
+import * as IdAllocator from "./IdAllocator.ts";
 import { makeKeyedSerialExecutor } from "./KeyedSerialExecutor.ts";
-import { ProviderEventIngestorV2 } from "./ProviderEventIngestor.ts";
+import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import {
   ProviderAdapterEventStreamError,
   ProviderAdapterV2RuntimePolicy,
@@ -43,12 +44,13 @@ import {
   type ProviderAdapterV2EventSubscription,
   type ProviderAdapterV2SessionRuntime,
 } from "./ProviderAdapter.ts";
-import { ProviderAdapterRegistryV2 } from "./ProviderAdapterRegistry.ts";
-import { ProjectionStoreV2 } from "./ProjectionStore.ts";
+import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
 const RELEASE_SCOPE_CLOSE_TIMEOUT_MS = 30 * 1000;
+const UNLOAD_THREAD_TIMEOUT_MS = 10 * 1000;
 
 export const ProviderSessionReleaseReason = Schema.Literals([
   "idle_timeout",
@@ -291,18 +293,18 @@ export const layerWithOptions = (
 ): Layer.Layer<
   ProviderSessionManagerV2,
   never,
-  | EventSinkV2
+  | EventSink.EventSinkV2
   | FileSystem.FileSystem
-  | IdAllocatorV2
+  | IdAllocator.IdAllocatorV2
   | McpSessionRegistry.McpSessionRegistry
-  | ProjectionStoreV2
-  | ProviderEventIngestorV2
-  | ProviderAdapterRegistryV2
+  | ProjectionStore.ProjectionStoreV2
+  | ProviderEventIngestor.ProviderEventIngestorV2
+  | ProviderAdapterRegistry.ProviderAdapterRegistryV2
 > =>
   Layer.effect(
     ProviderSessionManagerV2,
     Effect.gen(function* () {
-      const registry = yield* ProviderAdapterRegistryV2;
+      const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
       const fileSystem = yield* FileSystem.FileSystem;
       const mcpSessionRegistry = yield* McpSessionRegistry.McpSessionRegistry;
       /**
@@ -315,10 +317,10 @@ export const layerWithOptions = (
        */
       const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
       const projectService = yield* Effect.serviceOption(ProjectService.ProjectService);
-      const eventSink = yield* EventSinkV2;
-      const idAllocator = yield* IdAllocatorV2;
-      const providerEventIngestor = yield* ProviderEventIngestorV2;
-      const projectionStore = yield* ProjectionStoreV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const providerEventIngestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
       const agentAccessSettings = Effect.fn("ProviderSessionManagerV2.agentAccessSettings")(
         function* (threadId: ThreadId) {
           if (Option.isNone(serverSettings)) return { browser: true, device: false };
@@ -361,6 +363,12 @@ export const layerWithOptions = (
       const sessions = yield* Ref.make(new Map<string, LiveSessionEntry>());
       const nextSubscriberId = yield* Ref.make(0);
       const sessionOpen = yield* makeKeyedSerialExecutor<ProviderSessionId>();
+      // Orders a thread's attach against a detach unloading it on the same session.
+      const threadAttachment = yield* makeKeyedSerialExecutor<string>();
+      const threadAttachmentKey = (input: {
+        readonly providerSessionId: ProviderSessionId;
+        readonly threadId: ThreadId;
+      }) => `${input.providerSessionId}\u0000${input.threadId}`;
       const idleTimeoutMs = Math.max(1, options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS);
       const maxIdlePinMs = Math.max(0, options.maxIdlePinMs ?? DEFAULT_MAX_IDLE_PIN_MS);
       interface PreparedMcpCredential {
@@ -1095,7 +1103,10 @@ export const layerWithOptions = (
             }
           };
           return Effect.gen(function* () {
-            const attached = yield* attachThread(input);
+            const attached = yield* threadAttachment.withLock(
+              threadAttachmentKey(input),
+              attachThread(input),
+            );
             if (attached) {
               const prepared = yield* prepareMcpSession(input.threadId, input.providerInstanceId);
               preparedForCleanup = prepared;
@@ -1764,6 +1775,7 @@ export const layerWithOptions = (
           Effect.gen(function* () {
             const key = sessionKey(input.providerSessionId);
             const currentEntry = (yield* Ref.get(sessions)).get(key);
+            let detachedProviderThreads: ReadonlyArray<OrchestrationV2ProviderThread> = [];
             if (currentEntry?.supportsMultipleProviderThreads === true) {
               const projection = yield* Effect.option(
                 projectionStore.getThreadRecords(input.threadId, [
@@ -1777,6 +1789,7 @@ export const layerWithOptions = (
                     .filter((thread) => thread.providerSessionId === input.providerSessionId)
                     .map((thread) => [thread.id, thread] as const),
                 );
+                detachedProviderThreads = [...providerThreads.values()];
                 const activeTurns = projection.value.providerTurns.filter(
                   (turn) => turn.status === "running" && providerThreads.has(turn.providerThreadId),
                 );
@@ -1865,6 +1878,48 @@ export const layerWithOptions = (
                 ...(input.detail === undefined ? {} : { detail: input.detail }),
               });
               return;
+            }
+            // The shared runtime stays up for other threads, so unload this
+            // thread's native state rather than leaving it (and its MCP
+            // servers) resident until the whole runtime is released.
+            const unloadThread = detached.value.exposedRuntime.unloadThread;
+            if (detached.value.supportsMultipleProviderThreads && unloadThread !== undefined) {
+              // Serialized with re-attachment: a thread whose next turn
+              // attaches first stays loaded, and one that attaches during the
+              // unload waits for it, so its resume reloads the native thread.
+              yield* threadAttachment.withLock(
+                threadAttachmentKey(input),
+                Effect.gen(function* () {
+                  const entry = (yield* Ref.get(sessions)).get(key);
+                  if (
+                    entry?.runtime !== detached.value.runtime ||
+                    entry.attachedThreadIds.has(input.threadId)
+                  ) {
+                    return;
+                  }
+                  yield* Effect.forEach(
+                    detachedProviderThreads.filter((thread) => thread.nativeThreadRef !== null),
+                    (providerThread) =>
+                      unloadThread({ providerThread }).pipe(
+                        // Bounded so a wedged provider cannot hold up the
+                        // thread's next attach.
+                        Effect.timeout(UNLOAD_THREAD_TIMEOUT_MS),
+                        Effect.catchCause((cause) =>
+                          Effect.logWarning(
+                            "orchestration-v2.driver-session.detach-unload-failed",
+                            {
+                              providerSessionId: input.providerSessionId,
+                              threadId: input.threadId,
+                              providerThreadId: providerThread.id,
+                              cause,
+                            },
+                          ),
+                        ),
+                      ),
+                    { concurrency: 1, discard: true },
+                  );
+                }),
+              );
             }
             yield* scheduleIdleRelease(input.providerSessionId);
           }).pipe(
