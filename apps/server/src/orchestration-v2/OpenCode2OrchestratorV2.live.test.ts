@@ -1,3 +1,5 @@
+import { hopliteCredentialStoreLayer } from "@t3tools/provider-hoplite/api";
+import * as ProviderHostLive from "../provider/ProviderHostLive.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -142,6 +144,7 @@ const layerBackgroundPolicy = BackgroundPolicy.layer.pipe(
   Layer.provide(layerServerSettings),
 );
 const layerProviderInstanceRegistry = ProviderInstanceRegistryHydration.layer.pipe(
+  Layer.provide(hopliteCredentialStoreLayer.pipe(Layer.provide(ProviderHostLive.layer))),
   Layer.provide(
     Layer.mergeAll(
       layerServerConfig.pipe(Layer.provide(layerPlatformTest)),

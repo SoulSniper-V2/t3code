@@ -3833,6 +3833,8 @@ it.effect("keeps completed runs completed when pull request refresh fails", () =
 
 function captureRootRunTermination(input: {
   readonly key: string;
+  readonly checkpointFilesystem?: boolean;
+  readonly captureBaseline?: CheckpointService.CheckpointServiceV2["Service"]["captureBaseline"];
   readonly shouldFinalizeRun: () => Effect.Effect<boolean, ProjectionStore.ProjectionStoreV2Error>;
   readonly rejectTerminalWrite?: boolean;
   readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
@@ -3884,7 +3886,9 @@ function captureRootRunTermination(input: {
           Layer.mock(McpAppModelContext.McpAppModelContext)({
             forThread: () => input.appContext ?? Effect.succeed([]),
           }),
-          Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
+          Layer.mock(CheckpointService.CheckpointServiceV2)({
+            captureBaseline: input.captureBaseline ?? (() => Effect.void),
+          }),
           Layer.mock(EventSink.EventSinkV2)({
             write: (payload) =>
               Effect.gen(function* () {
@@ -3937,6 +3941,11 @@ function captureRootRunTermination(input: {
         appThread: { id: ids.threadId } as OrchestrationV2AppThread,
         providerSessionId: ProviderSessionId.make(`session:${input.key}`),
         session: {
+          providerSession: {
+            capabilities: {
+              checkpointing: { appCanCheckpointFilesystem: input.checkpointFilesystem ?? true },
+            },
+          },
           events: Stream.empty,
           subscribeEvents: Effect.succeed({
             events:
@@ -4033,6 +4042,30 @@ function captureRootRunTermination(input: {
     };
   });
 }
+
+it.effect.each(["completed", "interrupted", "cancelled"] as const)(
+  "finishes a cloud run %s without checkpointing or refreshing the local workspace",
+  (status) =>
+    Effect.gen(function* () {
+      const captureBaseline = vi.fn(() => Effect.void);
+      const result = yield* captureRootRunTermination({
+        key: `cloud-workspace:${status}`,
+        checkpointFilesystem: false,
+        captureBaseline,
+        shouldFinalizeRun: () => Effect.succeed(true),
+        events: (ids) => Stream.make(rootTerminalEvent(ids, status)),
+      });
+      assert.equal(captureBaseline.mock.calls.length, 0);
+      assert.deepEqual(result.committedEffects, []);
+      assert.deepEqual(result.observed, [`run:${status}`]);
+      const runEvent = result.finalEvents.find((event) => event.type === "run.updated");
+      const nodeEvent = result.finalEvents.find((event) => event.type === "node.updated");
+      assert.isDefined(runEvent);
+      assert.isDefined(nodeEvent);
+      assert.isNotNull(runEvent?.payload.completedAt);
+      assert.isNotNull(nodeEvent?.payload.completedAt);
+    }),
+);
 
 interface BackgroundScenarioIds {
   readonly threadId: ThreadId;

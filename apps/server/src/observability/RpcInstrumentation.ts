@@ -14,6 +14,11 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
  * even where they differ from the method prefix.
  */
 const RPC_AGGREGATES = {
+  [WS_METHODS.hopliteListProjects]: "hoplite",
+  [WS_METHODS.hopliteListThreads]: "hoplite",
+  [WS_METHODS.hopliteImportThread]: "hoplite",
+  [WS_METHODS.hopliteRead]: "hoplite",
+  [WS_METHODS.hopliteMutate]: "hoplite",
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: "orchestration",

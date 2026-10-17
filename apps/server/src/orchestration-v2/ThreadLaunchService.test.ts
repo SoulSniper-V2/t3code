@@ -290,6 +290,69 @@ function launchInput(input: {
   };
 }
 
+it.effect.each([
+  { type: "root" },
+  { type: "worktree", baseRef: "main" },
+  { type: "existing_worktree", worktreePath: "/local/checkout", branch: "local-branch" },
+] as const)("does not provision a local workspace for a managed provider ($type)", (workspace) => {
+  const harness = makeHarness({
+    providers: [
+      {
+        instanceId: modelSelection.instanceId,
+        driver: ProviderDriverKind.make("codex"),
+        enabled: true,
+        installed: true,
+        version: null,
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: "2026-10-17T00:00:00.000Z",
+        models: [],
+        slashCommands: [],
+        skills: [],
+        workspaceLocation: "managed",
+      },
+    ],
+    managedFolders: Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+      namedProjectsRoot: "/projects",
+      folderForThread: () => Effect.die("A cloud provider must not allocate a local folder."),
+    }),
+  });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const launched = yield* launches.launch(
+      launchInput({
+        command: `managed:${workspace.type}`,
+        thread: `thread:managed:${workspace.type}`,
+        message: "Run in the managed workspace",
+        workspace,
+      }),
+    );
+    const released = yield* threads
+      .streamStoredEventsFrom({
+        threadId: launched.threadId,
+        eventType: "run.updated",
+      })
+      .pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "run.updated" && stored.event.payload.status !== "preparing",
+        ),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      );
+    assert.equal(released.event.type, "run.updated");
+    if (released.event.type === "run.updated")
+      assert.equal(released.event.payload.status, "starting");
+    const projection = yield* threads.getThreadProjection(launched.threadId);
+    assert.isNull(projection.thread.worktreePath);
+    assert.isNull(projection.thread.branch);
+    assert.equal(harness.createWorktree.mock.calls.length, 0);
+    assert.equal(harness.runSetup.mock.calls.length, 0);
+    assert.equal(harness.generateBranchName.mock.calls.length, 0);
+  }).pipe(Effect.provide(harness.layer));
+});
+
 function waitUntil<E, R>(predicate: () => Effect.Effect<boolean, E, R>): Effect.Effect<void, E, R> {
   return Effect.gen(function* () {
     for (let attempt = 0; attempt < 200; attempt += 1) {

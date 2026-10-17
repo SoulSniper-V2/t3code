@@ -102,6 +102,7 @@ type PreparationInput = Pick<
   "commandId" | "projectId" | "workspaceStrategy" | "initialMessage"
 > & {
   readonly reusedWorktree?: { readonly baseRef: string };
+  readonly managedWorkspace?: boolean;
 };
 
 export interface ThreadLaunchPreparationInput {
@@ -290,6 +291,19 @@ const make = Effect.gen(function* () {
     threadId: ThreadId,
     runId: RunId | null,
   ) {
+    if (input.managedWorkspace) {
+      if (runId !== null) {
+        yield* threads
+          .dispatch({
+            type: "prepared-run.release",
+            commandId: CommandId.make(`${input.commandId}:release`),
+            threadId,
+            runId,
+          })
+          .pipe(Effect.mapError(mapError(input, "release-run", threadId)));
+      }
+      return;
+    }
     const project = yield* projects.getById(input.projectId).pipe(
       Effect.mapError(mapError(input, "resolve-project", threadId)),
       Effect.flatMap(
@@ -839,6 +853,12 @@ const make = Effect.gen(function* () {
         commandId: input.commandId,
         instanceId: input.modelSelection.instanceId,
       });
+      const managedWorkspace = (yield* providerRegistry.getProviders).some(
+        (provider) =>
+          provider.instanceId === input.modelSelection.instanceId &&
+          provider.workspaceLocation === "managed",
+      );
+      if (managedWorkspace) input = { ...input, workspaceStrategy: { type: "root" } };
       return yield* Effect.gen(function* () {
         // A retried launch has no client-supplied id to replay against, so
         // recover the thread id its accepted create was recorded under before
@@ -879,7 +899,9 @@ const make = Effect.gen(function* () {
         }
 
         const workspaceStrategy: ThreadLaunchWorkspaceStrategy =
-          input.workspaceStrategy.type === "root" && Option.isNone(launchReceipt)
+          !managedWorkspace &&
+          input.workspaceStrategy.type === "root" &&
+          Option.isNone(launchReceipt)
             ? Option.match(
                 yield* managedFolders
                   .folderForThread({
@@ -1017,7 +1039,7 @@ const make = Effect.gen(function* () {
                     );
               if (preparationStillRequired) {
                 yield* schedulePreparation(
-                  { ...input, workspaceStrategy: preparationStrategy },
+                  { ...input, workspaceStrategy: preparationStrategy, managedWorkspace },
                   threadId,
                   runId,
                 );
@@ -1068,12 +1090,16 @@ const make = Effect.gen(function* () {
     return dispatched;
   });
 
-  const scheduleRunPreparation = (
+  const scheduleRunPreparation = Effect.fn("ThreadLaunchService.scheduleRunPreparation")(function* (
     input: ThreadLaunchPreparationInput,
     projection: OrchestrationV2ThreadProjection,
     run: OrchestrationV2ThreadProjection["runs"][number],
     workspacePreparation: ThreadLaunchWorkspaceStrategy,
-  ) => {
+  ) {
+    const managedWorkspace = (yield* providerRegistry.getProviders).some(
+      (provider) =>
+        provider.instanceId === run.providerInstanceId && provider.workspaceLocation === "managed",
+    );
     const message = projection.messages.find((candidate) => candidate.id === run.userMessageId);
     const reuse =
       workspacePreparation.type === "worktree" &&
@@ -1088,11 +1114,14 @@ const make = Effect.gen(function* () {
             reusedWorktree: { baseRef: workspacePreparation.baseRef },
           }
         : null;
-    return schedulePreparation(
+    return yield* schedulePreparation(
       {
         commandId: input.commandId,
         projectId: projection.thread.projectId,
-        workspaceStrategy: reuse?.strategy ?? workspacePreparation,
+        workspaceStrategy: managedWorkspace
+          ? { type: "root" }
+          : (reuse?.strategy ?? workspacePreparation),
+        managedWorkspace,
         ...(reuse === null ? {} : { reusedWorktree: reuse.reusedWorktree }),
         ...(message === undefined
           ? {}
@@ -1107,7 +1136,7 @@ const make = Effect.gen(function* () {
       input.threadId,
       run.id,
     );
-  };
+  });
 
   return ThreadLaunchService.of({ launch, checkWorktreeBase, retryPreparation, prepareRun });
 });

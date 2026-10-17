@@ -253,6 +253,7 @@ import {
 } from "@t3tools/shared/usageLimits";
 import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
 import * as AgentSessionImporter from "./project/AgentSessionImporter.ts";
+import * as HopliteManagement from "./hoplite/HopliteManagement.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
@@ -1168,6 +1169,7 @@ const layerWsRpc = (
       const currentSessionId = currentSession.sessionId;
       const sql = yield* SqlClient.SqlClient;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+      const hoplite = yield* HopliteManagement.HopliteManagement;
       const intakeContext = yield* Effect.context<
         | ThreadManagementService.ThreadManagementService
         | ThreadLaunchService.ThreadLaunchService
@@ -1787,6 +1789,16 @@ const layerWsRpc = (
       });
 
       const handlers = ServerWsRpcGroup.of({
+        [WS_METHODS.hopliteListProjects]: (input) =>
+          hoplite.listProjects(input).pipe(Effect.mapError(HopliteManagement.toRpcError)),
+        [WS_METHODS.hopliteListThreads]: (input) =>
+          hoplite.listThreads(input).pipe(Effect.mapError(HopliteManagement.toRpcError)),
+        [WS_METHODS.hopliteRead]: (input) =>
+          hoplite.read(input).pipe(Effect.mapError(HopliteManagement.toRpcError)),
+        [WS_METHODS.hopliteMutate]: (input) =>
+          hoplite.mutate(input).pipe(Effect.mapError(HopliteManagement.toRpcError)),
+        [WS_METHODS.hopliteImportThread]: (input) =>
+          hoplite.importThread(input).pipe(Effect.mapError(HopliteManagement.toRpcError)),
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
           Effect.annotateCurrentSpan({
             "orchestration_v2.command_id": command.commandId,
@@ -3171,6 +3183,7 @@ export const layer = Layer.unwrap(
               Layer.provide(DefectReporter.layer),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
               Layer.provide(AgentSessionScanner.layer),
+              Layer.provide(HopliteManagement.layer),
               Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),
               // One server-lifetime service means clients share the same PR caches, and a WS

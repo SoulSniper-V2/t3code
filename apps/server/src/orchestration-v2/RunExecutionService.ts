@@ -587,6 +587,7 @@ export const layer: Layer.Layer<
       readonly terminal: ProviderTerminalEvent;
       readonly failureItemPersisted: boolean;
       readonly refreshAfterTurn: Effect.Effect<void>;
+      readonly checkpointFilesystem: boolean;
       readonly writeIfRunCurrent?: {
         readonly activeAttemptId: RunAttemptId;
         readonly expectedStatus: OrchestrationV2Run["status"];
@@ -652,7 +653,9 @@ export const layer: Layer.Layer<
               })
             : [];
         const persistedStatus =
-          input.terminal.status === "completed" ? "waiting" : input.terminal.status;
+          input.terminal.status === "completed" && input.checkpointFilesystem
+            ? "waiting"
+            : input.terminal.status;
         // Completion cohorts are advanced by Orchestrator while a provider
         // turn is in flight. Do not replay the run snapshot captured at start
         // over a newer acknowledgement, successor, or Stop barrier.
@@ -661,12 +664,12 @@ export const layer: Layer.Layer<
         const finalizedRun: OrchestrationV2Run = {
           ...runWithoutDelegatedCompletion,
           status: persistedStatus,
-          completedAt: input.terminal.status === "completed" ? null : completedAt,
+          completedAt: persistedStatus === "waiting" ? null : completedAt,
         };
         const finalizedRootNode: OrchestrationV2ExecutionNode = {
           ...input.rootNode,
           status: persistedStatus,
-          completedAt: input.terminal.status === "completed" ? null : completedAt,
+          completedAt: persistedStatus === "waiting" ? null : completedAt,
           checkpointScopeId: input.checkpointScope.id,
         };
         const finalizedProviderThread: OrchestrationV2ProviderThread = {
@@ -685,9 +688,10 @@ export const layer: Layer.Layer<
         // ahead of any later run's start on this thread's effect lane.
         const finalization = {
           effects:
-            input.terminal.status === "completed" ||
-            input.terminal.status === "interrupted" ||
-            input.terminal.status === "cancelled"
+            input.checkpointFilesystem &&
+            (input.terminal.status === "completed" ||
+              input.terminal.status === "interrupted" ||
+              input.terminal.status === "cancelled")
               ? [
                   {
                     id: `effect:checkpoint.capture:${input.run.id}`,
@@ -812,9 +816,15 @@ export const layer: Layer.Layer<
     return RunExecutionServiceV2.of({
       startRootRun: (input) =>
         Effect.gen(function* () {
+          const checkpointFilesystem =
+            input.session.providerSession?.capabilities?.checkpointing
+              .appCanCheckpointFilesystem !== false;
           // Startup failure and stream shutdown can report the same attempt.
           const refreshAfterTurn = yield* Effect.cached(
-            finalizationObserver.refreshAfterTurn(input.appThread.projectId).pipe(
+            (checkpointFilesystem
+              ? finalizationObserver.refreshAfterTurn(input.appThread.projectId)
+              : Effect.void
+            ).pipe(
               Effect.catchCause((cause) =>
                 Effect.logWarning("failed to refresh pull requests after run termination", {
                   threadId: input.run.threadId,
@@ -851,21 +861,22 @@ export const layer: Layer.Layer<
                     .responseStreamingMode,
               ),
             );
-            yield* checkpointService
-              .captureBaseline({
-                scope: input.checkpointScope,
-                ordinalWithinScope: Math.max(0, input.run.ordinal - 1),
-              })
-              .pipe(
-                Effect.catchCause((cause) =>
-                  Cause.hasInterruptsOnly(cause)
-                    ? Effect.failCause(cause)
-                    : Effect.logWarning(
-                        "orchestration V2 checkpoint baseline capture failed; starting provider without a baseline",
-                        { runId: input.run.id },
-                      ),
-                ),
-              );
+            if (checkpointFilesystem)
+              yield* checkpointService
+                .captureBaseline({
+                  scope: input.checkpointScope,
+                  ordinalWithinScope: Math.max(0, input.run.ordinal - 1),
+                })
+                .pipe(
+                  Effect.catchCause((cause) =>
+                    Cause.hasInterruptsOnly(cause)
+                      ? Effect.failCause(cause)
+                      : Effect.logWarning(
+                          "orchestration V2 checkpoint baseline capture failed; starting provider without a baseline",
+                          { runId: input.run.id },
+                        ),
+                  ),
+                );
             if (
               input.shouldStartProviderTurn !== undefined &&
               !(yield* input.shouldStartProviderTurn())
@@ -884,6 +895,7 @@ export const layer: Layer.Layer<
                   cause,
                 });
                 yield* writeFinalRunEvents({
+                  checkpointFilesystem,
                   run: input.run,
                   rootNode: input.rootNode,
                   checkpointScope: input.checkpointScope,
@@ -978,6 +990,7 @@ export const layer: Layer.Layer<
               const providerThread = yield* Ref.get(latestProviderThread);
               const openSubagents = yield* Ref.get(openRunOwnedSubagents);
               yield* writeFinalRunEvents({
+                checkpointFilesystem,
                 run: input.run,
                 rootNode: input.rootNode,
                 checkpointScope: input.checkpointScope,
@@ -1315,6 +1328,7 @@ export const layer: Layer.Layer<
                                     Ref.get(openRunOwnedSubagents).pipe(
                                       Effect.flatMap((openSubagents) =>
                                         writeFinalRunEvents({
+                                          checkpointFilesystem,
                                           run: input.run,
                                           rootNode: input.rootNode,
                                           checkpointScope: input.checkpointScope,
@@ -1438,6 +1452,7 @@ export const layer: Layer.Layer<
                       Ref.get(openRunOwnedSubagents).pipe(
                         Effect.flatMap((openSubagents) =>
                           writeFinalRunEvents({
+                            checkpointFilesystem,
                             run: input.run,
                             rootNode: input.rootNode,
                             checkpointScope: input.checkpointScope,

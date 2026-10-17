@@ -54,6 +54,7 @@ import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderS
 import * as OpenCodeRuntime from "@t3tools/provider-opencode/server/OpenCodeRuntime";
 import * as OpenCodeServerLedger from "@t3tools/provider-opencode/server/OpenCodeServerLedger";
 import * as ProviderHostLive from "./provider/ProviderHostLive.ts";
+import { hopliteCredentialStoreLayer } from "@t3tools/provider-hoplite/api";
 import * as AcpRegistrySupport from "@t3tools/provider-acp-registry/server/AcpRegistrySupport";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as CheckpointStore from "./checkpointing/CheckpointStore.ts";
@@ -601,6 +602,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
 );
 
 const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
+  Layer.provideMerge(hopliteCredentialStoreLayer.pipe(Layer.provide(ProviderHostLive.layer))),
   Layer.provideMerge(layerPtyAdapter),
   Layer.provideMerge(AcpRegistrySupport.layerFromHost.pipe(Layer.provide(ProviderHostLive.layer))),
   Layer.provideMerge(

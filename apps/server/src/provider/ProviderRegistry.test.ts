@@ -1,3 +1,5 @@
+import { hopliteCredentialStoreLayer } from "@t3tools/provider-hoplite/api";
+import * as ProviderHostLive from "./ProviderHostLive.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as CodexInstallation from "./CodexInstallation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -2722,6 +2724,9 @@ it.layer(
         yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
         const layerProviderRegistry = ProviderRegistry.layer.pipe(
           Layer.provideMerge(ProviderInstanceRegistryHydration.layer),
+          Layer.provideMerge(
+            hopliteCredentialStoreLayer.pipe(Layer.provide(ProviderHostLive.layer)),
+          ),
           Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
           Layer.provideMerge(
             Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),
@@ -2821,6 +2826,9 @@ it.layer(
         yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
         const layerProviderRegistry = ProviderRegistry.layer.pipe(
           Layer.provideMerge(ProviderInstanceRegistryHydration.layer),
+          Layer.provideMerge(
+            hopliteCredentialStoreLayer.pipe(Layer.provide(ProviderHostLive.layer)),
+          ),
           Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
           Layer.provideMerge(
             Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),
@@ -2937,6 +2945,9 @@ it.layer(
         yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
         const layerProviderRegistry = ProviderRegistry.layer.pipe(
           Layer.provideMerge(ProviderInstanceRegistryHydration.layer),
+          Layer.provideMerge(
+            hopliteCredentialStoreLayer.pipe(Layer.provide(ProviderHostLive.layer)),
+          ),
           Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
           Layer.provideMerge(
             Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),
@@ -2997,6 +3008,9 @@ it.layer(
           yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
           const layerProviderRegistry = ProviderRegistry.layer.pipe(
             Layer.provideMerge(ProviderInstanceRegistryHydration.layer),
+            Layer.provideMerge(
+              hopliteCredentialStoreLayer.pipe(Layer.provide(ProviderHostLive.layer)),
+            ),
             Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
             Layer.provideMerge(
               Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),
@@ -3066,6 +3080,7 @@ it.layer(
               "codex",
               "cursor",
               "grok",
+              "hoplite",
               "muse",
               "opencode",
               "pi",

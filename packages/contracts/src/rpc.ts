@@ -25,6 +25,19 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
+import {
+  HopliteError,
+  HopliteListProjectsInput,
+  HopliteListProjectsResult,
+  HopliteListThreadsInput,
+  HopliteListThreadsResult,
+  HopliteImportThreadInput,
+  HopliteImportThreadResult,
+  HopliteReadInput,
+  HopliteReadResult,
+  HopliteMutateInput,
+  HopliteMutateResult,
+} from "./hoplite.ts";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   CodexAuthCallbackInput,
@@ -372,6 +385,11 @@ import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
 export const WS_METHODS = {
+  hopliteListProjects: "hoplite.listProjects",
+  hopliteListThreads: "hoplite.listThreads",
+  hopliteImportThread: "hoplite.importThread",
+  hopliteRead: "hoplite.read",
+  hopliteMutate: "hoplite.mutate",
   projectsList: "projects.list",
   projectsAdd: "projects.add",
   projectsRemove: "projects.remove",
@@ -1850,6 +1868,31 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
 ) {}
 
 export const WsRpcGroup = RpcGroup.make(
+  Rpc.make(WS_METHODS.hopliteListProjects, {
+    payload: HopliteListProjectsInput,
+    success: HopliteListProjectsResult,
+    error: Schema.Union([HopliteError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.hopliteListThreads, {
+    payload: HopliteListThreadsInput,
+    success: HopliteListThreadsResult,
+    error: Schema.Union([HopliteError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.hopliteImportThread, {
+    payload: HopliteImportThreadInput,
+    success: HopliteImportThreadResult,
+    error: Schema.Union([HopliteError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.hopliteRead, {
+    payload: HopliteReadInput,
+    success: HopliteReadResult,
+    error: Schema.Union([HopliteError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.hopliteMutate, {
+    payload: HopliteMutateInput,
+    success: HopliteMutateResult,
+    error: Schema.Union([HopliteError, EnvironmentAuthorizationError]),
+  }),
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,

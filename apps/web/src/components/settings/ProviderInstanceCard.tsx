@@ -60,6 +60,7 @@ import { ProviderAccentColorPicker } from "./ProviderAccentColorPicker";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
 import { AcpSessionManagementSection } from "./AcpSessionManagementSection";
+import { HopliteWorkspaceSection } from "./HopliteWorkspaceSection";
 import { FoldedSettingsSection } from "./FoldedSettingsSection";
 import { readCodexSetupMode } from "./CodexSetupSection.logic";
 import {
@@ -1246,6 +1247,24 @@ export function ProviderInstanceCard({
           provider={liveProvider}
           projects={acpProjects}
           readOnly={readOnly}
+        />
+      ) : null}
+
+      {environmentId !== undefined && instance.driver === "hoplite" ? (
+        <HopliteWorkspaceSection
+          key={`${environmentId}:${instanceId}`}
+          environmentId={environmentId}
+          instanceId={instanceId}
+          liveProvider={liveProvider}
+          projects={acpProjects}
+          readOnly={readOnly}
+          canConfigure={canWriteSettings}
+          {...(readConfigString(instance.config, "projectId")
+            ? { configuredProjectId: readConfigString(instance.config, "projectId")! }
+            : {})}
+          onSelectProject={(projectId) =>
+            updateConfig(nextConfigBlobWithValue(instance.config, "projectId", projectId))
+          }
         />
       ) : null}
 

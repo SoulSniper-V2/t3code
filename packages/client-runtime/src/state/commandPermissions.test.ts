@@ -13,6 +13,7 @@ import {
   ThreadId,
   EnvironmentId,
   ScheduledTaskId,
+  ProviderInstanceId,
   WS_METHODS,
   type AuthSessionState,
 } from "@t3tools/contracts";
@@ -49,6 +50,39 @@ const runtime = Atom.runtime(
   Layer.succeed(EnvironmentRegistry, {
     run: (_id: EnvironmentId, effect: Effect.Effect<unknown>) => effect,
   } as unknown as EnvironmentRegistry["Service"]),
+);
+it.effect("guards Hoplite management actions by their specific destination scope", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const registry = yield* setup;
+      const permissions = createCommandPermissions(runtime, WS_METHODS.hopliteMutate);
+      const input = {
+        instanceId: ProviderInstanceId.make("hoplite-work"),
+        idempotencyKey: "stable-write",
+        mutation: {
+          type: "setEnvironmentVariable" as const,
+          projectId: "remote",
+          key: "TOKEN",
+          value: "secret",
+        },
+      };
+      registry.set(sessions(env), AsyncResult.success(grant(true)));
+      expect(registry.get(permissions.permissionAtom(env, input))).toBe(false);
+      expect(yield* permissions.authorize(registry, env, input).pipe(Effect.flip)).toMatchObject({
+        requiredPermission: AuthSettingsWriteScope,
+      });
+      registry.set(
+        sessions(env),
+        AsyncResult.success({
+          ...grant(true),
+          scopes: [AuthSettingsWriteScope],
+          permissions: [AuthSettingsWriteScope],
+        }),
+      );
+      yield* permissions.authorize(registry, env, input);
+      expect(registry.get(permissions.permissionAtom(env, input))).toBe(true);
+    }),
+  ),
 );
 const permissions = createCommandPermissions(runtime, WS_METHODS.scheduledTasksDelete);
 const setup = Effect.gen(function* () {
