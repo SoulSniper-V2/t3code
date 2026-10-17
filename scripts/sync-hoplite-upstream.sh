@@ -37,7 +37,7 @@ checkout="$scratch/checkout"
 cleanup() {
   if [[ -d "$checkout" ]]; then
     git -C "$checkout" merge --abort >/dev/null 2>&1 || true
-    git -C "$root" worktree remove "$checkout" || true
+    git -C "$root" worktree remove --force "$checkout" || true
   fi
   rmdir "$scratch" 2>/dev/null || true
 }
