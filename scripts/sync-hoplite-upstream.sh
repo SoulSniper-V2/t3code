@@ -13,8 +13,8 @@ fi
 
 root=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)
 branch=feat/hoplite-provider
-origin=$(git -C "$root" remote get-url origin)
-upstream=$(git -C "$root" remote get-url upstream)
+origin=$(git -C "$root" config --get remote.origin.url)
+upstream=$(git -C "$root" config --get remote.upstream.url)
 case "$origin" in
   https://github.com/SoulSniper-V2/t3code|https://github.com/SoulSniper-V2/t3code.git|git@github.com:SoulSniper-V2/t3code.git) ;;
   *) printf 'Refusing to sync an unexpected fork remote.\n' >&2; exit 1 ;;
