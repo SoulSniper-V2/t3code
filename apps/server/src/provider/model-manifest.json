@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-10-09T23:31:10Z",
+  "updatedAt": "2026-10-17T22:00:00Z",
   "compatibility": [
     {
       "driver": "codex",
@@ -85,6 +85,15 @@
       "ranges": [
         { "range": ">=0.80.5", "status": "supported" },
         { "range": "<0.80.5", "status": "unsupported" }
+      ]
+    },
+    {
+      "driver": "hoplite",
+      "t3CodeRange": ">=0.1.0",
+      "recommendedRange": ">=3.5.1",
+      "ranges": [
+        { "range": ">=3.5.1", "status": "supported" },
+        { "range": "<3.5.1", "status": "unknown" }
       ]
     },
     {

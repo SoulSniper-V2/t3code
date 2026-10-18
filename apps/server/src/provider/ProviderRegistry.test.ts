@@ -3066,6 +3066,7 @@ it.layer(
               "codex",
               "cursor",
               "grok",
+              "hoplite",
               "muse",
               "opencode",
               "pi",

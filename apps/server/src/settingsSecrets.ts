@@ -9,6 +9,7 @@ import {
 import { acpRegistryClient } from "@t3tools/provider-acp-registry/client";
 import { cursorClient } from "@t3tools/provider-cursor/client";
 import { grokClient } from "@t3tools/provider-grok/client";
+import { hopliteClient } from "@t3tools/provider-hoplite/client";
 import { museClient } from "@t3tools/provider-muse/client";
 import { openCodeClient } from "@t3tools/provider-opencode/client";
 import { piClient } from "@t3tools/provider-pi/client";
@@ -25,7 +26,15 @@ const providerSecretFields = new Map([
   ["codex", secretSettingsFields(CodexSettings)],
   ["claudeAgent", secretSettingsFields(ClaudeSettings)],
   ["antigravity", secretSettingsFields(AntigravitySettings)],
-  ...[cursorClient, grokClient, museClient, openCodeClient, piClient, acpRegistryClient].map(
+  ...[
+    cursorClient,
+    grokClient,
+    hopliteClient,
+    museClient,
+    openCodeClient,
+    piClient,
+    acpRegistryClient,
+  ].map(
     (definition) =>
       [definition.driverKind, secretSettingsFields(definition.settingsSchema)] as const,
   ),
