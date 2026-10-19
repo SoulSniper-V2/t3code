@@ -3,7 +3,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
 export class TurnItemPositionStoreError extends Schema.TaggedError<TurnItemPositionStoreError>()(
   "TurnItemPositionStoreError",
@@ -46,6 +46,14 @@ export const layer: Layer.Layer<TurnItemPositionStoreV2, never, SqlClient.SqlCli
       runOrdinal: suppliedRunOrdinal,
     }) =>
       Effect.gen(function* () {
+        const existing = yield* sql<{ readonly ordinal: number }>`
+          SELECT ordinal
+          FROM orchestration_v2_turn_item_positions
+          WHERE thread_id = ${threadId} AND turn_item_id = ${turnItemId}
+          LIMIT 1
+        `;
+        if (existing[0] !== undefined) return existing[0].ordinal;
+
         const runRows =
           runId === null
             ? []

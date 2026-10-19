@@ -1,3 +1,4 @@
+import { SourceControlProviderKind } from "@t3tools/contracts";
 import type { VcsStatusRemoteResult, VcsStatusResult } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -5,10 +6,13 @@ import {
   applyGitStatusStreamEvent,
   formatGeneratedBranchName,
   buildTemporaryWorktreeBranchName,
+  flattenTemporaryWorktreeBranchName,
   isTemporaryWorktreeBranch,
   normalizeGitRemoteUrl,
   parseGitHubRepositoryNameWithOwnerFromRemoteUrl,
   parseOriginUrlFromGitConfig,
+  resolveAutoFeatureBranchName,
+  sanitizeFeatureBranchName,
   WORKTREE_BRANCH_PREFIX,
 } from "./git.ts";
 
@@ -74,8 +78,6 @@ describe("normalizeGitRemoteUrl", () => {
   });
 
   it("leaves an Azure SSH host it cannot read as the path it was given", () => {
-    // Not `v3`, and not four segments: rewriting either would invent a repository that the web
-    // spelling has no name for, so the remote stands as it arrived.
     expect(normalizeGitRemoteUrl("git@ssh.dev.azure.com:v4/T3Tools/Platform/T3Code")).toBe(
       "ssh.dev.azure.com/v4/t3tools/platform/t3code",
     );
@@ -116,7 +118,6 @@ describe("parseOriginUrlFromGitConfig", () => {
     expect(parseOriginUrlFromGitConfig("[remote.origin]\n\turl = git@github.com:a/b.git\n")).toBe(
       "git@github.com:a/b.git",
     );
-    // Git folds the dotted form to lowercase but keeps quoted names as written.
     expect(parseOriginUrlFromGitConfig("[remote.Origin]\n\turl = git@github.com:a/b.git\n")).toBe(
       "git@github.com:a/b.git",
     );
@@ -189,21 +190,35 @@ describe("isTemporaryWorktreeBranch", () => {
     );
   });
 
-  it("matches legacy UUID-shaped temporary worktree refs from older mobile builds", () => {
+  it("matches legacy t3code temporary worktree refs", () => {
+    expect(isTemporaryWorktreeBranch("t3code/deadbeef")).toBe(true);
+    expect(isTemporaryWorktreeBranch("t3code-deadbeef")).toBe(true);
+    expect(isTemporaryWorktreeBranch("t3code/f4ae4e0e-f971-4d48-b4f2-9cf0aa54ab12")).toBe(true);
     expect(
       isTemporaryWorktreeBranch(`${WORKTREE_BRANCH_PREFIX}/f4ae4e0e-f971-4d48-b4f2-9cf0aa54ab12`),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("rejects UUID-shaped refs that are not RFC 4122 v4", () => {
-    // version nibble is not 4
-    expect(
-      isTemporaryWorktreeBranch(`${WORKTREE_BRANCH_PREFIX}/f4ae4e0e-f971-1d48-b4f2-9cf0aa54ab12`),
-    ).toBe(false);
-    // variant nibble is not [89ab]
-    expect(
-      isTemporaryWorktreeBranch(`${WORKTREE_BRANCH_PREFIX}/f4ae4e0e-f971-4d48-c4f2-9cf0aa54ab12`),
-    ).toBe(false);
+    expect(isTemporaryWorktreeBranch("t3code/f4ae4e0e-f971-1d48-b4f2-9cf0aa54ab12")).toBe(false);
+    expect(isTemporaryWorktreeBranch("t3code/f4ae4e0e-f971-4d48-c4f2-9cf0aa54ab12")).toBe(false);
+  });
+
+  it("matches the flat fallback used when a plain t3 branch exists", () => {
+    const flat = flattenTemporaryWorktreeBranchName(`${WORKTREE_BRANCH_PREFIX}/deadbeef`);
+    expect(flat).toBe(`${WORKTREE_BRANCH_PREFIX}-deadbeef`);
+    expect(isTemporaryWorktreeBranch(flat)).toBe(true);
+    expect(isTemporaryWorktreeBranch(`${WORKTREE_BRANCH_PREFIX}-deadbeef-extra`)).toBe(false);
+    expect(isTemporaryWorktreeBranch(`${WORKTREE_BRANCH_PREFIX}-feature`)).toBe(false);
+    expect(flattenTemporaryWorktreeBranchName("t3code/f4ae4e0e-f971-4d48-b4f2-9cf0aa54ab12")).toBe(
+      `${WORKTREE_BRANCH_PREFIX}-f4ae4e0e`,
+    );
+    expect(flattenTemporaryWorktreeBranchName("t3code-deadbeef")).toBe(
+      `${WORKTREE_BRANCH_PREFIX}-deadbeef`,
+    );
+    expect(flattenTemporaryWorktreeBranchName("t3code/deadbeef")).toBe(
+      `${WORKTREE_BRANCH_PREFIX}-deadbeef`,
+    );
   });
 
   it("rejects non-temporary refName names", () => {
@@ -240,7 +255,7 @@ describe("applyGitStatusStreamEvent", () => {
     const current: VcsStatusResult = {
       isRepo: true,
       sourceControlProvider: {
-        kind: "github",
+        kind: SourceControlProviderKind.make("github"),
         name: "GitHub",
         baseUrl: "https://github.com",
       },
@@ -273,6 +288,59 @@ describe("applyGitStatusStreamEvent", () => {
       behindCount: 1,
       pr: null,
     });
+  });
+});
+
+describe("sanitizeFeatureBranchName", () => {
+  it.each(["feature", "fix", "team/jules"])("preserves the %s namespace", (namespace) => {
+    expect(sanitizeFeatureBranchName(`${namespace}/refine-toolbar`)).toBe(
+      `${namespace}/refine-toolbar`,
+    );
+  });
+
+  it("sanitizes an explicit namespace before preserving it", () => {
+    expect(sanitizeFeatureBranchName(' "FIX//Calendar recruitment filter" ')).toBe(
+      "fix/calendar-recruitment-filter",
+    );
+  });
+
+  it.each([
+    ["refine toolbar", "feature/refine-toolbar"],
+    ["", "feature/update"],
+    [" /?. / ", "feature/update"],
+    ["fix///", "feature/fix"],
+  ])("keeps the fallback for unprefixed input %s", (input, expected) => {
+    expect(sanitizeFeatureBranchName(input)).toBe(expected);
+  });
+
+  it("keeps the existing length limit for namespaced branches", () => {
+    expect(sanitizeFeatureBranchName(`fix/${"x".repeat(80)}`)).toBe(`fix/${"x".repeat(60)}`);
+  });
+});
+
+describe("resolveAutoFeatureBranchName", () => {
+  it("resolves case-insensitive collisions within the generated namespace", () => {
+    expect(
+      resolveAutoFeatureBranchName(
+        ["FIX/refine-toolbar", "fix/refine-toolbar-2"],
+        "fix/refine-toolbar",
+      ),
+    ).toBe("fix/refine-toolbar-3");
+  });
+
+  it("keeps the fallback when no preferred branch is supplied", () => {
+    expect(resolveAutoFeatureBranchName(["feature/update"])).toBe("feature/update-2");
+  });
+
+  it.each([
+    ["fix/name", ["fix"], "fix-2/name"],
+    ["team/jules/fix/name", ["team/jules"], "team/jules-2/fix/name"],
+    ["fix/name", ["fix/name/child"], "fix/name-2"],
+    ["FIX/name", ["FIX", "FIX-2"], "fix-3/name"],
+    ["fix/name", ["fixes", "fix/name-extra/child"], "fix/name"],
+    [undefined, ["feature", "feature-2"], "feature-3/update"],
+  ])("resolves %s against namespace blockers %j", (preferredBranch, existingNames, expected) => {
+    expect(resolveAutoFeatureBranchName(existingNames, preferredBranch)).toBe(expected);
   });
 });
 

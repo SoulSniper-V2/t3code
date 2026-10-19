@@ -1,12 +1,12 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   connectionCatalogDisplayUrl,
+  hasRelayRoute,
   type EnvironmentPresentation as BaseEnvironmentPresentation,
 } from "@t3tools/client-runtime/connection";
 import { Discovery } from "@t3tools/client-runtime/relay";
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
-import { useMemo } from "react";
 
 import { environmentCatalog } from "../connection/catalog";
 import {
@@ -34,7 +34,7 @@ function projectEnvironmentPresentation(
     environmentId,
     label: presentation.entry.target.label,
     displayUrl: connectionCatalogDisplayUrl(presentation.entry),
-    relayManaged: presentation.entry.target._tag === "RelayConnectionTarget",
+    relayManaged: hasRelayRoute(presentation.entry),
   };
 }
 
@@ -43,12 +43,8 @@ export function useEnvironments() {
   const networkStatus = useAtomValue(environmentCatalog.networkStatusValueAtom);
   const presentationById = useAtomValue(environmentPresentations.presentationsAtom);
 
-  const environments = useMemo(
-    () =>
-      [...presentationById.entries()].map(([environmentId, presentation]) =>
-        projectEnvironmentPresentation(environmentId, presentation),
-      ),
-    [presentationById],
+  const environments = [...presentationById.entries()].map(([environmentId, presentation]) =>
+    projectEnvironmentPresentation(environmentId, presentation),
   );
 
   return {
@@ -59,6 +55,11 @@ export function useEnvironments() {
   };
 }
 
+/** Provider statuses change on every push, so they live apart from the presentations. */
+export function useEnvironmentProviders() {
+  return useAtomValue(environmentPresentations.providersByEnvironmentAtom);
+}
+
 export function usePrimaryEnvironmentId(): EnvironmentId | null {
   return useAtomValue(primaryEnvironmentIdAtom);
 }
@@ -67,13 +68,9 @@ export function useEnvironment(
   environmentId: EnvironmentId | null,
 ): EnvironmentPresentation | null {
   const { presentation } = useEnvironmentPresentation(environmentId);
-  return useMemo(
-    () =>
-      environmentId === null || presentation === null
-        ? null
-        : projectEnvironmentPresentation(environmentId, presentation),
-    [environmentId, presentation],
-  );
+  return environmentId === null || presentation === null
+    ? null
+    : projectEnvironmentPresentation(environmentId, presentation);
 }
 
 export function usePrimaryEnvironment(): EnvironmentPresentation | null {

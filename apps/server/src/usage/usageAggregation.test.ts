@@ -1,8 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { UsageAggregator } from "./usageAggregation.ts";
+import { resolveModelAliases, UsageAggregator } from "./usageAggregation.ts";
 import type { RateTable } from "./usagePricing.ts";
-import type { UsageRecord } from "./usageTranscripts.ts";
+import type { UsageRecord } from "@t3tools/provider-core/server/usage";
 
 const rates: RateTable = new Map([
   [
@@ -26,7 +26,6 @@ const rates: RateTable = new Map([
 function record(overrides: Partial<UsageRecord> = {}): UsageRecord {
   return {
     provider: "claude",
-    // 2026-08-07T04:05Z is still Aug 6 in Los Angeles.
     timestampMs: Date.parse("2026-08-07T04:05:13.944Z"),
     model: "claude-fable-5",
     sessionId: "session-a",
@@ -85,7 +84,6 @@ describe("UsageAggregator", () => {
   it("splits a bucket's cost by category and speed", () => {
     const [bucket] = aggregate([record(), record({ speed: "fast" })]).buckets;
 
-    // Standard costs $0.005625 and fast twice that.
     expect(bucket).toMatchObject({
       costUsd: expect.closeTo(0.016875),
       categoryCostUsd: {
@@ -126,6 +124,39 @@ describe("UsageAggregator", () => {
 
     expect(utc.buckets[0]?.day).toBe("2026-08-07");
     expect(losAngeles.buckets[0]?.day).toBe("2026-08-06");
+  });
+
+  it("finds the day at a quarter-hour zone's midnight across interleaved buckets", () => {
+    const result = aggregate(
+      [
+        record({ timestampMs: Date.parse("2026-08-01T18:14:59.999Z") }),
+        record({ timestampMs: Date.parse("2026-08-01T18:15:00.000Z") }),
+        record({ timestampMs: Date.parse("2026-08-01T18:15:00.000Z"), model: "claude-opus-5" }),
+        record({ timestampMs: Date.parse("2026-08-01T18:16:00.000Z") }),
+      ],
+      "Asia/Kathmandu",
+    );
+
+    expect(result.buckets.map((bucket) => [bucket.day, bucket.model, bucket.records])).toEqual([
+      ["2026-08-01", "claude-fable-5", 1],
+      ["2026-08-02", "claude-fable-5", 2],
+      ["2026-08-02", "claude-opus-5", 1],
+    ]);
+  });
+
+  it("finds the day at a fixed offset's midnight between quarter hours", () => {
+    const result = aggregate(
+      [
+        record({ timestampMs: Date.parse("2026-08-01T23:58:59.999Z") }),
+        record({ timestampMs: Date.parse("2026-08-01T23:59:00.000Z") }),
+      ],
+      "+00:01",
+    );
+
+    expect(result.buckets.map((bucket) => [bucket.day, bucket.records])).toEqual([
+      ["2026-08-01", 1],
+      ["2026-08-02", 1],
+    ]);
   });
 
   it("splits an hourly request into fixed buckets anchored to its exact start", () => {
@@ -177,7 +208,6 @@ describe("UsageAggregator", () => {
   it("prices against the rate table", () => {
     const result = aggregate([record()]);
 
-    // 100*1e-5 + 1000*1e-6 + 10*1.25e-5 + 50*5e-5
     expect(result.buckets[0]?.costUsd).toBeCloseTo(0.004625, 9);
     expect(result.buckets[0]?.costSource).toBe("modelPriced");
   });
@@ -218,6 +248,25 @@ describe("UsageAggregator", () => {
     expect(aggregator.add(record({ timestampMs: Date.parse("2026-07-01T12:00:00Z") }))).toBe(false);
   });
 
+  it("folds a mapped model into its target and prices it there", () => {
+    const aggregator = new UsageAggregator({
+      timeZone: "UTC",
+      sinceDay: "2026-08-01",
+      untilDay: "2026-08-31",
+      rates,
+      modelAliases: resolveModelAliases({ "example-preview": "claude-fable-5" }),
+    });
+    aggregator.add(record());
+    aggregator.add(record({ model: "example-preview", rateModel: "example-preview-high" }));
+    const result = aggregator.finish();
+
+    expect(result.buckets).toHaveLength(1);
+    expect(result.buckets[0]?.model).toBe("claude-fable-5");
+    expect(result.buckets[0]?.records).toBe(2);
+    expect(result.buckets[0]?.costUsd).toBeCloseTo(0.00925, 9);
+    expect(result.buckets[0]?.unpricedRecords).toBe(0);
+  });
+
   it("separates providers and models into their own buckets", () => {
     const result = aggregate([
       record(),
@@ -226,5 +275,25 @@ describe("UsageAggregator", () => {
     ]);
 
     expect(result.buckets).toHaveLength(3);
+  });
+});
+
+describe("resolveModelAliases", () => {
+  it("follows chains to the final model and drops chains that enter a loop", () => {
+    expect(
+      resolveModelAliases({
+        "preview[1m]": "preview",
+        preview: "example-model",
+        loop: "back",
+        back: "loop",
+        intoLoop: "loop",
+        self: "self",
+      }),
+    ).toEqual(
+      new Map([
+        ["preview[1m]", "example-model"],
+        ["preview", "example-model"],
+      ]),
+    );
   });
 });

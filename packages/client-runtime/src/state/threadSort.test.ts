@@ -116,7 +116,6 @@ describe("sortSettledThreads", () => {
       settled({
         id: "settled-first",
         settledAt: "2026-03-09T10:00:00.000Z",
-        // Created/active later than the other thread: settle time must win.
         latestUserMessageAt: "2026-03-09T09:59:00.000Z",
       }),
       settled({
@@ -178,13 +177,10 @@ describe("sortSettledThreads", () => {
       { updatedAt: "2026-03-09T09:00:00.000Z" },
       { updatedAt: "invalid" },
     ];
-    // Ids repeat every 3 rows and stamps every 5, so rows tie on the time,
-    // on the id, and on both. (index * 7) % 30 scrambles the input order.
     const threads = Array.from({ length: 30 }, (_, index) => {
       const row = (index * 7) % 30;
       return { ...settled({ id: `thread-${row % 3}`, ...stamps[row % 5] }), row };
     });
-    // The comparator this sort replaced: it resolved both keys on every call.
     const timestampMs = (thread: SettledThreadTimestampInput) => {
       const timestamp = resolveSettledThreadTimestamp(thread);
       return timestamp === null ? 0 : Date.parse(timestamp);

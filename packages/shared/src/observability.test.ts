@@ -3,6 +3,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -13,6 +15,8 @@ import * as Ref from "effect/Ref";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
+import * as TestClock from "effect/testing/TestClock";
+import { vi } from "vite-plus/test";
 
 import {
   causeErrorTag,
@@ -99,7 +103,7 @@ const readTraceRecords = Effect.fn("readTraceRecords")(function* (tracePath: str
     .map((line) => decodeTraceRecordLine(line));
 });
 
-const makeTestLayer = (tracePath: string) =>
+const layerTest = (tracePath: string) =>
   Layer.mergeAll(
     Layer.effect(
       Tracer.Tracer,
@@ -131,7 +135,6 @@ describe("truncateTraceAttributes", () => {
     const error = truncated["error"] as { stack: string; nested: Array<string> };
     assert.equal(error.stack.length, 500 + "…[truncated]".length);
     assert.equal(error.nested[0]?.length, 500 + "…[truncated]".length);
-    // Input is untouched: the live span's attributes are shared.
     assert.equal(attributes.error.stack, stack);
   });
 
@@ -239,7 +242,7 @@ describe("observability", () => {
             sampled ? [{ _tag: "Success" }] : [],
           );
         }
-      }),
+      }).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("preserves failure and interruption causes in spans and exported traces", () =>
@@ -287,7 +290,7 @@ describe("observability", () => {
         }
         assert.equal(records[0]?.exit._tag, Cause.hasInterrupts(cause) ? "Interrupted" : "Failure");
       }
-    }),
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it("normalizes circular arrays, maps, and sets without recursing forever", () => {
@@ -328,6 +331,61 @@ describe("observability", () => {
   });
 
   nodeServicesIt("node services", (it) => {
+    it.effect(
+      "keeps trace producers responsive during a slow write, bounds the backlog, and drains on close",
+      () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const directory = yield* fs.makeTempDirectoryScoped({
+              prefix: "t3-trace-backpressure-",
+            });
+            const tracePath = path.join(directory, "trace.ndjson");
+            const started = yield* Deferred.make<void>();
+            const release = yield* Deferred.make<void>();
+            const closed = yield* Ref.make(false);
+            const sink = yield* makeTraceSink({
+              filePath: tracePath,
+              maxBytes: 5_000_000,
+              maxFiles: 2,
+              batchWindowMs: 10_000,
+            }).pipe(
+              Effect.provideService(FileSystem.FileSystem, {
+                ...fs,
+                writeFile: (file, data, options) =>
+                  Effect.gen(function* () {
+                    yield* Deferred.succeed(started, undefined);
+                    yield* Deferred.await(release);
+                    yield* fs.writeFile(file, data, options);
+                  }),
+              }),
+            );
+            sink.push(makeRecord("first"));
+            const flushing = yield* Effect.forkChild(sink.flush);
+            yield* Deferred.await(started);
+            for (let index = 0; index < 2_000; index++)
+              sink.push(makeRecord("small", String(index)));
+            for (let index = 0; index < 3; index++)
+              sink.push({ ...makeRecord("large"), attributes: { payload: "x".repeat(2_000_000) } });
+            const closing = yield* Effect.forkChild(
+              sink.close().pipe(Effect.tap(() => Ref.set(closed, true))),
+            );
+            yield* Effect.yieldNow;
+            assert.isFalse(yield* Ref.get(closed));
+            yield* Deferred.succeed(release, undefined);
+            yield* Fiber.join(flushing);
+            yield* Fiber.join(closing);
+            const records = yield* readTraceRecords(tracePath);
+            assert.deepStrictEqual(
+              records.map((record) => record.name),
+              ["first", ...Array.from({ length: 2_000 }, () => "small"), "large", "large"],
+            );
+            assert.isTrue(yield* Ref.get(closed));
+          }),
+        ),
+    );
+
     it.effect("flushes buffered trace records on close", () =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -527,6 +585,96 @@ describe("observability", () => {
       ),
     );
 
+    it.effect("drops records after a failed write and logs once per failure episode", () => {
+      const logs: Array<{ readonly logLevel: string; readonly message: unknown }> = [];
+      const captureLogs = Logger.make(({ logLevel, message }) => {
+        logs.push({ logLevel, message });
+      });
+      const spans: Array<Tracer.NativeSpan> = [];
+      const recordingTracer = Tracer.make({
+        span: (options) => {
+          const span = new Tracer.NativeSpan(options);
+          spans.push(span);
+          return span;
+        },
+      });
+
+      return Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-trace-sink-" });
+        const tracePath = path.join(tempDir, "shared.trace.ndjson");
+        yield* fileSystem.makeDirectory(tracePath);
+        const write = vi.spyOn(fileSystem, "writeFile");
+        yield* Effect.addFinalizer(() => Effect.sync(() => write.mockRestore()));
+
+        const sink = yield* makeTraceSink({
+          filePath: tracePath,
+          maxBytes: 1024 * 1024,
+          maxFiles: 2,
+          batchWindowMs: 1_000,
+        }).pipe(Effect.withTracer(recordingTracer));
+
+        for (let index = 0; index < 1_024; index += 1) {
+          sink.push(makeRecord("lost", String(index)));
+        }
+        yield* sink.flush;
+        for (let index = 0; index < 5; index += 1) {
+          sink.push(makeRecord("lost"));
+          yield* TestClock.adjust("1 second");
+          yield* sink.flush;
+        }
+
+        assert.deepStrictEqual(
+          write.mock.calls.map(([, chunk]) => Buffer.from(chunk).toString().split("\n").length - 1),
+          [1024, 1, 1, 1, 1, 1],
+        );
+        expect(logs).toEqual([
+          { logLevel: "Warn", message: [expect.any(String), { filePath: tracePath }] },
+        ]);
+
+        yield* fileSystem.remove(tracePath, { recursive: true });
+        sink.push(makeRecord("recovered"));
+        yield* TestClock.adjust("1 second");
+        yield* sink.flush;
+
+        const records = yield* readTraceRecords(tracePath);
+        assert.deepStrictEqual(
+          records.map((record) => record.name),
+          ["recovered"],
+        );
+        expect(logs[1]).toEqual({
+          logLevel: "Info",
+          message: [expect.any(String), { filePath: tracePath, droppedCount: 1_029 }],
+        });
+
+        sink.push(makeRecord("healthy"));
+        yield* TestClock.adjust("1 second");
+        yield* sink.flush;
+        expect(logs).toHaveLength(2);
+
+        yield* fileSystem.remove(tracePath);
+        yield* fileSystem.makeDirectory(tracePath);
+        sink.push(makeRecord("lost-again"));
+        yield* TestClock.adjust("1 second");
+        yield* sink.flush;
+        assert.deepStrictEqual(
+          logs.map((log) => log.logLevel),
+          ["Warn", "Info", "Warn"],
+        );
+
+        assert.deepStrictEqual(
+          spans.map((span) => [span.name, span.events.length]),
+          [["makeTraceSink", 0]],
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Logger.layer([captureLogs, Logger.tracerLogger], { mergeWithExisting: false }),
+        ),
+      );
+    });
+
     it.effect("writes nested spans to disk and captures log messages as span events", () =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -550,7 +698,7 @@ describe("observability", () => {
                 }).pipe(Effect.withSpan("child-span"));
               }).pipe(Effect.withSpan("parent-span"));
 
-              yield* program.pipe(Effect.provide(makeTestLayer(tracePath)));
+              yield* program.pipe(Effect.provide(layerTest(tracePath)));
             }),
           );
 
@@ -597,7 +745,7 @@ describe("observability", () => {
             Effect.exit(
               Effect.interrupt.pipe(
                 Effect.withSpan("interrupt-span"),
-                Effect.provide(makeTestLayer(tracePath)),
+                Effect.provide(layerTest(tracePath)),
               ),
             ),
           );

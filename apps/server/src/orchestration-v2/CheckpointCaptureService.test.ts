@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
 import {
   CheckpointId,
@@ -19,20 +20,20 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import { VcsProcessTimeoutError } from "@t3tools/contracts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as CheckpointCaptureService from "./CheckpointCaptureService.ts";
 import * as EventSink from "./EventSink.ts";
-import * as IdAllocator from "./IdAllocator.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
-const ProjectionStoreTestLayer = Layer.mergeAll(
-  ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
-  SqlitePersistenceMemory,
+const layerProjectionStoreTest = Layer.mergeAll(
+  ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
+  SqlitePersistence.layerMemory,
 );
 
 const threadId = ThreadId.make("thread:checkpoint-capture-delegated");
@@ -50,7 +51,7 @@ const modelSelection = {
   model: "gpt-5.4",
 } as const;
 
-it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
+it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
   it.effect.each([false, true])(
     "captures without decoding history or losing newer delegated completion, ref lookup fails=%s",
     (refLookupFails) =>
@@ -89,7 +90,6 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
           completedAt: null,
           checkpointId: null,
           contextHandoffId: null,
-          // Snapshot taken before a concurrent cohort advanced during capture work.
           delegatedCompletion: staleDelegatedCompletion,
         };
         const rootNode = {
@@ -265,7 +265,7 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
         );
 
         const committed = yield* Ref.make<ReadonlyArray<OrchestrationV2DomainEvent>>([]);
-        const captureLayer = CheckpointCaptureService.layer.pipe(
+        const layerCapture = CheckpointCaptureService.layer.pipe(
           Layer.provide(
             Layer.mergeAll(
               IdAllocator.layer,
@@ -274,7 +274,9 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
                     Layer.provide(
                       Layer.mergeAll(
                         IdAllocator.layer,
+                        NodeCrypto.layer,
                         Layer.mock(CheckpointStore.CheckpointStore)({
+                          listAuthoredPaths: () => Effect.succeed(null),
                           isGitRepository: () => Effect.succeed(true),
                           captureCheckpoint: () => Effect.void,
                           hasCheckpointRef: () =>
@@ -319,7 +321,6 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
             .execute({ threadId, runId, scopeId: CheckpointScopeId.make("missing-scope") })
             .pipe(Effect.flip);
           assert.instanceOf(incomplete, CheckpointCaptureService.CheckpointCaptureExecutionError);
-          // Capture reads the waiting run while the projection still holds the stale cohort.
           yield* service.execute({ threadId, runId, scopeId });
 
           const events = yield* Ref.get(committed);
@@ -343,8 +344,6 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
             "checkpoint capture must omit delegatedCompletion so ProjectionStore can keep a newer cohort",
           );
 
-          // Race: a newer cohort lands on the projection after capture read the stale
-          // waiting run and before the capture command's run.updated is applied.
           yield* projectionStore.apply({
             id: EventId.make("event:checkpoint-capture:newer-cohort"),
             type: "run.updated",
@@ -359,7 +358,6 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
             },
           });
 
-          // Apply the real capture-emitted run.updated through ProjectionStore.
           yield* projectionStore.apply(runUpdated);
 
           const projectedRun = (yield* projectionStore.getCheckpointCaptureContext(threadId, {
@@ -372,17 +370,13 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
           assert.deepEqual(projectedRun?.delegatedCompletion, newerCohort);
           assert.equal(projectedRun?.delegatedCompletion?.delivery?.messageId, deliveryMessageId);
           assert.deepEqual(projectedRun?.delegatedCompletion?.delivery?.taskIds, [taskId]);
-          // The persisted completion is the at-least-once capture receipt.
           yield* Ref.set(committed, []);
           yield* service.execute({ threadId, runId, scopeId });
           assert.deepEqual(yield* Ref.get(committed), []);
-        }).pipe(Effect.provide(captureLayer));
+        }).pipe(Effect.provide(layerCapture));
       }),
   );
 
-  // Capture and rollback share the thread's effect lane, so a rollback can only
-  // commit before a capture runs: while it waits out a retry, or when a restart
-  // requeues it behind a pending rollback. It must not revive the run.
   it.effect("does not capture a stopped run that a rollback already discarded", () =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
@@ -439,7 +433,6 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
         checkpointId: null,
         contextHandoffId: null,
       };
-      // The rollback's write, which landed before the capture ran.
       yield* projectionStore.apply({
         id: EventId.make("event:checkpoint-capture-rolled-back:run"),
         type: "run.updated",
@@ -451,7 +444,7 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
       });
 
       const committed = yield* Ref.make<ReadonlyArray<OrchestrationV2DomainEvent>>([]);
-      const captureLayer = CheckpointCaptureService.layer.pipe(
+      const layerCapture = CheckpointCaptureService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
             IdAllocator.layer,
@@ -467,12 +460,11 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
         ),
       );
 
-      // Settles without retrying, and commits nothing that would revive the run.
       yield* CheckpointCaptureService.CheckpointCaptureServiceV2.pipe(
         Effect.flatMap((service) =>
           service.execute({ threadId: stoppedThreadId, runId: stoppedRunId, scopeId }),
         ),
-        Effect.provide(captureLayer),
+        Effect.provide(layerCapture),
       );
 
       assert.deepEqual(yield* Ref.get(committed), []);
@@ -485,8 +477,6 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
     }),
   );
 
-  // A cancelled run's checkpoint is the rollback point for the message after
-  // it, so capture records it without reporting the run as completed.
   it.effect("records the checkpoint of a cancelled run and keeps it cancelled", () =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
@@ -637,8 +627,6 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
           capturedAt: now,
         },
       });
-      // The turn runs, then finalizes as cancelled the way RunExecutionService
-      // writes it, which also enqueues this capture.
       for (const [status, completedAt] of [
         ["running", null],
         ["cancelled", cancelledAt],
@@ -680,7 +668,7 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
         capturedAt: cancelledAt,
       };
       const commits = yield* Ref.make(0);
-      const captureLayer = CheckpointCaptureService.layer.pipe(
+      const layerCapture = CheckpointCaptureService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
             IdAllocator.layer,
@@ -689,8 +677,6 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
                 Effect.die("baseline materialization must be skipped when ordinal 0 is ready"),
               capture: () => Effect.succeed(captured),
             }),
-            // Commit straight into the projection so the test reads what a
-            // client would see after the capture lands.
             Layer.mock(EventSink.EventSinkV2)({
               commitCommand: (input) =>
                 Effect.forEach(input.events, (event) => projectionStore.apply(event)).pipe(
@@ -710,13 +696,12 @@ it.layer(ProjectionStoreTestLayer)("CheckpointCaptureServiceV2", (it) => {
           runId: cancelledRunId,
           scopeId: cancelledScopeId,
         });
-        // A redelivered effect finds the recorded checkpoint and commits nothing.
         yield* service.execute({
           threadId: cancelledThreadId,
           runId: cancelledRunId,
           scopeId: cancelledScopeId,
         });
-      }).pipe(Effect.provide(captureLayer));
+      }).pipe(Effect.provide(layerCapture));
 
       assert.equal(yield* Ref.get(commits), 1);
       const projected = yield* projectionStore.getCheckpointCaptureContext(cancelledThreadId, {

@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import type { PendingThreadRequests } from "@t3tools/client-runtime/state/thread-requests";
 import type { EnvironmentThread } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentId, OrchestrationV2ThreadProjection, ThreadId } from "@t3tools/contracts";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 
 import { environmentThreadDetails, useEnvironmentThread } from "./threads";
 import { useThreadSelection } from "./use-thread-selection";
@@ -23,10 +23,6 @@ export function useThreadDetail(target: ThreadDetailTarget) {
   return useEnvironmentThread(target.environmentId, target.threadId);
 }
 
-/**
- * The selection owns the subscription so it can hold it back while a queued
- * creation has not reached the server yet.
- */
 export function useSelectedThreadDetailState() {
   const { selectedThreadDetailRef } = useThreadSelection();
   return useEnvironmentThread(

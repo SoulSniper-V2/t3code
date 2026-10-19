@@ -5,7 +5,6 @@ import type {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-/** Only a failed root turn of the current run owns the thread's failure state. */
 export function latestRootProviderFailure(
   run: OrchestrationV2Run | null,
   turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
@@ -32,7 +31,6 @@ export function latestRootProviderFailure(
   return latest?.failure ?? null;
 }
 
-/** A distinct session failure supersedes the turn's classification. */
 export function threadErrorSummary(
   failure: OrchestrationV2ProviderFailure | null,
   sessionError: string | null,
@@ -55,16 +53,28 @@ export function latestExecutedRun(
   for (const run of runs) {
     if (run.status === "queued") continue;
     if (run.status === "cancelled" && run.startedAt === null) continue;
-    if (latest === null || run.ordinal > latest.ordinal) latest = run;
+    if (latest === null || runRanAfter(run, latest)) latest = run;
   }
   return latest;
 }
 
 /**
- * The latest run that actually started, when it stopped because the
- * subscription limit was reached. Queued messages after that run must stay
- * queued instead of being sent into the same limit.
+ * Ordinals follow submission, but a run can start ahead of a held queue (a
+ * restart continuation, or a message sent while the queue is held), so a queued
+ * run resumed later can have a lower ordinal than one that already ended. An
+ * unfinished run is the latest.
  */
+export function runRanAfter(
+  run: Pick<OrchestrationV2Run, "ordinal" | "completedAt">,
+  other: Pick<OrchestrationV2Run, "ordinal" | "completedAt">,
+): boolean {
+  const end = (candidate: typeof run) =>
+    !candidate.completedAt
+      ? Number.POSITIVE_INFINITY
+      : DateTime.toEpochMillis(candidate.completedAt);
+  return end(run) === end(other) ? run.ordinal > other.ordinal : end(run) > end(other);
+}
+
 export function usageLimitBlockedRun(
   runs: ReadonlyArray<OrchestrationV2Run>,
   turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
@@ -90,11 +100,6 @@ export function usageLimitRunPresentedAsLatest(
   return blocked !== null && runs.some((run) => run.ordinal > blocked.ordinal) ? blocked : null;
 }
 
-/**
- * The newest run that is not waiting in a held queue, or null when only held
- * runs exist. A held queue waits for the user, so its runs never stand for the
- * thread's outcome. The SQL thread shell selects the same run.
- */
 export function latestUnheldRun(
   runs: ReadonlyArray<OrchestrationV2Run>,
 ): OrchestrationV2Run | null {

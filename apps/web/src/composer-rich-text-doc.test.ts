@@ -2,11 +2,18 @@ import { getSchemaByResolvedExtensions, Node, resolveExtensions } from "@tiptap/
 import StarterKit from "@tiptap/starter-kit";
 import { TaskList } from "@tiptap/extension-task-list";
 import { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { EditorState, TextSelection } from "@tiptap/pm/state";
+import { splitBlockKeepMarks } from "@tiptap/pm/commands";
 import { describe, expect, it } from "vite-plus/test";
 
 import { detectComposerTrigger, replaceTextRange } from "./composer-logic";
 import {
   buildDocJson,
+  buildTiptapContent,
+  caretTakesMarksBefore,
+  ComposerBlockExtensions,
+  ComposerCodeBlockExtension,
+  ComposerListExtensions,
   collapsedToFlat,
   ComposerCodeExtension,
   ComposerTaskItemExtension,
@@ -15,6 +22,8 @@ import {
   flatToPm,
   pmToFlat,
   serializeEditorDoc,
+  serializeSelection,
+  stepCaretAcrossStyledEdge,
 } from "./composer-rich-text-doc";
 import { formatTerminalContextReference } from "./lib/terminalContext";
 
@@ -63,6 +72,9 @@ const schema = getSchemaByResolvedExtensions(
     }),
     TaskList,
     ComposerTaskItemExtension,
+    ComposerCodeBlockExtension,
+    ...ComposerListExtensions,
+    ...ComposerBlockExtensions,
   ]),
 );
 
@@ -74,8 +86,6 @@ function roundTrip(value: string) {
   return serializeEditorDoc(doc);
 }
 
-// Plain mode: the same engine with the mark extensions off. Markers stay
-// literal characters and task lines stay paragraphs.
 const plainSchema = getSchemaByResolvedExtensions(
   resolveExtensions([
     StarterKit.configure({
@@ -123,6 +133,53 @@ function roundTripPlain(value: string) {
   const doc = ProseMirrorNode.fromJSON(plainSchema, json);
   return serializeEditorDoc(doc);
 }
+
+describe("literal editor answers", () => {
+  const makeDoc = (value: string) =>
+    ProseMirrorNode.fromJSON(
+      plainSchema,
+      buildDocJson(value, (name) => ({ label: name, description: null }), {
+        literalText: true,
+      }),
+    );
+
+  it.each([
+    "",
+    "\n\n",
+    "  - [X] done\n\n**keep** €my-skill @README.md  \n",
+    "line one\r\nline two\r\n",
+    `- [X] done\n${"  detail €my-skill @README.md\n".repeat(100)}`,
+  ])("preserves the complete answer through selection and serialization", (value) => {
+    const doc = makeDoc(value);
+    doc.check();
+    const serialized = serializeEditorDoc(doc);
+    expect(serialized.value).toBe(value);
+    expect(serialized.contextIds).toEqual([]);
+    expect(serializeSelection(doc, 1, doc.content.size - 1)).toBe(value);
+    for (let offset = 0; offset <= value.length; offset += 1) {
+      expect(flatToCollapsed(serialized, offset)).toBe(offset);
+    }
+  });
+
+  it("edits literal Markdown, inserts a newline, and preserves an explicitly cleared answer", () => {
+    const value = "  - [X] done €my-skill @README.md  ";
+    const doc = makeDoc(value);
+    let state = EditorState.create({
+      doc,
+      selection: TextSelection.create(doc, doc.content.size - 1),
+    });
+    state = state.apply(state.tr.insertText(" edited"));
+    expect(
+      splitBlockKeepMarks(state, (transaction) => {
+        state = state.apply(transaction);
+      }),
+    ).toBe(true);
+    state = state.apply(state.tr.insertText("second line  "));
+    expect(serializeEditorDoc(state.doc).value).toBe(`${value} edited\nsecond line  `);
+    state = state.apply(state.tr.delete(1, state.doc.content.size - 1));
+    expect(serializeEditorDoc(state.doc).value).toBe("");
+  });
+});
 
 describe("composer rich text document model", () => {
   it.each(["€", "£", "¥", "₹", "₩", "₿", "𑿝"])(
@@ -343,6 +400,488 @@ describe("composer rich text document model", () => {
     expect(roundTripPlain(value).value).toBe(value);
   });
 
+  it.each([
+    "- one\n- two",
+    "* star\n* star two",
+    "+ plus",
+    "* star\n+ plus",
+    "1. first\n2. second",
+    "1) paren\n2) paren",
+    "3. starts at three\n4. four",
+    "01. zero padded\n02. two",
+    "- parent\n  - child\n  - sibling\n- uncle",
+    "1. ordered\n   - bullet child\n2. next",
+    "- outer\n  1. inner ordered\n  2. more\n- outer again",
+    "-   wide space item",
+    "-",
+    "1.",
+    "- \n- second",
+    "- **bold** item with @README.md",
+    "- [ ] task\n- bullet after",
+    "- bullet\n- [x] task after",
+    "para\n- item\npara",
+    "\t- tab indented\n\t- again",
+    "  - leading indent only",
+    "- item\n\n- after a blank",
+    "- item one\n```ts\ncode\n```\n- item two",
+    "-no space stays literal",
+    "1.no space stays literal",
+    "10. ten\n11. eleven",
+  ])("round-trips the list %s through a real ProseMirror document", (value) => {
+    expect(roundTrip(value).value).toBe(value);
+  });
+
+  it.each([
+    "- one\n- two",
+    "1. first\n2. second",
+    "- parent\n  - child",
+    "* star\n+ plus",
+    "-no space stays literal",
+  ])("keeps the list %s literal in plain mode", (value) => {
+    expect(roundTripPlain(value).value).toBe(value);
+  });
+
+  it.each(["- one\n- two", "1. a\n   - b\n2. c", "- **bold** @README.md tail", "-"])(
+    "maps every document offset of the list %s through collapsed coordinates and back",
+    (value) => {
+      const map = roundTrip(value);
+      expect(map.value).toBe(value);
+      for (let flat = 0; flat <= map.docLength; flat += 1) {
+        expect(collapsedToFlat(map, flatToCollapsed(map, flat))).toBe(flat);
+      }
+    },
+  );
+
+  it("clamps offsets inside a list marker to the start of the item text", () => {
+    const value = "- item";
+    const map = roundTrip(value);
+    for (let collapsed = 0; collapsed <= "- ".length; collapsed += 1) {
+      expect(collapsedToFlat(map, collapsed)).toBe(0);
+    }
+    expect(collapsedToFlat(map, "- it".length)).toBe(2);
+    expect(flatToCollapsed(map, 0)).toBe("- ".length);
+  });
+
+  it.each([
+    "> quoted",
+    "> line one\n> line two",
+    ">no space",
+    ">  two spaces",
+    "> a\n>b",
+    ">",
+    "> **bold** and @README.md inside",
+    "> - looks like a list but stays quote text",
+    "> > nested stays literal inside the quote",
+    "before\n> quoted",
+    "> quote\n\n> another",
+    "- item\n> quote after list",
+    "> quoted\n\ncomment",
+    "> line one\n> line two\n\ncomment",
+  ])("round-trips the quote %s through a real ProseMirror document", (value) => {
+    expect(roundTrip(value).value).toBe(value);
+  });
+
+  describe("a paragraph after a quote", () => {
+    const paragraph = (text?: string) => ({
+      type: "paragraph",
+      ...(text ? { content: [{ type: "text", text }] } : {}),
+    });
+    const quote = (...lines: string[]) => ({
+      type: "blockquote",
+      attrs: { prefix: "> " },
+      content: lines.map((line) => paragraph(line)),
+    });
+    const serialize = (...content: object[]) => {
+      const doc = ProseMirrorNode.fromJSON(schema, { type: "doc", content });
+      doc.check();
+      return { doc, map: serializeEditorDoc(doc) };
+    };
+
+    it("is written after a blank line, or Markdown folds it into the quote", () => {
+      expect(serialize(quote("quoted"), paragraph("Comment to it")).map.value).toBe(
+        "> quoted\n\nComment to it",
+      );
+      expect(serialize(quote("a", "b"), paragraph("comment")).map.value).toBe(
+        "> a\n> b\n\ncomment",
+      );
+    });
+
+    it("does not double up on the empty line the user left themselves", () => {
+      expect(serialize(quote("quoted"), paragraph(), paragraph("Comment to it")).map.value).toBe(
+        "> quoted\n\nComment to it",
+      );
+    });
+
+    it("settles on the blank line when a draft glued it to the quote", () => {
+      const settled = "before\n> quoted\n\nafter";
+      expect(roundTrip("before\n> quoted\nafter").value).toBe(settled);
+      expect(roundTrip(settled).value).toBe(settled);
+    });
+
+    it.each(["# Heading", "- item", "3. item", "---", "```\ncode\n```"])(
+      "leaves %s on the next line, since it opens its own block",
+      (next) => {
+        const value = `> quoted\n${next}`;
+        expect(roundTrip(value).value).toBe(value);
+      },
+    );
+
+    it("keeps every offset mapped through the blank line", () => {
+      const { doc, map } = serialize(quote("quoted"), paragraph("Comment"));
+      for (let flat = 0; flat <= map.docLength; flat += 1) {
+        expect(collapsedToFlat(map, flatToCollapsed(map, flat))).toBe(flat);
+      }
+      // The caret on the end of the quote stays on it, and the blank line is
+      // not a place to type: it clamps to the start of the comment.
+      expect(flatToCollapsed(map, "quoted".length)).toBe("> quoted".length);
+      expect(collapsedToFlat(map, "> quoted\n".length)).toBe("quoted".length + 1);
+      expect(flatToCollapsed(map, "quoted".length + 1)).toBe("> quoted\n\n".length);
+      expect(flatToPm(map, "quoted".length + 1)).toBe(doc.child(0).nodeSize + 1);
+    });
+  });
+
+  it.each([
+    "---",
+    "***",
+    "___",
+    "- - -",
+    "* * *",
+    "-----",
+    "---   ",
+    "text\n---\nmore",
+    "- item\n---\n- item two",
+    "```\n---\n```",
+    "--",
+    "-- -",
+    "---text",
+  ])("round-trips the rule %s through a real ProseMirror document", (value) => {
+    expect(roundTrip(value).value).toBe(value);
+  });
+
+  it("parses rules ahead of lists and emphasis", () => {
+    const json = buildDocJson("- - -\n***\n___\ntext\n---\n- item", (n) => ({
+      label: n,
+      description: null,
+    }));
+    expect(json.content.map((block) => block.type)).toEqual([
+      "horizontalRule",
+      "horizontalRule",
+      "horizontalRule",
+      "paragraph",
+      "horizontalRule",
+      "bulletList",
+    ]);
+  });
+
+  it.each([
+    "# Heading",
+    "## Two",
+    "###### Six",
+    "####### seven hashes stays a paragraph",
+    "#  two spaces",
+    "#\tTab",
+    "# Trailing hashes stay literal #",
+    "#1234",
+    "#1234 is a pull request, not a heading",
+    "# Heading with **bold** and @README.md",
+    "#",
+    "# ",
+    "text\n# Heading\ntext",
+    "# Heading\n- item\n> quote\n---",
+  ])("round-trips the heading %s through a real ProseMirror document", (value) => {
+    expect(roundTrip(value).value).toBe(value);
+  });
+
+  it.each(["> quoted", "> a\n>b", "---", "- - -", "# Heading", "#1234"])(
+    "keeps the block %s literal in plain mode",
+    (value) => {
+      expect(roundTripPlain(value).value).toBe(value);
+    },
+  );
+
+  it("parses the blocks it renders as the right node types", () => {
+    const json = buildDocJson("# Title\n> quote\n---\n#1234 ref\n- - -", (n) => ({
+      label: n,
+      description: null,
+    }));
+    expect(json.content.map((block) => block.type)).toEqual([
+      "heading",
+      "blockquote",
+      "horizontalRule",
+      "paragraph",
+      "horizontalRule",
+      "paragraph",
+    ]);
+  });
+
+  it.each([
+    ["---", "---"],
+    ["a\n---", "a\n---"],
+    ["---\n", "---"],
+  ])("gives the caret a line after the final rule of %j, written %j", (value, expected) => {
+    const map = roundTrip(value);
+    expect(map.value).toBe(expected);
+    const json = buildDocJson(value, () => ({ label: "", description: null }));
+    const doc = ProseMirrorNode.fromJSON(schema, json);
+    expect(doc.resolve(flatToPm(map, map.docLength)).parent.isTextblock).toBe(true);
+  });
+
+  it("parses rules ahead of lists and emphasis", () => {
+    const json = buildDocJson("- - -\n***\n___\ntext\n---\n- item", (n) => ({
+      label: n,
+      description: null,
+    }));
+    expect(json.content.map((block) => block.type)).toEqual([
+      "horizontalRule",
+      "horizontalRule",
+      "horizontalRule",
+      "paragraph",
+      "horizontalRule",
+      "bulletList",
+    ]);
+  });
+
+  it.each([
+    "# Heading",
+    "## Two",
+    "###### Six",
+    "####### seven hashes stays a paragraph",
+    "#  two spaces",
+    "#\tTab",
+    "# Trailing hashes stay literal #",
+    "#1234",
+    "#1234 is a pull request, not a heading",
+    "# Heading with **bold** and @README.md",
+    "#",
+    "# ",
+    "text\n# Heading\ntext",
+    "# Heading\n- item\n> quote\n---",
+  ])("round-trips the heading %s through a real ProseMirror document", (value) => {
+    expect(roundTrip(value).value).toBe(value);
+  });
+
+  it.each(["> quoted", "> a\n>b", "---", "- - -", "# Heading", "#1234"])(
+    "keeps the block %s literal in plain mode",
+    (value) => {
+      expect(roundTripPlain(value).value).toBe(value);
+    },
+  );
+
+  it("parses a quote as a blockquote of one paragraph per line", () => {
+    const json = buildDocJson("> a\n> b\n>c", (n) => ({ label: n, description: null }));
+    expect(json.content.map((block) => block.type)).toEqual(["blockquote", "blockquote"]);
+    expect((json.content[0] as { content: unknown[] }).content).toHaveLength(2);
+  });
+
+  it.each([
+    "> a\n> b",
+    "> **q** @README.md",
+    "text\n---\nmore",
+    "---\ntext",
+    "# Heading text",
+    "## **b** @README.md",
+  ])(
+    "maps every document offset of the block %s through collapsed coordinates and back",
+    (value) => {
+      const map = roundTrip(value);
+      expect(map.value).toBe(value);
+      for (let flat = 0; flat <= map.docLength; flat += 1) {
+        expect(collapsedToFlat(map, flatToCollapsed(map, flat))).toBe(flat);
+      }
+    },
+  );
+
+  it("clamps offsets inside a quote or heading marker to the start of the text", () => {
+    for (const [value, prefix] of [
+      ["> quoted", "> "],
+      ["# Heading", "# "],
+    ] as const) {
+      const map = roundTrip(value);
+      for (let collapsed = 0; collapsed <= prefix.length; collapsed += 1) {
+        expect(collapsedToFlat(map, collapsed)).toBe(0);
+      }
+      expect(flatToCollapsed(map, 0)).toBe(prefix.length);
+    }
+  });
+
+  it.each([
+    "```\ncode\n```",
+    "```ts\nconst a = 1;\n```",
+    "```ts\nconst a = 1;\n```\n",
+    "before\n```ts\nconst a = 1;\n```\nafter",
+    "```\n```",
+    "```ts\nline one\nline two\nline three\n```",
+    "```ts\n  indented\n    deeper\n```",
+    "```js title=example\ncode\n```",
+    "~~~py\ncode\n~~~",
+    "````\n```\n````",
+    "```ts\ncode without a closing fence",
+    "```",
+    "```ts\n**not bold** and @README.md stay literal\n```",
+    "```ts\ncode\n````",
+    "- [ ] task\n```ts\ncode\n```\n- [ ] after",
+    "  ```ts\nindented fence stays a paragraph\n  ```",
+  ])("round-trips the fenced block %s", (value) => {
+    expect(roundTrip(value).value).toBe(value);
+  });
+
+  it.each(["```ts\nconst a = 1;\n```", "```\n```", "before\n```ts\ncode\n```\nafter"])(
+    "maps every document offset of %s through collapsed coordinates and back",
+    (value) => {
+      const map = roundTrip(value);
+      expect(map.value).toBe(value);
+      for (let flat = 0; flat <= map.docLength; flat += 1) {
+        expect(collapsedToFlat(map, flatToCollapsed(map, flat))).toBe(flat);
+      }
+    },
+  );
+
+  it("reads blocks written with CRLF line endings", () => {
+    const value = "# Title\r\n> quote\r\n---\r\n```ts\r\nconst a = 1;\r\n```\r\nafter";
+    const doc = buildDocJson(value, () => ({ label: "", description: null }));
+    expect(doc.content.map((block) => block.type)).toEqual([
+      "heading",
+      "blockquote",
+      "horizontalRule",
+      "codeBlock",
+      "paragraph",
+    ]);
+    expect(roundTrip(value).value).toBe(value);
+  });
+
+  it("keeps the end of the code inside the fence rather than after it", () => {
+    const value = "```ts\nfunc();\n```";
+    const map = roundTrip(value);
+    const endOfCode = "func();".length;
+    expect(flatToCollapsed(map, endOfCode)).toBe("```ts\nfunc();".length);
+    expect(flatToMarkdown(map, endOfCode)).toBe("```ts\nfunc();".length);
+    expect(collapsedToFlat(map, flatToCollapsed(map, endOfCode))).toBe(endOfCode);
+  });
+
+  it("keeps the caret inside an empty fence", () => {
+    const value = "before\n```\n```";
+    const map = roundTrip(value);
+    const inside = "before\n".length;
+    expect(flatToCollapsed(map, inside)).toBe("before\n```".length);
+    expect(collapsedToFlat(map, flatToCollapsed(map, inside))).toBe(inside);
+  });
+
+  it("still places the end of an inline mark after its markers", () => {
+    const map = roundTrip("a **bold** c");
+    expect(flatToMarkdown(map, 6)).toBe(10);
+  });
+
+  it("clamps offsets inside a fence to the edge of the code", () => {
+    const value = "```ts\nab\n```";
+    const map = roundTrip(value);
+    expect(map.value).toBe(value);
+    for (let collapsed = 0; collapsed <= "```ts\n".length; collapsed += 1) {
+      expect(collapsedToFlat(map, collapsed)).toBe(0);
+    }
+    expect(collapsedToFlat(map, "```ts\na".length)).toBe(1);
+    for (let collapsed = "```ts\nab".length; collapsed <= value.length; collapsed += 1) {
+      expect(collapsedToFlat(map, collapsed)).toBe(2);
+    }
+  });
+
+  it.each([
+    ["```\n\n```", "```\n```"],
+    ["```\n", "```"],
+  ])("canonicalizes the empty fence %s", (value, expected) => {
+    expect(roundTrip(value).value).toBe(expected);
+  });
+
+  it("keeps a chip in a fence info string as source and keeps later chips aligned", () => {
+    const value = "```@README.md\ncode\n```\n$my-skill after";
+    expect(roundTrip(value).value).toBe(value);
+    const json = buildDocJson(value, (n) => ({ label: n, description: null }));
+    const after = json.content[1] as {
+      content: { type: string; attrs?: { skillName?: string } }[];
+    };
+    expect(after.content.map((n) => n.type)).toEqual(["composer-skill", "text"]);
+    expect(after.content[0]?.attrs?.skillName).toBe("my-skill");
+  });
+
+  it("keeps chips in a fence's info string and body each in their own place", () => {
+    const value = "``` @a.md\nsee @b.md\n```";
+    expect(roundTrip(value).value).toBe(value);
+    const json = buildDocJson(value, (n) => ({ label: n, description: null }));
+    const code = json.content[0] as { attrs: { language: string } };
+    expect(code.attrs.language).toBe(" @a.md");
+  });
+
+  it.each([
+    ["listItem", { marker: "-", space: "" }, "bulletList", "- text"],
+    ["listItem", { marker: "1.", space: "" }, "orderedList", "1. text"],
+  ])("gives a bare %s a space once it has text", (item, attrs, list, expected) => {
+    const doc = ProseMirrorNode.fromJSON(schema, {
+      type: "doc",
+      content: [
+        {
+          type: list,
+          content: [
+            {
+              type: item,
+              attrs,
+              content: [{ type: "paragraph", content: [{ type: "text", text: "text" }] }],
+            },
+          ],
+        },
+      ],
+    });
+    expect(serializeEditorDoc(doc).value).toBe(expected);
+    expect(roundTrip("-").value).toBe("-");
+  });
+
+  it("writes code holding a closing fence inside a longer fence", () => {
+    const doc = ProseMirrorNode.fromJSON(schema, {
+      type: "doc",
+      content: [
+        {
+          type: "codeBlock",
+          attrs: { fence: "```", close: "\n```" },
+          content: [{ type: "text", text: "initial\n```\nsecret" }],
+        },
+      ],
+    });
+    const stored = serializeEditorDoc(doc).value;
+    expect(stored).toBe("````\ninitial\n```\nsecret\n````");
+    expect(buildDocJson(stored, () => ({ label: "", description: null })).content).toHaveLength(1);
+    expect(roundTrip(stored).value).toBe(stored);
+  });
+
+  it("closes an unclosed fence that has a block after it", () => {
+    const doc = ProseMirrorNode.fromJSON(schema, {
+      type: "doc",
+      content: [
+        { type: "codeBlock", attrs: { close: "" }, content: [{ type: "text", text: "code" }] },
+        { type: "paragraph", content: [{ type: "text", text: "after" }] },
+      ],
+    });
+    expect(serializeEditorDoc(doc).value).toBe("```\ncode\n```\nafter");
+    expect(roundTrip("```\ncode").value).toBe("```\ncode");
+  });
+
+  it("counts a chip's source in a fence as one cursor position, as the draft store does", () => {
+    const value = "```\nsee @b.md now\n```\nafter";
+    const map = roundTrip(value);
+    expect(map.value).toBe(value);
+    for (let flat = 0; flat <= map.docLength; flat += 1) {
+      expect(flatToCollapsed(map, flat)).toBe(
+        collapseExpandedComposerCursor(value, flatToMarkdown(map, flat)),
+      );
+    }
+    const afterChip = "see @b.md".length;
+    expect(collapsedToFlat(map, flatToCollapsed(map, afterChip))).toBe(afterChip);
+    const end = map.docLength;
+    expect(collapsedToFlat(map, flatToCollapsed(map, end))).toBe(end);
+  });
+
+  it("keeps fences literal in plain mode", () => {
+    const value = "```ts\nconst a = 1;\n```";
+    expect(roundTripPlain(value).value).toBe(value);
+  });
+
   it("maps every document offset through collapsed coordinates and back", () => {
     const value = "hi **bold** @README.md bye";
     const map = roundTrip(value);
@@ -352,11 +891,35 @@ describe("composer rich text document model", () => {
     }
   });
 
+  it.each([
+    "plain prose with no styling at all",
+    "a chip @README.md counts one character in both modes",
+    "$my-skill leads the line",
+    "trailing newline\n",
+  ])("resolves a collapsed cursor identically in both modes for %s", (value) => {
+    const rich = roundTrip(value);
+    const plain = roundTripPlain(value);
+    expect(rich.value).toBe(value);
+    expect(plain.value).toBe(value);
+    for (let collapsed = 0; collapsed <= value.length; collapsed += 1) {
+      expect(flatToMarkdown(rich, collapsedToFlat(rich, collapsed))).toBe(
+        flatToMarkdown(plain, collapsedToFlat(plain, collapsed)),
+      );
+    }
+  });
+
+  it("clamps a cursor that was sitting inside a marker onto the styled text", () => {
+    const value = "a **bold** c";
+    const plain = roundTripPlain(value);
+    const rich = roundTrip(value);
+    expect(flatToMarkdown(plain, collapsedToFlat(plain, 3))).toBe(3);
+    expect(flatToMarkdown(rich, collapsedToFlat(rich, 3))).toBe(4);
+  });
+
   it("maps markdown offsets at styled edges onto document text", () => {
     const value = "a **bold** c";
     const map = roundTrip(value);
     expect(map.value).toBe(value);
-    // document text is "a bold c" (flat), markdown has the markers.
     expect(flatToMarkdown(map, 2)).toBe(4);
     expect(flatToMarkdown(map, 6)).toBe(10);
     expect(collapsedToFlat(map, 3)).toBe(2);

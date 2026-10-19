@@ -3,12 +3,11 @@ import { ProviderSetupError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient } from "effect/http";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { makeCodexChatGptAuth } from "./CodexChatGptAuth.ts";
 
-// The primary owns OAuth for this stream; the destination owns the refresh session.
 export function subscribeChatGptHandoff(
   input: ChatGptHandoffInput,
   owner: string,

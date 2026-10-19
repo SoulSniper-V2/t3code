@@ -7,11 +7,9 @@ import { useComposerPathSearch as useComposerPathSearchQuery } from "../state/qu
 
 export function useComposerPathSearch(target: ComposerPathSearchTarget): ComposerPathSearchState {
   const state = useComposerPathSearchQuery(target);
+  const entries = state.entries.map((entry) => ({ path: entry.path, kind: entry.kind }));
   return {
-    entries: state.entries.map((entry) => ({
-      path: entry.path,
-      kind: entry.kind,
-    })),
+    entries,
     error: state.error,
     isPending: state.isPending,
   };

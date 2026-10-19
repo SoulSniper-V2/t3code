@@ -4,7 +4,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 
 import {
   applyPreviewServerEvent,
@@ -42,8 +42,15 @@ const previewSessionSyncAtom = Atom.family((threadKey: string) => {
     let eventsVersion = 0;
 
     const reconcileSessions = (result: Atom.Type<typeof sessionsAtom>) => {
-      if (!AsyncResult.isSuccess(result)) return;
+      if (result.waiting || !AsyncResult.isSuccess(result)) return;
       reconcilePreviewServerSessions(threadRef, result.value);
+      if (!readThreadPreviewState(threadRef).listLoaded) {
+        // An event overtook the first list. Retry the authoritative baseline;
+        // do not declare a partial event-only index ready for surface cleanup.
+        queueMicrotask(() => {
+          if (!disposed) get.refresh(sessionsAtom);
+        });
+      }
     };
 
     const applyLatestEvent = (result: Atom.Type<typeof eventsAtom>) => {
@@ -60,6 +67,9 @@ const previewSessionSyncAtom = Atom.family((threadKey: string) => {
       disposed = true;
     });
     const initialEvent = get.once(eventsAtom);
+    // Subscribing alone does not evaluate a lazy list. Start it now, but
+    // reconcile only subsequent responses: a completed cache may be stale.
+    get.once(sessionsAtom);
     get.subscribe(sessionsAtom, (result) => {
       reconcileSessions(result);
     });
@@ -67,12 +77,15 @@ const previewSessionSyncAtom = Atom.family((threadKey: string) => {
       eventsVersion += 1;
       applyLatestEvent(result);
     });
+    get.mount(sessionsAtom);
+    get.mount(eventsAtom);
     queueMicrotask(() => {
       if (disposed) return;
       // The cached list can predate an automation-created tab. Keep the local
       // snapshot visible until an authoritative refresh arrives instead of
       // reconciling against a stale empty result when the panel first mounts.
-      get.refresh(sessionsAtom);
+      const current = get.once(sessionsAtom);
+      if (!AsyncResult.isInitial(current) && !current.waiting) get.refresh(sessionsAtom);
       if (eventsVersion === 0) applyLatestEvent(initialEvent);
     });
   }).pipe(Atom.setIdleTTL(1_000), Atom.withLabel(`preview:session-sync:${threadKey}`));

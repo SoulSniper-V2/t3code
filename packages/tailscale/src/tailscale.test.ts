@@ -7,8 +7,8 @@ import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { ChildProcessSpawner } from "effect/unstable/process";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { ChildProcessSpawner } from "effect/process";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import {
   buildTailscaleHttpsBaseUrl,
@@ -16,7 +16,9 @@ import {
   ensureTailscaleServe,
   isTailscaleIpv4Address,
   parseTailscaleMagicDnsName,
+  parseTailscaleSshEnabled,
   parseTailscaleStatus,
+  readTailscaleSshEnabled,
   readTailscaleStatus,
   TAILSCALE_STATUS_TIMEOUT,
   TailscaleCommandExitError,
@@ -27,15 +29,6 @@ import {
 
 const encoder = new TextEncoder();
 
-/**
- * Asserts nothing reachable from `error` contains `secret`. Recurses through
- * nested objects, arrays, and `cause` chains rather than checking only
- * top-level strings: a leak one level down (say, a wrapped cause carrying raw
- * stderr) is just as visible in a log, and a shallow check would pass it.
- *
- * Walks values instead of serializing so it holds for fields added later, and
- * tracks visited objects so a cyclic cause chain terminates.
- */
 function assertCarriesNoSecret(error: object, secret: string): void {
   const seen = new WeakSet<object>();
 
@@ -101,20 +94,20 @@ function neverFinishingMockHandle() {
 
 // The executable name depends on the host platform (`tailscale.exe` on
 // Windows), so pin it: these tests assert the posix spelling.
-function spawnerLayer(spawner: ChildProcessSpawner.ChildProcessSpawner["Service"]) {
+function layerSpawner(spawner: ChildProcessSpawner.ChildProcessSpawner["Service"]) {
   return Layer.merge(
     Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
-    Layer.succeed(HostProcessPlatform, "linux"),
+    Layer.succeed(HostProcess.Platform, "linux"),
   );
 }
 
-function mockSpawnerLayer(
+function layerMockSpawner(
   handler: (
     command: string,
     args: ReadonlyArray<string>,
   ) => { stdout?: string; stderr?: string; code?: number },
 ) {
-  return spawnerLayer(
+  return layerSpawner(
     ChildProcessSpawner.make((command) => {
       const childProcess = command as unknown as {
         readonly command: string;
@@ -164,6 +157,25 @@ describe("tailscale", () => {
     }),
   );
 
+  it.effect("reads Tailscale SSH enablement from local prefs", () => {
+    const prefsJson =
+      '{\n\t"ControlURL": "https://controlplane.tailscale.com",\n\t"RunSSH": true,\n\t"WantRunning": true\n}\n';
+    const layer = layerMockSpawner((command, args) => {
+      assert.equal(command, "tailscale");
+      assert.deepEqual(args, ["debug", "prefs"]);
+      return { stdout: prefsJson };
+    });
+
+    return Effect.gen(function* () {
+      assert.isTrue(yield* readTailscaleSshEnabled.pipe(Effect.provide(layer)));
+      assert.isFalse(yield* parseTailscaleSshEnabled('{"RunSSH":false,"WantRunning":true}'));
+      assert.isFalse(yield* parseTailscaleSshEnabled('{"RunSSH":true,"WantRunning":false}'));
+      assert.isFalse(yield* parseTailscaleSshEnabled("{}"));
+      const error = yield* parseTailscaleSshEnabled("{not-json").pipe(Effect.flip);
+      assert.instanceOf(error, TailscaleStatusParseError);
+    });
+  });
+
   it.effect("builds clean HTTPS base URLs", () =>
     Effect.sync(() => {
       assert.equal(
@@ -178,7 +190,7 @@ describe("tailscale", () => {
   );
 
   it.effect("reads tailscale status through the process spawner service", () => {
-    const layer = mockSpawnerLayer((command, args) => {
+    const layer = layerMockSpawner((command, args) => {
       assert.equal(command, "tailscale");
       assert.deepEqual(args, ["status", "--json"]);
       return {
@@ -203,7 +215,7 @@ describe("tailscale", () => {
       method: "spawn",
       cause: systemCause,
     });
-    const layer = spawnerLayer(ChildProcessSpawner.make(() => Effect.fail(cause)));
+    const layer = layerSpawner(ChildProcessSpawner.make(() => Effect.fail(cause)));
 
     return Effect.gen(function* () {
       const error = yield* readTailscaleStatus.pipe(Effect.flip, Effect.provide(layer));
@@ -224,7 +236,7 @@ describe("tailscale", () => {
     // inside an `Effect.callback` registration, so that throw arrives as a
     // defect rather than a typed error - the shape reproduced here.
     const defect = Object.assign(new Error("spawn tailscale ENOTDIR"), { code: "ENOTDIR" });
-    const layer = spawnerLayer(
+    const layer = layerSpawner(
       ChildProcessSpawner.make(() =>
         Effect.callback<never, never>(() => {
           throw defect;
@@ -246,8 +258,6 @@ describe("tailscale", () => {
       assert.equal(serveError.subcommand, "serve");
       assert.strictEqual(serveError.cause, defect);
 
-      // What callers actually rely on: the desktop endpoint providers recover
-      // with `Effect.orElseSucceed`, which only sees the typed error channel.
       const degraded = yield* readTailscaleStatus.pipe(
         Effect.orElseSucceed(() => null),
         Effect.provide(layer),
@@ -257,7 +267,7 @@ describe("tailscale", () => {
   });
 
   it.effect("keeps nonzero exit diagnostics structured", () => {
-    const layer = mockSpawnerLayer(() => ({
+    const layer = layerMockSpawner(() => ({
       code: 7,
       stderr: "not logged in tskey-auth-secret-token-value",
     }));
@@ -282,7 +292,7 @@ describe("tailscale", () => {
   });
 
   it.effect("classifies unrecognized stderr without quoting it", () => {
-    const layer = mockSpawnerLayer(() => ({
+    const layer = layerMockSpawner(() => ({
       code: 3,
       stderr: "something novel went wrong for node fluffy-badger tskey-auth-secret-token-value",
     }));
@@ -291,8 +301,6 @@ describe("tailscale", () => {
       const error = yield* readTailscaleStatus.pipe(Effect.flip, Effect.provide(layer));
 
       assert.instanceOf(error, TailscaleCommandExitError);
-      // Unmatched stderr degrades to "unknown" rather than passing text
-      // through — that fallback is what keeps novel output from leaking.
       assert.equal(error.stderrDiagnostic, "unknown");
       assertCarriesNoSecret(error, "tskey-auth-secret-token-value");
       assertCarriesNoSecret(error, "fluffy-badger");
@@ -302,7 +310,7 @@ describe("tailscale", () => {
   it.effect("times out tailscale status through TestClock", () => {
     const layer = Layer.merge(
       TestClock.layer(),
-      spawnerLayer(ChildProcessSpawner.make(() => Effect.succeed(neverFinishingMockHandle()))),
+      layerSpawner(ChildProcessSpawner.make(() => Effect.succeed(neverFinishingMockHandle()))),
     );
 
     return Effect.gen(function* () {
@@ -315,14 +323,14 @@ describe("tailscale", () => {
       assert.equal(error.executable, "tailscale");
       assert.equal(error.subcommand, "status");
       assert.equal(error.argumentCount, 2);
-      assert.equal(error.timeoutMs, 1_500);
+      assert.equal(error.timeoutMs, 3_500);
       assert.isTrue(Cause.isTimeoutError(error.cause));
-      assert.equal(error.message, "tailscale status timed out after 1500ms.");
+      assert.equal(error.message, "tailscale status timed out after 3500ms.");
     }).pipe(Effect.provide(layer));
   });
 
   it.effect("configures tailscale serve through the process spawner service", () => {
-    const layer = mockSpawnerLayer((command, args) => {
+    const layer = layerMockSpawner((command, args) => {
       assert.equal(command, "tailscale");
       assert.deepEqual(args, ["serve", "--bg", "--https=8443", "http://127.0.0.1:13773"]);
       return {};
@@ -332,7 +340,7 @@ describe("tailscale", () => {
   });
 
   it.effect("retains tailscale serve exit diagnostics", () => {
-    const layer = mockSpawnerLayer(() => ({
+    const layer = layerMockSpawner(() => ({
       code: 1,
       stderr: "serve permission denied tskey-auth-secret-token-value",
     }));
@@ -352,8 +360,6 @@ describe("tailscale", () => {
       assert.notProperty(error, "command");
       assert.notProperty(error, "stderr");
       assert.notInclude(error.message, "tskey-auth-secret-token-value");
-      // The diagnostic classifies the failure without quoting stderr, so the
-      // key cannot reach a log through it either.
       assert.equal(error.stderrDiagnostic, "permission-denied");
       assertCarriesNoSecret(error, "tskey-auth-secret-token-value");
     });
@@ -364,7 +370,7 @@ describe("tailscale", () => {
       readonly command: string;
       readonly args: ReadonlyArray<string>;
     }[] = [];
-    const layer = mockSpawnerLayer((command, args) => {
+    const layer = layerMockSpawner((command, args) => {
       commands.push({ command, args });
       assert.equal(command, "tailscale");
       assert.deepEqual(args, ["serve", "--https=8443", "off"]);

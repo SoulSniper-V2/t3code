@@ -1,5 +1,5 @@
 import { ChevronRightIcon, ExternalLinkIcon, SearchIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   decodeThirdPartyLicenseManifest,
@@ -21,15 +21,35 @@ type LicenseManifestState =
   | { readonly status: "error"; readonly message: string }
   | { readonly status: "ready"; readonly manifest: ThirdPartyLicenseManifest };
 
-async function loadLicenseManifest(signal: AbortSignal): Promise<ThirdPartyLicenseManifest> {
-  const response = await fetch(
-    `${import.meta.env.BASE_URL.replace(/\/$/, "")}/third-party-licenses.json`,
-    { signal },
-  );
-  if (!response.ok) {
-    throw new Error(`The license manifest request failed with status ${String(response.status)}.`);
+let licenseManifestPromise: Promise<ThirdPartyLicenseManifest> | undefined;
+
+async function fetchLicenseManifest(): Promise<ThirdPartyLicenseManifest> {
+  const signal = AbortSignal.timeout(30_000);
+  try {
+    const response = await fetch(
+      `${import.meta.env.BASE_URL.replace(/\/$/, "")}/third-party-licenses.json`,
+      { signal },
+    );
+    if (!response.ok) {
+      throw new Error(
+        `The license manifest request failed with status ${String(response.status)}.`,
+      );
+    }
+    return decodeThirdPartyLicenseManifest((await response.json()) as unknown);
+  } catch (error) {
+    if (signal.aborted) {
+      throw new Error("The license manifest took too long to load.", { cause: error });
+    }
+    throw error;
   }
-  return decodeThirdPartyLicenseManifest((await response.json()) as unknown);
+}
+
+function loadLicenseManifest(): Promise<ThirdPartyLicenseManifest> {
+  licenseManifestPromise ??= fetchLicenseManifest().catch((error: unknown) => {
+    licenseManifestPromise = undefined;
+    throw error;
+  });
+  return licenseManifestPromise;
 }
 
 function LicenseNoticeRow({
@@ -195,30 +215,31 @@ export function OpenSourceLicensesPanel() {
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [openEntryKey, setOpenEntryKey] = useState<string | null>(null);
-  const [requestVersion, setRequestVersion] = useState(0);
+  const loading = state.status === "loading";
 
   useEffect(() => {
-    const controller = new AbortController();
-    setState({ status: "loading" });
-    void loadLicenseManifest(controller.signal).then(
-      (manifest) => setState({ status: "ready", manifest }),
+    if (!loading) return;
+    let cancelled = false;
+    void loadLicenseManifest().then(
+      (manifest) => {
+        if (!cancelled) setState({ status: "ready", manifest });
+      },
       (error: unknown) => {
-        if (controller.signal.aborted) return;
+        if (cancelled) return;
         setState({
           status: "error",
           message: error instanceof Error ? error.message : "The license manifest could not load.",
         });
       },
     );
-    return () => controller.abort();
-  }, [requestVersion]);
+    return () => {
+      cancelled = true;
+    };
+  }, [loading]);
 
   const entries = state.status === "ready" ? state.manifest.entries : [];
-  const filteredEntries = useMemo(
-    () => filterThirdPartyLicenseEntries(entries, query),
-    [entries, query],
-  );
-  const retry = useCallback(() => setRequestVersion((value) => value + 1), []);
+  const filteredEntries = filterThirdPartyLicenseEntries(entries, query);
+  const retry = () => setState({ status: "loading" });
 
   return (
     <SettingsPageContainer>

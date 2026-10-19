@@ -1,20 +1,28 @@
+import * as Dialog from "../../components/ui/Dialog";
 import { useAtomValue } from "@effect/atom-react";
-import type { StaticScreenProps } from "@react-navigation/native";
-import type { EnvironmentId, ServerProvider } from "@t3tools/contracts";
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import {
+  AuthProvidersManageScope,
+  AuthOrchestrationReadScope,
+  type EnvironmentId,
+  type ServerProvider,
+} from "@t3tools/contracts";
+import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { AsyncResult } from "effect/reactivity";
 import { useEffect, useRef, useState } from "react";
-import { Alert, View } from "react-native";
+import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AppText as Text } from "../../components/AppText";
+import { AppText as Text } from "../../components/ui/AppText";
 import { ProviderIcon } from "../../components/ProviderIcon";
-import { ScreenScrollView } from "../../components/ScreenScrollView";
+import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
+import { appAtomRegistry } from "../../state/atom-registry";
 import { serverEnvironment } from "../../state/server";
-import { environmentSession } from "../../state/session";
+import { environmentSession, useEnvironmentScope, readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useRemoteConnections } from "../../state/use-remote-environment-registry";
 import { ConnectionEnvironmentRow } from "../connection/ConnectionEnvironmentRow";
+import { EnvironmentRoutesSection } from "./EnvironmentRoutesSection";
 import { SettingsActionRow } from "./components/SettingsActionRow";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { SettingsSection } from "./components/SettingsSection";
@@ -41,6 +49,7 @@ export function SettingsEnvironmentDetailRouteScreen({
 
 function EnvironmentDetail({ environmentId }: { readonly environmentId: EnvironmentId }) {
   const insets = useSafeAreaInsets();
+  const navigation = useNavigation();
   const connections = useRemoteConnections();
   const environment = connections.connectedEnvironments.find(
     (entry) => entry.environmentId === environmentId,
@@ -73,7 +82,10 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
       (provider) =>
         provider.updateState?.status === "running" || provider.updateState?.status === "queued",
     ) ?? false;
-  const disabled = !allowed || pending !== null || running || providerBusy;
+  const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
+  const canRead = useEnvironmentScope(environmentId, AuthOrchestrationReadScope);
+  const busy = !connected || pending !== null || running || providerBusy;
+  const disabled = !allowed || busy;
   const version = config?.environment.serverVersion;
   const checkedRelease = release?.fromVersion === version ? release : null;
   const capabilities = config?.environment.capabilities;
@@ -84,15 +96,14 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
     setPending(label);
     setError(null);
     setNotice(null);
-    try {
-      await action();
-    } catch (cause) {
+    const result = await settlePromise(action);
+    pendingRef.current = false;
+    setPending(null);
+    if (AsyncResult.isFailure(result)) {
+      const cause = squashAtomCommandFailure(result);
       setError(
         cause instanceof Error ? cause.message : "The action could not be completed. Try again.",
       );
-    } finally {
-      pendingRef.current = false;
-      setPending(null);
     }
   }
 
@@ -100,7 +111,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
     const targetVersion = checkedRelease?.targetVersion;
     if (disabled || !targetVersion || !capabilities || !supportsEnvironmentUpdate(capabilities))
       return;
-    Alert.alert(
+    Dialog.alert(
       `Update ${environment?.environmentLabel ?? "environment"}?`,
       `Install T3 Code ${targetVersion}. ${capabilities.serverSelfUpdate === "desktop-managed" ? "The desktop app will close and relaunch." : "The server will restart and reconnect."} Running threads may be interrupted.`,
       [
@@ -109,6 +120,16 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
           text: "Update",
           onPress: () =>
             void run("server", async () => {
+              if (
+                AsyncResult.isFailure(
+                  appAtomRegistry.get(environmentSession.sessionStateAtom(environmentId)),
+                ) ||
+                !canMaintainEnvironment(
+                  appAtomRegistry.get(environmentSession.sessionStateValueAtom(environmentId)),
+                  connected,
+                )
+              )
+                return;
               const result = await updateServer({
                 environmentId,
                 input: {
@@ -129,7 +150,12 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
   }
 
   function requestProviderUpdate(provider: ServerProvider) {
-    if (disabled || !canUpdateEnvironmentProvider(provider)) return;
+    if (
+      busy ||
+      !readEnvironmentScope(environmentId, AuthProvidersManageScope) ||
+      !canUpdateEnvironmentProvider(provider)
+    )
+      return;
     void run(provider.instanceId, async () => {
       const result = await updateProvider({
         environmentId,
@@ -167,6 +193,19 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                 onUpdate={connections.onUpdateEnvironment}
               />
             </SettingsSection>
+            <EnvironmentRoutesSection
+              environmentId={environmentId}
+              connected={connected}
+              onAddRoute={() =>
+                navigation.navigate("SettingsSheet", {
+                  screen: "SettingsContent",
+                  params: {
+                    screen: "SettingsEnvironmentNew",
+                    params: { routeFor: environmentId },
+                  },
+                })
+              }
+            />
             {!connected ? (
               <Text className="px-2 text-sm text-foreground-muted">
                 Connect this environment to manage it.
@@ -228,19 +267,15 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                         const controller = new AbortController();
                         checkController.current = controller;
                         const timeout = setTimeout(() => controller.abort(), 20_000);
-                        try {
-                          const targetVersion = await findEnvironmentUpdate(
-                            config.environment.serverVersion,
-                            controller.signal,
-                          );
-                          setRelease({
-                            fromVersion: config.environment.serverVersion,
-                            targetVersion,
-                          });
-                        } finally {
-                          clearTimeout(timeout);
-                          checkController.current = null;
-                        }
+                        const fromVersion = config.environment.serverVersion;
+                        const result = await settlePromise(() =>
+                          findEnvironmentUpdate(fromVersion, controller.signal),
+                        );
+                        clearTimeout(timeout);
+                        checkController.current = null;
+                        // `run` owns the error message, so a failed lookup rethrows to it.
+                        if (AsyncResult.isFailure(result)) throw squashAtomCommandFailure(result);
+                        setRelease({ fromVersion, targetVersion: result.value });
                       });
                     }}
                   />
@@ -259,11 +294,13 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                   <SettingsActionRow
                     icon="arrow.clockwise"
                     label="Refresh providers"
-                    disabled={disabled}
+                    disabled={busy || !canRead}
                     loading={pending === "refresh"}
                     onPress={() => {
-                      if (disabled) return;
+                      if (busy || !canRead) return;
                       void run("refresh", async () => {
+                        if (!readEnvironmentScope(environmentId, AuthOrchestrationReadScope))
+                          return;
                         const result = await refreshProviders({ environmentId, input: {} });
                         if (AsyncResult.isFailure(result)) throw squashAtomCommandFailure(result);
                         setNotice("Provider status refreshed.");
@@ -323,7 +360,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                           <SettingsActionRow
                             icon="arrow.up.circle"
                             label={`Update ${provider.displayName ?? provider.driver}`}
-                            disabled={disabled}
+                            disabled={busy || !canManageProviders}
                             loading={pending === provider.instanceId}
                             onPress={() => requestProviderUpdate(provider)}
                           />

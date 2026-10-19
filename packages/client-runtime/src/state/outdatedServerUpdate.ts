@@ -2,9 +2,9 @@ import type { EnvironmentId, ServerSelfUpdateInput } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import type * as HttpClient from "effect/unstable/http/HttpClient";
-import type { Atom } from "effect/unstable/reactivity";
-import type * as Socket from "effect/unstable/socket/Socket";
+import type * as HttpClient from "effect/http/HttpClient";
+import type { Atom } from "effect/reactivity";
+import type * as Socket from "effect/socket/Socket";
 
 import { updateOutdatedHost } from "../connection/outdatedHostUpdate.ts";
 import type * as ConnectionResolver from "../connection/resolver.ts";
@@ -24,10 +24,6 @@ export interface OutdatedServerUpdateTarget {
   readonly fromVersion?: string;
 }
 
-/**
- * Updates a host too old for this client to connect to. Progress lands in the
- * same per-environment update state as a normal server update.
- */
 export function createOutdatedServerUpdateCommand<E>(
   runtime: Atom.AtomRuntime<
     | EnvironmentRegistry.EnvironmentRegistry

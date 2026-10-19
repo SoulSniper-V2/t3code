@@ -1,5 +1,5 @@
 import * as Effect from "effect/Effect";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 
 import * as MobilePreferences from "../persistence/mobile-preferences";
 import * as Runtime from "../lib/runtime";
@@ -20,9 +20,8 @@ type PreferencesUpdate =
     };
 
 /**
- * Owns the device preference blob for the lifetime of the app registry.
- * Optimistic patches are kept separately so writes made while persistence is
- * still loading cannot be replaced by the eventual read result.
+ * Optimistic patches are kept separately so writes made while persistence is still loading cannot
+ * be replaced by the eventual read result.
  */
 export function createMobilePreferencesState(
   runtime: Atom.AtomRuntime<MobilePreferences.MobilePreferencesStore>,
@@ -136,7 +135,7 @@ export function createMobilePreferencesState(
   return { preferencesAtom, updatePreferencesAtom } as const;
 }
 
-const mobilePreferencesRuntime = Atom.runtime(Runtime.runtimeContextLayer);
+const mobilePreferencesRuntime = Atom.runtime(Runtime.layer);
 export const mobilePreferencesState = createMobilePreferencesState(mobilePreferencesRuntime);
 
 export const mobilePreferencesAtom = mobilePreferencesState.preferencesAtom;

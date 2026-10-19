@@ -3,6 +3,7 @@ import {
   CheckpointScopeId,
   CommandId,
   MessageId,
+  NodeId,
   ProviderSessionId,
   RunAttemptId,
   ProviderApprovalDecision,
@@ -16,12 +17,16 @@ import {
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
+
+import { forkParked } from "../serverActivation.ts";
 
 export const OrchestrationEffectRequestV2 = Schema.Union([
   Schema.Struct({
@@ -32,7 +37,6 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     type: Schema.Literal("provider-session.detach"),
     providerSessionId: ProviderSessionId,
     detail: Schema.optional(Schema.String),
-    /** Set on terminal detaches (thread archive/delete): revoke the thread's MCP credentials. */
     revokeMcpCredential: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
@@ -44,6 +48,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     providerSessionId: ProviderSessionId,
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,
+    subagent: Schema.optional(Schema.Struct({ id: NodeId, nativeTaskId: Schema.String })),
   }),
   Schema.Struct({
     type: Schema.Literal("provider-turn.steer"),
@@ -92,6 +97,9 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     type: Schema.Literal("terminal.cleanup"),
   }),
   Schema.Struct({
+    type: Schema.Literal("preview.cleanup"),
+  }),
+  Schema.Struct({
     type: Schema.Literal("attachment.cleanup"),
     attachmentIds: Schema.Array(Schema.String),
   }),
@@ -102,6 +110,10 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
       Schema.Struct({ type: Schema.Literal("regenerate") }),
     ]),
   }),
+  Schema.Struct({
+    type: Schema.Literal("delegated-tasks.stop"),
+    reason: Schema.optional(Schema.String),
+  }),
 ]);
 export type OrchestrationEffectRequestV2 = typeof OrchestrationEffectRequestV2.Type;
 
@@ -111,8 +123,10 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "provider-thread.rollback",
   "checkpoint.capture",
   "terminal.cleanup",
+  "preview.cleanup",
   "attachment.cleanup",
   "thread-title.generate",
+  "delegated-tasks.stop",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 
 export const PROCESS_BOUND_EFFECT_TYPES = [
@@ -131,6 +145,15 @@ export const OrchestrationEffectStatusV2 = Schema.Literals([
   "cancelled",
 ]);
 export type OrchestrationEffectStatusV2 = typeof OrchestrationEffectStatusV2.Type;
+
+/**
+ * Command retries are deduplicated by their receipts first, and a run's effects
+ * are re-enqueued only around one server restart, so a week is far longer than
+ * either and leaves recent history for debugging. Failed rows are kept: storage
+ * cleanup keeps a deleted thread's worktree while any of its effects failed.
+ */
+export const SETTLED_EFFECT_RETENTION = Duration.days(7);
+const PRUNE_BATCH_SIZE = 500;
 
 export interface OrchestrationEffectV2 {
   readonly id: string;
@@ -192,6 +215,8 @@ export interface EffectOutboxV2Shape {
   readonly signalCancellations: (effectIds: ReadonlyArray<string>) => Effect.Effect<void>;
   readonly awaitCancellation: (effectId: string) => Effect.Effect<void>;
   readonly clearCancellation: (effectId: string) => Effect.Effect<void>;
+  /** Resolves once the effect is neither pending nor running, or right away when it does not exist. */
+  readonly awaitSettled: (effectId: string) => Effect.Effect<void, EffectOutboxError>;
   readonly reconcileAfterProcessLoss: Effect.Effect<
     { readonly requeued: number; readonly cancelled: number },
     EffectOutboxError
@@ -217,6 +242,7 @@ export interface EffectOutboxV2Shape {
     readonly workerId: string;
     readonly error: string;
   }) => Effect.Effect<boolean, EffectOutboxError>;
+  readonly pruneSettled: Effect.Effect<number, EffectOutboxError>;
 }
 
 export class EffectOutboxV2 extends Context.Service<EffectOutboxV2, EffectOutboxV2Shape>()(
@@ -268,22 +294,27 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
   EffectOutboxV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    // Availability is only a bounded latency hint; durable rows remain
-    // authoritative. Retaining a small burst lets multiple worker slots wake
-    // for distinct threads without allowing notifications to grow unbounded.
     const available = yield* Queue.dropping<void>(64);
     const cancellationSignals = new Map<string, Deferred.Deferred<void>>();
+    const settledSignals = new Map<string, Deferred.Deferred<void>>();
+    const signalSettled = (effectIds: ReadonlyArray<string>) =>
+      Effect.forEach(
+        effectIds,
+        (effectId) => {
+          const signal = settledSignals.get(effectId);
+          if (signal === undefined) return Effect.void;
+          settledSignals.delete(effectId);
+          return Deferred.succeed(signal, undefined);
+        },
+        { discard: true },
+      );
     const notifyAvailable = (count = 1) =>
       Queue.offerAll(
         available,
         Array.from({ length: Math.min(64, Math.max(0, Math.floor(count))) }, () => undefined),
       ).pipe(Effect.asVoid);
-    // Each thread runs its effects one at a time, in enqueue (rowid) order. An earlier
-    // effect waiting out a retry backoff still blocks later ones, so a turn
-    // cannot start while a failed rollback is about to restore files. A claim
-    // that skips restart continuations is not blocked by them either.
-    // Title generation is correlated metadata work, so it has its own
-    // per-thread lane and cannot delay provider lifecycle effects.
+    // An earlier effect waiting out a retry backoff still blocks later ones, so
+    // a turn cannot start while a failed rollback is about to restore files.
     const claimableCandidatePredicate = (
       availableBefore?: string,
       excludeRestartContinuations = false,
@@ -374,9 +405,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             `,
             { concurrency: 1, discard: true },
           );
-          // Do not signal here: callers enqueue inside a larger transaction,
-          // and workers must only observe availability after that transaction
-          // commits. EventSink owns the corresponding post-commit notification.
+          // EventSink owns the corresponding post-commit notification.
         }).pipe(Effect.mapError((cause) => new EffectOutboxError({ operation: "enqueue", cause }))),
       get: (effectId) =>
         sql<EffectRow>`
@@ -443,15 +472,24 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             },
             { discard: true },
           );
-          // Cancellation can unblock other pending work on the same thread.
-          // This method is deliberately post-commit, so it is also the safe
-          // place to wake claimers after the durable status change.
+          yield* signalSettled(effectIds);
           if (effectIds.length > 0) yield* notifyAvailable(effectIds.length);
         }),
       awaitCancellation: (effectId) => Deferred.await(cancellationSignal(effectId)),
       clearCancellation: (effectId) =>
         Effect.sync(() => {
           cancellationSignals.delete(effectId);
+        }),
+      awaitSettled: (effectId) =>
+        Effect.gen(function* () {
+          // Registered before the read, so a settle right after it still resolves.
+          const signal = settledSignals.get(effectId) ?? Deferred.makeUnsafe<void>();
+          settledSignals.set(effectId, signal);
+          const effect = yield* service.get(effectId);
+          if (Option.exists(effect, ({ status }) => status === "pending" || status === "running")) {
+            return yield* Deferred.await(signal);
+          }
+          yield* signalSettled([effectId]);
         }),
       reconcileAfterProcessLoss: Effect.gen(function* () {
         const now = DateTime.formatIso(yield* DateTime.now);
@@ -565,6 +603,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           `;
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
+            yield* signalSettled([effectId]);
             yield* notifyAvailable();
           }
           return rows.length === 1;
@@ -623,14 +662,54 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           `;
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
+            yield* signalSettled([effectId]);
             yield* notifyAvailable();
           }
           return rows.length === 1;
         }).pipe(
           Effect.mapError((cause) => new EffectOutboxError({ operation: "fail", effectId, cause })),
         ),
+      pruneSettled: Effect.gen(function* () {
+        const cutoff = DateTime.formatIso(
+          DateTime.subtractDuration(yield* DateTime.now, SETTLED_EFFECT_RETENTION),
+        );
+        // Each batch is its own statement, so a large backlog never holds the
+        // write lock for long and writers can commit between batches.
+        const deleteBatch = sql<{ readonly effect_id: string }>`
+          DELETE FROM orchestration_v2_effect_outbox
+          WHERE rowid IN (
+            SELECT rowid
+            FROM orchestration_v2_effect_outbox
+            WHERE status IN ('succeeded', 'cancelled')
+              AND completed_at < ${cutoff}
+            LIMIT ${PRUNE_BATCH_SIZE}
+          )
+          RETURNING effect_id
+        `;
+        let pruned = 0;
+        while (true) {
+          const deleted = (yield* deleteBatch).length;
+          pruned += deleted;
+          if (deleted < PRUNE_BATCH_SIZE) return pruned;
+          yield* Effect.yieldNow;
+        }
+      }).pipe(
+        Effect.mapError((cause) => new EffectOutboxError({ operation: "prune-settled", cause })),
+      ),
     };
 
     return service;
+  }),
+);
+
+export const layerPruneWorker = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const outbox = yield* EffectOutboxV2;
+    yield* forkParked(
+      outbox.pruneSettled.pipe(
+        Effect.catch((cause) => Effect.logWarning("Failed to prune settled effects", { cause })),
+        Effect.repeat(Schedule.spaced(Duration.hours(1))),
+      ),
+    );
   }),
 );

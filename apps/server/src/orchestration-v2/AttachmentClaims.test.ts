@@ -23,7 +23,7 @@ import {
   releaseClaimedAttachments,
 } from "./AttachmentClaims.ts";
 
-const testLayer = Layer.mergeAll(NodeServices.layer).pipe(
+const layerTest = Layer.mergeAll(NodeServices.layer).pipe(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-attachment-claims-" })),
   Layer.provideMerge(NodeServices.layer),
 );
@@ -62,7 +62,7 @@ describe("AttachmentClaims", () => {
       const claimed = yield* claimPendingAttachments({ threadId: "thread-many", attachments });
       expect(claimed.attachments).toEqual(attachments);
       expect(claimed.claimedPaths).toEqual([]);
-    }).pipe(Effect.provide(testLayer)),
+    }).pipe(Effect.provide(layerTest)),
   );
 
   it.effect("rejects oversized image batches before copying a pending upload", () =>
@@ -89,7 +89,7 @@ describe("AttachmentClaims", () => {
       if (result._tag === "Failure") expect(String(result.cause)).toContain("80 MiB");
       const config = yield* ServerConfig.ServerConfig;
       expect(NodeFS.readdirSync(config.attachmentsDir)).toHaveLength(1);
-    }).pipe(Effect.provide(testLayer)),
+    }).pipe(Effect.provide(layerTest)),
   );
 
   it.effect("claims a pending upload into the thread store and rewrites the id", () =>
@@ -112,12 +112,11 @@ describe("AttachmentClaims", () => {
       expect(parseThreadSegmentFromAttachmentId(attachment.id)).toBe("thread-claims-1");
       expect(claimed.claimedPaths).toHaveLength(1);
       expect(NodeFS.existsSync(claimed.claimedPaths[0]!)).toBe(true);
-      // The pending copy stays behind as the retry source.
       const pendingFiles = NodeFS.readdirSync(config.attachmentsDir).filter((entry) =>
         entry.startsWith("pending-"),
       );
       expect(pendingFiles).toHaveLength(1);
-    }).pipe(Effect.provide(testLayer)),
+    }).pipe(Effect.provide(layerTest)),
   );
 
   it.effect("passes already-claimed attachments through untouched", () =>
@@ -135,7 +134,7 @@ describe("AttachmentClaims", () => {
       });
       expect(claimed.attachments[0]).toBe(stored);
       expect(claimed.claimedPaths).toHaveLength(0);
-    }).pipe(Effect.provide(testLayer)),
+    }).pipe(Effect.provide(layerTest)),
   );
 
   it.effect("rejects a pending ref whose staged file is missing", () =>
@@ -151,7 +150,7 @@ describe("AttachmentClaims", () => {
         claimPendingAttachments({ threadId: "thread-claims-3", attachments: [missing] }),
       );
       expect(result._tag).toBe("Failure");
-    }).pipe(Effect.provide(testLayer)),
+    }).pipe(Effect.provide(layerTest)),
   );
 
   it.effect("rejects a size mismatch and cleans up earlier claims from the batch", () =>
@@ -181,12 +180,11 @@ describe("AttachmentClaims", () => {
         const error = result.cause;
         expect(String(error)).toContain("stored size does not match");
       }
-      // The successfully claimed first attachment was rolled back.
       const claimedFiles = NodeFS.readdirSync(config.attachmentsDir).filter((entry) =>
         entry.startsWith("thread-claims-4-"),
       );
       expect(claimedFiles).toHaveLength(0);
-    }).pipe(Effect.provide(testLayer)),
+    }).pipe(Effect.provide(layerTest)),
   );
 
   it.effect("rejects duplicate attachment ids before copying anything", () =>
@@ -214,11 +212,10 @@ describe("AttachmentClaims", () => {
           entry.startsWith("thread-claims-dupe-"),
         ),
       ).toHaveLength(0);
-      // The pending source survives for a corrected retry.
       expect(
         NodeFS.readdirSync(config.attachmentsDir).filter((entry) => entry.startsWith("pending-")),
       ).toHaveLength(1);
-    }).pipe(Effect.provide(testLayer)),
+    }).pipe(Effect.provide(layerTest)),
   );
 
   it.effect("rolls back a copy that finishes after the claim is interrupted", () =>
@@ -251,11 +248,7 @@ describe("AttachmentClaims", () => {
       }).pipe(Effect.provideService(FileSystem.FileSystem, gatedFileSystem), Effect.forkChild);
 
       const [sourcePath, claimedPath] = yield* Deferred.await(copyArgs);
-      // Request the interrupt while the copy is in flight; the claim's
-      // uninterruptible copy region must wait for the write to settle.
       claimFiber.interruptUnsafe();
-      // Settle the gate on the writer's exit too: the claim's masked await
-      // cannot be unwound, so a failed write must still release it.
       const writer = yield* fileSystem
         .copyFile(sourcePath, claimedPath)
         .pipe(Effect.ensuring(Deferred.succeed(copyDone, undefined)), Effect.forkChild);
@@ -265,14 +258,12 @@ describe("AttachmentClaims", () => {
       expect(Exit.isSuccess(writerExit)).toBe(true);
 
       expect(Exit.hasInterrupts(exit)).toBe(true);
-      // Rollback removed the copy that landed after the interrupt...
       expect(NodeFS.existsSync(claimedPath)).toBe(false);
-      // ...and the pending source survived for a retry.
       expect(NodeFS.existsSync(sourcePath)).toBe(true);
       expect(
         NodeFS.readdirSync(config.attachmentsDir).filter((entry) => entry.startsWith("pending-")),
       ).toHaveLength(1);
-    }).pipe(Effect.provide(testLayer)),
+    }).pipe(Effect.provide(layerTest)),
   );
 
   it.effect("releaseClaimedAttachments removes claimed copies best-effort", () =>
@@ -289,15 +280,12 @@ describe("AttachmentClaims", () => {
       expect(NodeFS.existsSync(claimed.claimedPaths[0]!)).toBe(true);
       yield* releaseClaimedAttachments(claimed.claimedPaths);
       expect(NodeFS.existsSync(claimed.claimedPaths[0]!)).toBe(false);
-      // Releasing again is a no-op, not an error.
       yield* releaseClaimedAttachments(claimed.claimedPaths);
-    }).pipe(Effect.provide(testLayer)),
+    }).pipe(Effect.provide(layerTest)),
   );
 
   it.effect("treats malformed ids as non-pending and passes them through", () =>
     Effect.gen(function* () {
-      // Not a parseable pending ref: nothing to claim, so the ref flows
-      // through unchanged and downstream delivery decides what to do with it.
       const bogus: ChatAttachment = {
         type: "image",
         id: ChatAttachmentId.make("pending-not-a-uuid"),
@@ -311,6 +299,6 @@ describe("AttachmentClaims", () => {
       });
       expect(claimed.attachments[0]).toBe(bogus);
       expect(claimed.claimedPaths).toHaveLength(0);
-    }).pipe(Effect.provide(testLayer)),
+    }).pipe(Effect.provide(layerTest)),
   );
 });

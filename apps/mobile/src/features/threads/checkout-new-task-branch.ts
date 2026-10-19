@@ -6,12 +6,10 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import type { VcsSwitchRefInput, VcsSwitchRefResult } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 
 import { shouldCheckoutNewTaskBranch } from "./new-task-context-presentation";
 
-/** Resolve a composer branch only after its checkout succeeds. Existing worktrees
- * and new-worktree base selections already identify a separate workspace. */
 export async function checkoutNewTaskBranch<E>(input: {
   readonly branch: VcsRef;
   readonly project: Pick<EnvironmentProject, "environmentId" | "workspaceRoot"> | null;

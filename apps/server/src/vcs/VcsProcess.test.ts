@@ -1,18 +1,20 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, expect, it } from "@effect/vitest";
-import { HostProcessWorkingDirectory } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Cause from "effect/Cause";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import { TestClock } from "effect/testing";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/process";
 
 import {
   VcsProcessExitError,
@@ -30,10 +32,10 @@ const run = (input: VcsProcess.VcsProcessInput) =>
     return yield* process.run(input);
   });
 
-const liveLayer = VcsProcess.layer.pipe(Layer.provide(NodeServices.layer));
+const layerLive = VcsProcess.layer.pipe(Layer.provide(NodeServices.layer));
 
 const provideLive = <A, E, R>(effect: Effect.Effect<A, E, R | VcsProcess.VcsProcess>) =>
-  effect.pipe(Effect.provide(liveLayer));
+  effect.pipe(Effect.provide(layerLive));
 
 const baseInput = {
   operation: "test.process-boundary",
@@ -292,6 +294,32 @@ describe("VcsProcess.run", () => {
     }).pipe(provideLive),
   );
 
+  it.effect("keeps git from opening a folder laid out as a bare repository", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-vcs-bare-" });
+      yield* fileSystem.makeDirectory(path.join(cwd, "objects", "info"), { recursive: true });
+      yield* fileSystem.makeDirectory(path.join(cwd, "refs", "heads"), { recursive: true });
+      yield* fileSystem.writeFileString(path.join(cwd, "HEAD"), "ref: refs/heads/main\n");
+      yield* fileSystem.writeFileString(
+        path.join(cwd, "config"),
+        '[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n\tfsmonitor = "echo ran >> fsmonitor-runs; false"\n',
+      );
+
+      const result = yield* run({
+        operation: "test.bare-repository",
+        command: "git",
+        args: ["status"],
+        cwd,
+        allowNonZeroExit: true,
+      });
+
+      expect(result.exitCode).not.toBe(0);
+      expect(yield* fileSystem.exists(path.join(cwd, "fsmonitor-runs"))).toBe(false);
+    }).pipe(Effect.scoped, provideLive, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("writes stdin before waiting for exit", () =>
     Effect.gen(function* () {
       const result = yield* run({
@@ -535,7 +563,7 @@ describe("VcsProcess.run", () => {
         operation: "test.output-limit",
         command: "node",
         args: ["-e", "process.stdout.write('x'.repeat(2048))"],
-        cwd: yield* HostProcessWorkingDirectory,
+        cwd: yield* HostProcess.WorkingDirectory,
         maxOutputBytes: 128,
         outputMode: "error",
       }).pipe(Effect.flip);

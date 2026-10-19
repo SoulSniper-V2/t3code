@@ -15,6 +15,15 @@ export function sortModelsByTokens(models: readonly ModelTotals[]) {
 }
 
 /**
+ * A model's share of the selected metric, or `null` for a cost share of an
+ * unknown cost. An unpriced model still has a real token share.
+ */
+export function modelShare(model: ModelTotals, metric: "cost" | "tokens"): number | null {
+  if (metric === "tokens") return model.tokenShare;
+  return isModelCostUnknown(model) ? null : model.costShare;
+}
+
+/**
  * Share of a model's input read from cache, or `null` without input. Cache
  * writes count as misses: that input was processed in full.
  */
@@ -31,11 +40,9 @@ export function costPerMillionTokens(model: ModelTotals): number | null {
     : (model.costUsd / pricedTokens) * 1_000_000;
 }
 
-/** A neutral step between background and foreground, so mixes never borrow a provider's color. */
 const ink = (percent: number) =>
   `color-mix(in oklab, var(--foreground) ${percent}%, var(--background))`;
 
-/** Adjacent segments stay above the 15 ΔE separation floor in both themes. */
 const TYPE_COLORS = {
   input: ink(60),
   cacheRead: ink(30),
@@ -50,8 +57,6 @@ export function costTypeSegments(cost: CategoryCost): readonly ShareSegment[] {
     { label: "Cache read", value: cost.cacheRead, color: TYPE_COLORS.cacheRead },
     { label: "Cache write", value: cost.cacheWrite, color: TYPE_COLORS.cacheWrite },
     { label: "Output", value: cost.output, color: TYPE_COLORS.output },
-    // Reported cost with no rates to split it, or from older servers. Below a
-    // cent it is rounding, not usage.
     { label: "Other", value: cost.unsplit >= 0.005 ? cost.unsplit : 0, color: TYPE_COLORS.other },
   ];
 }
@@ -67,7 +72,6 @@ export function tokenTypeSegments(
   ];
 }
 
-/** Speeds are ordered by price, so they brighten from standard to ultrafast. */
 export function speedCostSegments(cost: SpeedCost): readonly ShareSegment[] {
   return [
     { label: "Standard", value: cost.standard, color: ink(34) },

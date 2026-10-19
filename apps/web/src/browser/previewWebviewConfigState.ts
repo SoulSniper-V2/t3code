@@ -7,7 +7,7 @@ import type {
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 
 import { previewBridge } from "~/components/preview/previewBridge";
 
@@ -65,8 +65,7 @@ export const loadPreviewWebviewConfig = (
  *
  * The profile is the tail rather than a second field, so an id containing the
  * delimiter round-trips whole instead of being truncated into a different
- * profile's key. `BrowserProfileId` rejects control characters, which is what
- * makes the environment side of the split unambiguous.
+ * profile's key.
  */
 const CONFIG_KEY_DELIMITER = "\u0000";
 

@@ -3,7 +3,7 @@ import {
   IsoDateTime,
   ModelSelection,
   type OrchestrationProjectShell,
-  ProjectIconOverride,
+  StoredProjectIcon,
   ProjectId,
   ProjectScript,
   ThreadEnvMode,
@@ -13,8 +13,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import * as SqlSchema from "effect/unstable/sql/SqlSchema";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SqlSchema from "effect/sql/SqlSchema";
 
 export class ProjectStoreV2Error extends Schema.TaggedError<ProjectStoreV2Error>()(
   "ProjectStoreV2Error",
@@ -28,7 +28,6 @@ export class ProjectStoreV2Error extends Schema.TaggedError<ProjectStoreV2Error>
   }
 }
 
-/** One row of `projection_projects`, the durable project read model. */
 export const ProjectRow = Schema.Struct({
   projectId: ProjectId,
   title: Schema.String,
@@ -37,7 +36,7 @@ export const ProjectRow = Schema.Struct({
   defaultThreadEnvMode: Schema.NullOr(ThreadEnvMode),
   autoPull: Schema.Boolean,
   faviconPath: Schema.NullOr(Schema.String),
-  projectIcon: Schema.NullOr(ProjectIconOverride),
+  projectIcon: Schema.NullOr(StoredProjectIcon),
   scripts: Schema.Array(ProjectScript),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -49,11 +48,10 @@ const ProjectDbRow = Schema.Struct({
   ...ProjectRow.fields,
   defaultModelSelection: Schema.NullOr(Schema.fromJsonString(ModelSelection)),
   autoPull: Schema.BooleanFromBit,
-  projectIcon: Schema.NullOr(Schema.fromJsonString(ProjectIconOverride)),
+  projectIcon: Schema.NullOr(Schema.fromJsonString(StoredProjectIcon)),
   scripts: Schema.fromJsonString(Schema.Array(ProjectScript)),
 });
 
-/** Shell fields without workspace-derived enrichment such as repository identity. */
 function toShell(row: ProjectRow): OrchestrationProjectShell {
   return {
     id: row.projectId,
@@ -74,7 +72,7 @@ function toShell(row: ProjectRow): OrchestrationProjectShell {
 export class ProjectStoreV2 extends Context.Service<
   ProjectStoreV2,
   {
-    /** Fold one committed project event into its row. Call inside the commit transaction. */
+    /** Call inside the commit transaction. */
     readonly apply: (event: ApplicationProjectEvent) => Effect.Effect<void, ProjectStoreV2Error>;
     readonly get: (
       projectId: ProjectId,
@@ -88,11 +86,9 @@ export class ProjectStoreV2 extends Context.Service<
     readonly findActiveByWorkspaceRoot: (
       workspaceRoot: string,
     ) => Effect.Effect<Option.Option<ProjectRow>, ProjectStoreV2Error>;
-    /** An active project's shell without enrichment such as repository identity. */
     readonly getShell: (
       projectId: ProjectId,
     ) => Effect.Effect<Option.Option<OrchestrationProjectShell>, ProjectStoreV2Error>;
-    /** Active project shells in creation order, without enrichment. */
     readonly listShells: (options?: {
       readonly projectIds?: ReadonlyArray<ProjectId>;
     }) => Effect.Effect<ReadonlyArray<OrchestrationProjectShell>, ProjectStoreV2Error>;

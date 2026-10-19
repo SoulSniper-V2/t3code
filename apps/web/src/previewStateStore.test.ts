@@ -453,6 +453,18 @@ describe("previewStateStore (single-tab)", () => {
     expect(state.snapshot).toBeNull();
   });
 
+  it("keeps the state object when a refetched list changes nothing", () => {
+    reconcilePreviewServerSessions(ref, { sessions: [], serverEpoch, revision: 1 });
+    const loaded = readThreadPreviewState(ref);
+
+    reconcilePreviewServerSessions(ref, { sessions: [], serverEpoch, revision: 1 });
+    expect(readThreadPreviewState(ref)).toBe(loaded);
+
+    const snapshot = makeSnapshot();
+    reconcilePreviewServerSessions(ref, { sessions: [snapshot], serverEpoch, revision: 2 });
+    expect(readThreadPreviewState(ref).sessions).toEqual({ [snapshot.tabId]: snapshot });
+  });
+
   it("ignores a list response older than the latest server event", () => {
     const snapshot = makeSnapshot();
     applyPreviewServerEvent(ref, {
@@ -466,6 +478,19 @@ describe("previewStateStore (single-tab)", () => {
     reconcilePreviewServerSessions(ref, { sessions: [], serverEpoch, revision: 0 });
 
     expect(readThreadPreviewState(ref).sessions).toEqual({ [snapshot.tabId]: snapshot });
+    expect(readThreadPreviewState(ref).listLoaded).toBe(false);
+
+    const olderTab = makeSnapshot({ tabId: "tab_before_event" });
+    reconcilePreviewServerSessions(ref, {
+      sessions: [olderTab, snapshot],
+      serverEpoch,
+      revision: 2,
+    });
+    expect(readThreadPreviewState(ref).listLoaded).toBe(true);
+    expect(readThreadPreviewState(ref).sessions).toEqual({
+      [olderTab.tabId]: olderTab,
+      [snapshot.tabId]: snapshot,
+    });
   });
 
   it("does not resurrect a tab from an event older than its close", () => {

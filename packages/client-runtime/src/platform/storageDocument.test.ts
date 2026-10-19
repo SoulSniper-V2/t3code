@@ -27,6 +27,8 @@ import {
 import {
   ConnectionCatalogDocument,
   EMPTY_CONNECTION_CATALOG_DOCUMENT,
+  catalogRoutes,
+  setRoutesInCatalog,
   putRemoteDpopTokenInCatalog,
   registerConnectionInCatalog,
   removeConnectionFromCatalog,
@@ -123,7 +125,7 @@ describe("ConnectionCatalogDocument", () => {
       expect(yield* afterRemoval.get(entry)).toBe("off");
 
       yield* permissions.set(entry, "read");
-      document = removeConnectionFromCatalog(document, BEARER_TARGET);
+      document = removeConnectionFromCatalog(document, ENVIRONMENT_ID);
       const afterCatalogRemoval = yield* makeGitHubRoutingPermissions(storage);
       expect(yield* afterCatalogRemoval.get(entry)).toBe("off");
     }),
@@ -273,7 +275,7 @@ describe("ConnectionCatalogDocument", () => {
       }),
     );
 
-    expect(removeConnectionFromCatalog(registered, BEARER_TARGET)).toEqual(
+    expect(removeConnectionFromCatalog(registered, ENVIRONMENT_ID)).toEqual(
       EMPTY_CONNECTION_CATALOG_DOCUMENT,
     );
   });
@@ -295,7 +297,7 @@ describe("ConnectionCatalogDocument", () => {
       EMPTY_CONNECTION_CATALOG_DOCUMENT,
       new RelayConnectionRegistration({ target: RELAY_TARGET }),
     );
-    const removed = removeConnectionFromCatalog(registered, RELAY_TARGET);
+    const removed = removeConnectionFromCatalog(registered, ENVIRONMENT_ID);
 
     expect(putRemoteDpopTokenInCatalog(removed, REMOTE_TOKEN)).toEqual(
       EMPTY_CONNECTION_CATALOG_DOCUMENT,
@@ -309,7 +311,7 @@ describe("ConnectionCatalogDocument", () => {
     );
     const refreshed = putRemoteDpopTokenInCatalog(registered, REMOTE_TOKEN);
 
-    expect(removeConnectionFromCatalog(refreshed, RELAY_TARGET)).toEqual(
+    expect(removeConnectionFromCatalog(refreshed, ENVIRONMENT_ID)).toEqual(
       EMPTY_CONNECTION_CATALOG_DOCUMENT,
     );
   });
@@ -363,7 +365,6 @@ describe("ConnectionCatalogDocument", () => {
     expect(disabled.disabledEnvironmentIds).toEqual([ENVIRONMENT_ID]);
     expect(disabled.targets).toEqual(registered.targets);
     expect(disabled.credentials).toEqual(registered.credentials);
-    // Idempotent: switching off twice stores the id once.
     expect(
       setConnectionEnabledInCatalog(disabled, ENVIRONMENT_ID, false).disabledEnvironmentIds,
     ).toEqual([ENVIRONMENT_ID]);
@@ -371,7 +372,6 @@ describe("ConnectionCatalogDocument", () => {
     expect(
       setConnectionEnabledInCatalog(disabled, ENVIRONMENT_ID, true).disabledEnvironmentIds,
     ).toEqual([]);
-    // Re-registering (editing label or URL) keeps the flag.
     expect(
       registerConnectionInCatalog(
         disabled,
@@ -382,10 +382,12 @@ describe("ConnectionCatalogDocument", () => {
         }),
       ).disabledEnvironmentIds,
     ).toEqual([ENVIRONMENT_ID]);
-    expect(removeConnectionFromCatalog(disabled, BEARER_TARGET).disabledEnvironmentIds).toEqual([]);
+    expect(removeConnectionFromCatalog(disabled, ENVIRONMENT_ID).disabledEnvironmentIds).toEqual(
+      [],
+    );
   });
 
-  it("persists the normalized SSH profile beside its target", () => {
+  it("persists the normalized SSH profile and its paired token beside its target", () => {
     const target = new SshConnectionTarget({
       environmentId: ENVIRONMENT_ID,
       label: "SSH",
@@ -404,11 +406,57 @@ describe("ConnectionCatalogDocument", () => {
     });
     const document = registerConnectionInCatalog(
       EMPTY_CONNECTION_CATALOG_DOCUMENT,
-      new SshConnectionRegistration({ target, profile }),
+      new SshConnectionRegistration({ target, profile, credential: BEARER_CREDENTIAL }),
     );
 
     expect(document.targets).toEqual([target]);
     expect(document.profiles).toEqual([profile]);
-    expect(document.credentials).toEqual([]);
+    expect(document.credentials).toEqual([
+      { connectionId: target.connectionId, credential: BEARER_CREDENTIAL },
+    ]);
+    // Removing the route forgets its token too.
+    expect(removeConnectionFromCatalog(document, ENVIRONMENT_ID).credentials).toEqual([]);
+  });
+
+  it("keeps every route of an environment and drops only a removed route's records", () => {
+    const withBearer = registerConnectionInCatalog(
+      { ...EMPTY_CONNECTION_CATALOG_DOCUMENT, remoteDpopTokens: [REMOTE_TOKEN] },
+      new BearerConnectionRegistration({
+        target: BEARER_TARGET,
+        profile: BEARER_PROFILE,
+        credential: BEARER_CREDENTIAL,
+      }),
+    );
+    const withRelay = registerConnectionInCatalog(
+      withBearer,
+      new RelayConnectionRegistration({ target: RELAY_TARGET }),
+      [BEARER_TARGET, RELAY_TARGET],
+    );
+    expect(catalogRoutes(withRelay, ENVIRONMENT_ID)).toEqual([BEARER_TARGET, RELAY_TARGET]);
+    expect(withRelay.credentials).toHaveLength(1);
+
+    const relayOnly = setRoutesInCatalog(withRelay, ENVIRONMENT_ID, [RELAY_TARGET]);
+    expect(relayOnly.targets).toEqual([RELAY_TARGET]);
+    expect(relayOnly.profiles).toEqual([]);
+    expect(relayOnly.credentials).toEqual([]);
+    expect(relayOnly.remoteDpopTokens).toEqual([REMOTE_TOKEN]);
+
+    const bearerOnly = setRoutesInCatalog(withRelay, ENVIRONMENT_ID, [BEARER_TARGET]);
+    expect(bearerOnly.credentials).toHaveLength(1);
+    expect(bearerOnly.remoteDpopTokens).toEqual([]);
+  });
+
+  it("keeps an environment's position in the catalog when its routes change", () => {
+    const other = new RelayConnectionTarget({
+      environmentId: EnvironmentId.make("environment-2"),
+      label: "Other",
+    });
+    const document = {
+      ...EMPTY_CONNECTION_CATALOG_DOCUMENT,
+      targets: [RELAY_TARGET, other],
+    };
+    expect(
+      setRoutesInCatalog(document, ENVIRONMENT_ID, [BEARER_TARGET, RELAY_TARGET]).targets,
+    ).toEqual([BEARER_TARGET, RELAY_TARGET, other]);
   });
 });

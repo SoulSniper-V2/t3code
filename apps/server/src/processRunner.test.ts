@@ -8,8 +8,8 @@ import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
-import { ChildProcessSpawner } from "effect/unstable/process";
-import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { ChildProcessSpawner } from "effect/process";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 
 import * as ProcessRunner from "./processRunner.ts";
@@ -22,7 +22,6 @@ type ChildProcessCommand = {
   };
 };
 
-// Accesses private properties of ChildProcessCommand for testing purposes
 function asChildProcessCommand(command: unknown): ChildProcessCommand {
   return command as ChildProcessCommand;
 }
@@ -127,14 +126,17 @@ describe("runProcess", () => {
   it.effect("resolves and escapes Windows command shims before spawning", () => {
     const spawner = makeSpawner((command) =>
       Effect.sync(() => {
-        expect(command.command).toBe('^"C:\\Users\\tester\\AppData\\Roaming\\npm\\az.cmd^"');
-        expect(command.args).toEqual([
-          '^"repos^"',
-          '^"pr^"',
-          '^"list^"',
-          '^"--source-branch^"',
-          '^"feature^ ^&^ release^"',
-        ]);
+        expect(command.command).toBe(
+          [
+            '^"C:\\Users\\tester\\AppData\\Roaming\\npm\\az.cmd^"',
+            '^"repos^"',
+            '^"pr^"',
+            '^"list^"',
+            '^"--source-branch^"',
+            '^"feature^ ^&^ release^"',
+          ].join(" "),
+        );
+        expect(command.args).toEqual([]);
         expect(command.options.shell).toBe(true);
         return makeHandle({ stdout: "[]" });
       }),
@@ -145,8 +147,8 @@ describe("runProcess", () => {
       args: ["repos", "pr", "list", "--source-branch", "feature & release"],
       env: { AZURE_CONFIG_DIR: "C:\\Users\\tester\\.azure" },
     }).pipe(
-      Effect.provideService(HostProcessPlatform, "win32"),
-      Effect.provideService(HostProcessEnvironment, {
+      Effect.provideService(HostProcess.Platform, "win32"),
+      Effect.provideService(HostProcess.Environment, {
         PATH: "C:\\Users\\tester\\AppData\\Roaming\\npm",
         PATHEXT: ".COM;.EXE;.BAT;.CMD",
       }),
@@ -197,6 +199,33 @@ describe("runProcess", () => {
       expect(error).not.toHaveProperty("args");
       expect(error).not.toHaveProperty("resolvedArgs");
       expect(error.message).not.toContain("secret-token-value");
+    }),
+  );
+
+  it.effect("types spawn failures that the platform spawner throws synchronously", () =>
+    Effect.gen(function* () {
+      // A non-directory entry on PATH makes node's spawn throw ENOTDIR
+      // synchronously. The platform spawner calls it inside `Effect.callback`,
+      // so the throw arrives as a defect rather than a typed error.
+      const defect = Object.assign(new Error("spawn jj ENOTDIR"), { code: "ENOTDIR" });
+      const spawner = makeSpawner(() =>
+        Effect.callback<never, never>(() => {
+          throw defect;
+        }),
+      );
+
+      const error = yield* runWith(spawner)({
+        command: "jj",
+        args: ["--version"],
+        cwd: "/repo",
+      }).pipe(Effect.flip);
+
+      expect(error._tag).toBe("ProcessSpawnError");
+      if (error._tag !== "ProcessSpawnError") {
+        return expect.fail("Expected ProcessSpawnError");
+      }
+      expect(error).toMatchObject({ command: "jj", argumentCount: 1, cwd: "/repo" });
+      expect(error.cause).toBe(defect);
     }),
   );
 
@@ -407,7 +436,7 @@ describe("isWindowsCommandNotFound", () => {
       const isCommandNotFound = yield* ProcessRunner.isWindowsCommandNotFound(
         1,
         "wird nicht als interner oder externer Befehl, betriebsfahiges Programm oder Batch-Datei erkannt",
-      ).pipe(Effect.provideService(HostProcessPlatform, "win32"));
+      ).pipe(Effect.provideService(HostProcess.Platform, "win32"));
       expect(isCommandNotFound).toBe(true);
     }),
   );

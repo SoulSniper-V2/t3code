@@ -1,22 +1,3 @@
-/**
- * Runs OpenCode 2 through the whole orchestrator with the real driver: the
- * driver probes the binary, spawns `opencode serve`, and routes to the 2.x
- * adapter. One thread reads a file, runs a shell command, and stops another;
- * a Supervised thread approves one command, declines another, and answers a
- * question; a plan-mode thread may write only its plan; and a thread steers,
- * queues, forks and rolls back.
- *
- *   OPENCODE2_BIN=/path/to/opencode OPENCODE2_LIVE_ROOT=/scratch/dir \
- *     vp test run src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts
- *
- * The server runs with isolated HOME and XDG directories on the free
- * `opencode/big-pickle` model; `OPENCODE2_MODEL` picks another (its provider's
- * key comes from the test's environment, which the spawned server inherits).
- * A second run covers plan mode, a workspace command and skill, and `/compact`;
- * a third a generated title, T3's MCP server (`OPENCODE2_MCP_URL` names a
- * stand-in one) and a turn cut off by a killed server. Each step waits up to
- * `OPENCODE2_STEP_WAIT` seconds (120 by default).
- */
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -39,35 +20,37 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { FetchHttpClient, HttpClient } from "effect/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { describe } from "vite-plus/test";
 
-import * as ResetCreditCoordinator from "../provider/Layers/resetCreditCoordinator.ts";
+import * as ResetCreditCoordinator from "../provider/resetCreditCoordinator.ts";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as HostPowerMonitor from "../background/HostPowerMonitor.ts";
 import * as ServerConfig from "../config.ts";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as AntigravityInstallation from "../provider/AntigravityInstallation.ts";
 import * as CodexInstallation from "../provider/CodexInstallation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ModelManifest from "../provider/ModelManifest.ts";
-import { ProviderInstanceRegistryHydrationLive } from "../provider/Layers/ProviderInstanceRegistryHydration.ts";
-import * as ProviderEventLoggers from "../provider/Layers/ProviderEventLoggers.ts";
-import * as OpenCode2Client from "../provider/opencode2/OpenCode2Client.ts";
-import * as OpenCodeRuntime from "../provider/opencodeRuntime.ts";
-import * as OpenCodeServerLedger from "../provider/OpenCodeServerLedger.ts";
+import * as ProviderInstanceRegistryHydration from "../provider/ProviderInstanceRegistryHydration.ts";
+import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import * as OpenCode2Client from "@t3tools/provider-opencode/server/v2/OpenCode2Client";
+import * as OpenCodeRuntime from "@t3tools/provider-opencode/server/OpenCodeRuntime";
+import * as OpenCodeServerLedger from "@t3tools/provider-opencode/server/OpenCodeServerLedger";
 import * as ServerSettings from "../serverSettings.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as Orchestrator from "./Orchestrator.ts";
-import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
-import { worktreeRepairDependenciesTestLayer } from "./ProviderTurnStartService.testkit.ts";
-import { OrchestrationV2LayerLive } from "./runtimeLayer.ts";
-import * as IdAllocator from "./IdAllocator.ts";
-import * as ProviderContinuationRequests from "./ProviderContinuationRequests.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ProviderTurnStartServiceTestkit from "./ProviderTurnStartService.testkit.ts";
+import * as RuntimeLayer from "./runtimeLayer.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as ProviderContinuationService from "./ProviderContinuationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
@@ -79,12 +62,10 @@ const MODEL: ModelSelection = {
   instanceId: INSTANCE,
   model: process.env.OPENCODE2_MODEL ?? "opencode/big-pickle",
 };
-// The free model the thread switches to mid-conversation.
 const SWITCHED_MODEL = "opencode/mimo-v2.6-flash-free";
 
-/** The OpenCode servers the driver spawned, newest last, so a test can kill one by its own PID. */
 const spawnedPids: Array<number> = [];
-const spawnedServers = Layer.succeed(
+const layerSpawnedServers = Layer.succeed(
   OpenCodeServerLedger.OpenCodeServerLedger,
   OpenCodeServerLedger.OpenCodeServerLedger.of({
     track: ({ pid }) =>
@@ -95,12 +76,8 @@ const spawnedServers = Layer.succeed(
   }),
 );
 
-/**
- * Credentials for T3's MCP server. `OPENCODE2_MCP_URL` points them at a stand-in
- * MCP server the run can see called; without it they point nowhere, as in replay.
- */
 const MCP_URL = process.env.OPENCODE2_MCP_URL ?? "http://127.0.0.1/mcp";
-const mcpRegistryLayer = Layer.succeed(
+const layerMcpRegistry = Layer.succeed(
   McpSessionRegistry.McpSessionRegistry,
   McpSessionRegistry.McpSessionRegistry.of({
     issue: ({ threadId, providerInstanceId }) =>
@@ -123,20 +100,19 @@ const mcpRegistryLayer = Layer.succeed(
   }),
 );
 
-const PlatformTestLayer = Layer.merge(
+const layerPlatformTest = Layer.merge(
   NodeServices.layer,
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
     resolveLink: () => Effect.die("unused title link"),
   }),
 );
-const serverConfigLayer = ServerConfig.layerTest(`${ROOT}/work`, { prefix: "t3-opencode2-live-" });
-const vcsDriverRegistryLayer = VcsDriverRegistry.layer.pipe(
+const layerServerConfig = ServerConfig.layerTest(`${ROOT}/work`, { prefix: "t3-opencode2-live-" });
+const layerVcsDriverRegistry = VcsDriverRegistry.layer.pipe(
   Layer.provide(VcsProcess.layer),
-  Layer.provide(serverConfigLayer),
-  Layer.provide(PlatformTestLayer),
+  Layer.provide(layerServerConfig),
+  Layer.provide(layerPlatformTest),
 );
-// Isolated OpenCode state: the server never touches the developer's own data.
-const serverSettingsLayer = ServerSettings.layerTest({
+const layerServerSettings = ServerSettings.layerTest({
   providerInstances: {
     [INSTANCE]: {
       driver: ProviderDriverKind.make("opencode"),
@@ -148,7 +124,6 @@ const serverSettingsLayer = ServerSettings.layerTest({
         { name: "XDG_STATE_HOME", value: `${ROOT}/state` },
         { name: "XDG_CACHE_HOME", value: `${ROOT}/cache` },
       ],
-      // `OPENCODE2_SERVER_URL` connects to an external server instead of spawning one.
       config: {
         enabled: true,
         binaryPath,
@@ -162,36 +137,36 @@ const serverSettingsLayer = ServerSettings.layerTest({
     },
   },
 });
-const backgroundPolicyLayer = BackgroundPolicy.layer.pipe(
+const layerBackgroundPolicy = BackgroundPolicy.layer.pipe(
   Layer.provide(Layer.effect(HostPowerMonitor.HostPowerMonitor, HostPowerMonitor.make())),
-  Layer.provide(serverSettingsLayer),
+  Layer.provide(layerServerSettings),
 );
-const providerInstanceRegistryLayer = ProviderInstanceRegistryHydrationLive.pipe(
+const layerProviderInstanceRegistry = ProviderInstanceRegistryHydration.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
-      serverConfigLayer.pipe(Layer.provide(PlatformTestLayer)),
-      serverSettingsLayer,
+      layerServerConfig.pipe(Layer.provide(layerPlatformTest)),
+      layerServerSettings,
       ServerSecretStore.layer.pipe(
-        Layer.provide(serverConfigLayer),
-        Layer.provide(PlatformTestLayer),
+        Layer.provide(layerServerConfig),
+        Layer.provide(layerPlatformTest),
       ),
       NodeServices.layer,
       FetchHttpClient.layer,
-      OpenCodeRuntime.OpenCodeRuntimeLive.pipe(
-        Layer.provide(spawnedServers),
-        Layer.provide(PlatformTestLayer),
+      OpenCodeRuntime.layer.pipe(
+        Layer.provide(layerSpawnedServers),
+        Layer.provide(layerPlatformTest),
       ),
       Layer.succeed(
         ProviderEventLoggers.ProviderEventLoggers,
         ProviderEventLoggers.NoOpProviderEventLoggers,
       ),
+      ProviderLatestVersions.layer,
       ModelManifest.layerTest,
       AntigravityInstallation.AntigravityInstallation.layer.pipe(
-        Layer.provide(serverConfigLayer.pipe(Layer.provide(PlatformTestLayer))),
+        Layer.provide(layerServerConfig.pipe(Layer.provide(layerPlatformTest))),
         Layer.provide(FetchHttpClient.layer),
-        Layer.provide(PlatformTestLayer),
+        Layer.provide(layerPlatformTest),
       ),
-      // The Codex driver now resolves managed ChatGPT installs; these runs never launch Codex.
       Layer.mock(CodexInstallation.CodexInstallation)({
         managedDirectory: "unused-managed-installation",
       }),
@@ -203,22 +178,21 @@ const providerInstanceRegistryLayer = ProviderInstanceRegistryHydrationLive.pipe
     ),
   ),
 );
-const orchestrationLayer = OrchestrationV2LayerLive.pipe(
-  Layer.provide(worktreeRepairDependenciesTestLayer),
-  Layer.provide(mcpRegistryLayer),
-  Layer.provide(SqlitePersistenceMemory),
-  Layer.provide(CheckpointStore.layer.pipe(Layer.provide(vcsDriverRegistryLayer))),
-  Layer.provide(serverConfigLayer),
-  Layer.provide(serverSettingsLayer),
-  // Merged, not only provided: the test reads the same instance the orchestrator uses.
-  Layer.provideMerge(providerInstanceRegistryLayer),
+const layerOrchestration = RuntimeLayer.layer.pipe(
+  Layer.provide(ProviderTurnStartServiceTestkit.layer),
+  Layer.provide(layerMcpRegistry),
+  Layer.provide(SqlitePersistence.layerMemory),
+  Layer.provide(CheckpointStore.layer.pipe(Layer.provide(layerVcsDriverRegistry))),
+  Layer.provide(layerServerConfig),
+  Layer.provide(layerServerSettings),
+  Layer.provideMerge(layerProviderInstanceRegistry),
   Layer.provide(ResetCreditCoordinator.layer),
-  Layer.provide(backgroundPolicyLayer),
-  Layer.provide(PlatformTestLayer),
+  Layer.provide(layerBackgroundPolicy),
+  Layer.provide(layerPlatformTest),
+  Layer.provide(McpProviderSessions.layer),
 );
 
-// Starts the continuation run a provider wake asks for, as the production layer does.
-const continuationWorkerLayer = ProviderContinuationService.workerLive.pipe(
+const layerContinuationWorker = ProviderContinuationService.layer.pipe(
   Layer.provide(
     Layer.unwrap(
       Effect.gen(function* () {
@@ -234,10 +208,8 @@ const continuationWorkerLayer = ProviderContinuationService.workerLive.pipe(
   Layer.provide(IdAllocator.layer),
   Layer.provide(ProviderContinuationRequests.layer),
 );
-const liveLayer = continuationWorkerLayer.pipe(Layer.provideMerge(orchestrationLayer));
+const layerLive = layerContinuationWorker.pipe(Layer.provideMerge(layerOrchestration));
 
-// How long one step may take, in seconds. A free model sometimes takes minutes
-// before its first tool call; `OPENCODE2_STEP_WAIT` raises it for such runs.
 const STEP_WAIT_SECONDS = Number(process.env.OPENCODE2_STEP_WAIT ?? "120");
 
 const settled = (projection: OrchestrationV2ThreadProjection) =>
@@ -296,10 +268,6 @@ const AssistantModel = Schema.fromJsonString(
 );
 const decodeAssistantModel = Schema.decodeUnknownSync(AssistantModel);
 
-/**
- * The `provider/model` of each assistant message in a native session, oldest
- * first, from the spawned server's own database under the isolated XDG root.
- */
 const assistantModels = (nativeSessionId: string) =>
   Effect.sync(() => {
     const db = new NodeSqlite.DatabaseSync(`${ROOT}/data/opencode/opencode.db`, { readOnly: true });
@@ -316,7 +284,6 @@ const assistantModels = (nativeSessionId: string) =>
     }
   });
 
-/** The agent that wrote each assistant message in a native session, oldest first. */
 const assistantAgents = (nativeSessionId: string) =>
   Effect.sync(() => {
     const db = new NodeSqlite.DatabaseSync(`${ROOT}/data/opencode/opencode.db`, { readOnly: true });
@@ -419,7 +386,6 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         );
         assert.equal(sleep?.status, "interrupted");
 
-        // A model change applies to the same native session on the next turn.
         const switched: ModelSelection = { instanceId: INSTANCE, model: SWITCHED_MODEL };
         yield* send(threadId, "switch", "Reply with exactly: SWITCHED", switched);
         const third = yield* waitFor(
@@ -432,7 +398,7 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         const models = yield* assistantModels(sessionId!);
         assert.equal(models.at(-1), SWITCHED_MODEL);
         assert.notEqual(models[0], SWITCHED_MODEL);
-      }).pipe(Effect.provide(Layer.merge(liveLayer, NodeServices.layer)), Effect.scoped),
+      }).pipe(Effect.provide(Layer.merge(layerLive, NodeServices.layer)), Effect.scoped),
     360_000,
   );
 
@@ -499,7 +465,6 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
           (projection) => projection.runs.length === 2 && pendingAsk(projection) !== undefined,
         );
         yield* answer("decline-answer", pendingAsk(second)!, { decision: "decline" });
-        // The model may try again; every retry is declined too.
         let declined = yield* waitFor(
           threadId,
           (projection) =>
@@ -542,7 +507,7 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         assert.equal(answered.runs.at(-1)?.status, "completed");
         const reply = answered.messages.findLast((message) => message.role === "assistant");
         assert.match(reply?.text ?? "", /blue/i);
-      }).pipe(Effect.provide(Layer.merge(liveLayer, NodeServices.layer)), Effect.scoped),
+      }).pipe(Effect.provide(Layer.merge(layerLive, NodeServices.layer)), Effect.scoped),
     600_000,
   );
 
@@ -569,10 +534,7 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
           branch: null,
           worktreePath: `${ROOT}/work`,
         });
-        // The plan agent's directory: `$HOME/.opencode/plan` under the isolated HOME.
         const planDir = path.join(ROOT, ".opencode", "plan");
-        // The plan agent runs under the session's plan rules: the edit deny
-        // holds for the workspace, and the plan directory stays writable.
         yield* send(
           threadId,
           "plan",
@@ -582,7 +544,7 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         assert.equal(planned.runs.at(-1)?.status, "completed");
         assert.isFalse(yield* fs.exists(path.join(ROOT, "work", "plan_write_probe.txt")));
         assert.isTrue(yield* fs.exists(path.join(planDir, "probe-plan.md")));
-      }).pipe(Effect.provide(Layer.merge(liveLayer, NodeServices.layer)), Effect.scoped),
+      }).pipe(Effect.provide(Layer.merge(layerLive, NodeServices.layer)), Effect.scoped),
     360_000,
   );
 
@@ -618,7 +580,6 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
             return yield* orchestrator.getThreadProjection(childThreadId!);
           });
 
-        // Foreground: the turn waits for the child thread's answer.
         const fgThread = yield* thread("fg");
         yield* send(
           fgThread,
@@ -638,11 +599,6 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
           ),
         );
 
-        // Background: when the child ends after run 1, OpenCode wakes the parent
-        // and T3 opens run 2 for that execution. A child that ends while run 1
-        // still runs has its report delivered into run 1 instead, which then
-        // answers it, and no continuation run opens. Either way the subagent
-        // completes and nothing is left running.
         const bgThread = yield* thread("bg");
         yield* send(
           bgThread,
@@ -678,8 +634,6 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
           "the parent's answer to the report lands in the run that took it",
         );
 
-        // Stop while a background child runs: OpenCode keeps a background
-        // child running past a parent Stop, so T3 stops it, and nothing wakes.
         const stopThread = yield* thread("stop");
         yield* send(
           stopThread,
@@ -705,7 +659,6 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
             projection.subagents[0] !== undefined &&
             projection.subagents[0].status !== "running",
         );
-        // Still settled once OpenCode has reported the stopped child to its parent.
         yield* Effect.sleep("5 seconds");
         const final = yield* orchestrator.getThreadProjection(stopThread);
         assert.lengthOf(final.runs, 1);
@@ -718,7 +671,7 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
           stoppedChild.turnItems.some((item) => item.status === "running"),
           "the stopped child shows nothing running",
         );
-      }).pipe(Effect.provide(Layer.merge(liveLayer, NodeServices.layer)), Effect.scoped),
+      }).pipe(Effect.provide(Layer.merge(layerLive, NodeServices.layer)), Effect.scoped),
     480_000,
   );
 
@@ -730,7 +683,6 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         const path = yield* Path.Path;
         yield* EffectWorker.runDaemonWithOptions({ concurrency: 2 }).pipe(Effect.forkScoped);
         const orchestrator = yield* Orchestrator.OrchestratorV2;
-        // A worktree of its own, so rolling back restores files for this thread only.
         const work = path.join(ROOT, "inbox-work");
         yield* fs.makeDirectory(work, { recursive: true });
         const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -790,7 +742,6 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
             )
             .join("\n");
 
-        // 1. A turn that writes ALPHA, which the rollback keeps.
         yield* dispatch(
           "alpha",
           "Use the write tool to create reverted.txt containing exactly ALPHA, then reply DONE.",
@@ -800,7 +751,6 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         assert.equal(first.runs[0]?.status, "completed");
         assert.equal((yield* fs.readFileString(path.join(work, "reverted.txt"))).trim(), "ALPHA");
 
-        // 2. A long shell turn: steered while it runs, with two messages queued behind it.
         yield* dispatch(
           "shell",
           "Run the shell command `sleep 15 && echo A` with the shell tool in the foreground (not in the background) and wait for it, then use the write tool to overwrite reverted.txt with exactly BETA, then reply DONE_A.",
@@ -827,12 +777,10 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
           drained.runs.map((run) => run.status),
           ["completed", "completed", "completed", "completed"],
         );
-        // The steer joined the running turn: its answer is in that run, one provider turn each.
         assert.include(assistantText(drained, shell!.id), "STEERED");
         assert.include(assistantText(drained, queuedB!.id), "QUEUED_B");
         assert.include(assistantText(drained, queuedC!.id), "QUEUED_C");
         assert.lengthOf(drained.providerTurns, 4);
-        // Steered natively: a steer user item in the shell run, no restart attempt.
         assert.deepEqual(
           drained.turnItems.flatMap((item) =>
             item.type === "user_message" && item.runId === shell!.id ? [item.inputIntent] : [],
@@ -845,7 +793,6 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         );
         assert.equal((yield* fs.readFileString(path.join(work, "reverted.txt"))).trim(), "BETA");
 
-        // 3. Fork from the first turn: the fork only knows what came before the shell turn.
         const forkId = ThreadId.make("thread:opencode2-live-inbox-fork");
         yield* orchestrator.dispatch({
           type: "thread.fork",
@@ -856,8 +803,6 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
           targetThreadId: forkId,
           sourcePoint: { type: "run", runId: first.runs[0]!.id },
         });
-        // In its own worktree, so the source's rollback below restores files for
-        // the source alone. The fork's session moves there with it.
         const forkWork = path.join(ROOT, "inbox-fork-work");
         yield* fs.makeDirectory(forkWork, { recursive: true });
         yield* orchestrator.dispatch({
@@ -883,8 +828,6 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         assert.equal(forked.runs[0]?.status, "completed");
         assert.include(assistantText(forked, forked.runs[0]!.id).toUpperCase(), "NO");
 
-        // 4. Roll the source back to the first turn: OpenCode's history drops the
-        // later turns and T3's checkpoint puts ALPHA back.
         const checkpoint = drained.checkpoints.find(
           (candidate) => candidate.appRunOrdinal === 1 && candidate.status === "ready",
         );
@@ -914,7 +857,6 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
           (projection) => projection.runs.length === 5 && settled(projection),
         );
         assert.include(assistantText(after, after.runs[4]!.id).toUpperCase(), "NO");
-        // OpenCode's own history kept only the first turn before the new one.
         const sessionId = after.providerThreads[0]?.nativeThreadRef?.nativeId;
         const db = new NodeSqlite.DatabaseSync(`${ROOT}/data/opencode/opencode.db`, {
           readOnly: true,
@@ -927,7 +869,7 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
           .map((row) => String(row.id));
         db.close();
         assert.lengthOf(userMessages, 2);
-      }).pipe(Effect.provide(Layer.merge(liveLayer, NodeServices.layer)), Effect.scoped),
+      }).pipe(Effect.provide(Layer.merge(layerLive, NodeServices.layer)), Effect.scoped),
     600_000,
   );
 
@@ -952,7 +894,6 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         );
         yield* EffectWorker.runDaemonWithOptions({ concurrency: 2 }).pipe(Effect.forkScoped);
 
-        // The workspace's own command and skill reach the composer's pickers.
         const instance =
           yield* (yield* ProviderInstanceRegistry.ProviderInstanceRegistry).getInstance(INSTANCE);
         assert.isDefined(instance);
@@ -987,7 +928,6 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         const lastReply = (projection: OrchestrationV2ThreadProjection) =>
           projection.turnItems.findLast((item) => item.type === "assistant_message");
 
-        // Plan mode is OpenCode's plan agent: it plans instead of editing.
         yield* send(
           threadId,
           "modes-plan",
@@ -1028,7 +968,7 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
           compaction?.type === "compaction" ? (compaction.summary ?? "").length : 0,
           0,
         );
-      }).pipe(Effect.provide(Layer.merge(liveLayer, NodeServices.layer)), Effect.scoped),
+      }).pipe(Effect.provide(Layer.merge(layerLive, NodeServices.layer)), Effect.scoped),
     360_000,
   );
 
@@ -1044,7 +984,6 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         assert.isDefined(instance);
         yield* instance!.snapshot.refresh;
 
-        // A thread title, generated in a temporary session on the 2.x server.
         const title = yield* instance!.textGeneration.generateThreadTitle({
           cwd: work,
           message: "fix the login redirect loop after oauth",
@@ -1070,7 +1009,6 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         const runs = (count: number) => (projection: OrchestrationV2ThreadProjection) =>
           projection.runs.length === count && settled(projection);
 
-        // T3's MCP server for this thread: the stand-in's one tool answers a marker.
         if (process.env.OPENCODE2_MCP_URL !== undefined) {
           yield* send(
             threadId,
@@ -1084,7 +1022,6 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         }
         const before = (yield* orchestrator.getThreadProjection(threadId)).runs.length;
 
-        // The spawned server dies mid-command; T3 restarts it and settles the turn.
         yield* send(
           threadId,
           "restart-killed",
@@ -1114,7 +1051,7 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         const answer = next.turnItems.findLast((item) => item.type === "assistant_message");
         assert.include(answer?.type === "assistant_message" ? answer.text : "", "sleep 60");
         assert.lengthOf(next.providerThreads, 1);
-      }).pipe(Effect.provide(Layer.merge(liveLayer, NodeServices.layer)), Effect.scoped),
+      }).pipe(Effect.provide(Layer.merge(layerLive, NodeServices.layer)), Effect.scoped),
     360_000,
   );
 
@@ -1156,14 +1093,12 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
           Effect.provide(FetchHttpClient.layer),
           Effect.orDie,
         );
-        // The turn keeps running on the new stream and ends with its reply.
         const done = yield* waitFor(threadId, settled);
         assert.equal(done.runs[0]?.status, "completed");
         const shell = done.turnItems.find((item) => item.type === "command_execution");
         assert.equal(shell?.status, "completed");
         const reply = done.turnItems.findLast((item) => item.type === "assistant_message");
         assert.include(reply?.type === "assistant_message" ? reply.text : "", "AFTER_DROP");
-        // The thread's T3 MCP server is registered on the external server for now.
         const opencode = yield* OpenCode2Client.make.pipe(Effect.provide(FetchHttpClient.layer));
         const api = yield* opencode.connect({
           baseUrl: process.env.OPENCODE2_SERVER_URL!,
@@ -1175,7 +1110,7 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
           [],
           "an external server gets no T3 MCP server, as with 1.x",
         );
-      }).pipe(Effect.provide(Layer.merge(liveLayer, NodeServices.layer)), Effect.scoped),
+      }).pipe(Effect.provide(Layer.merge(layerLive, NodeServices.layer)), Effect.scoped),
     360_000,
   );
 });

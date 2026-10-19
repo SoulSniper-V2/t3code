@@ -1,7 +1,9 @@
+import type { PreviewCard as PreviewCardPrimitive } from "@base-ui/react/preview-card";
 import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, PullRequestRef } from "@t3tools/contracts";
 import {
   cloneElement,
+  useRef,
   useState,
   type ComponentPropsWithoutRef,
   type MouseEvent,
@@ -9,7 +11,7 @@ import {
   type ReactNode,
 } from "react";
 
-import { formatRelativeTimeLabel } from "~/timestampFormat";
+import { RelativeTime } from "~/components/RelativeTime";
 import { pullRequestEnvironment } from "~/state/pullRequests";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useEnvironmentQuery } from "~/state/query";
@@ -45,6 +47,7 @@ export function PullRequestLinkPreview({
   fallback?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  const previewActionsRef = useRef<PreviewCardPrimitive.Root.Actions | null>(null);
   const [resolvingClick, setResolvingClick] = useState(false);
   const detailQuery = useEnvironmentQuery(
     open
@@ -96,8 +99,13 @@ export function PullRequestLinkPreview({
         : (detail?.author.login ?? null);
 
   return (
-    <PreviewCard open={open} onOpenChange={setOpen}>
-      <Tooltip open={showUrlTooltip}>
+    <PreviewCard open={open} onOpenChange={setOpen} actionsRef={previewActionsRef}>
+      <Tooltip
+        open={showUrlTooltip}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen && !showCard) previewActionsRef.current?.close();
+        }}
+      >
         <PreviewCardTrigger
           render={<TooltipTrigger render={trigger} />}
           delay={350}
@@ -131,7 +139,7 @@ export function PullRequestLinkPreview({
                   <span className="min-w-0 truncate">{authorLabel}</span>
                   <span aria-hidden>·</span>
                   <span className="shrink-0">
-                    opened {formatRelativeTimeLabel(detail.createdAt)}
+                    opened <RelativeTime timestamp={detail.createdAt} />
                   </span>
                 </div>
               </div>

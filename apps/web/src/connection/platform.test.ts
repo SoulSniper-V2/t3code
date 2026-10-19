@@ -7,11 +7,19 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import {
+  ConnectionBlockedError,
+  ConnectionTransientError,
+} from "@t3tools/client-runtime/connection";
 
 import {
   canRetainCachedPlatformRegistrationAfterRefreshFailure,
   canReuseCachedPlatformRegistration,
+  isRejectedBootstrapCredentialError,
+  isRejectedSecondaryBootstrap,
+  nextRejectedSecondaryBootstrap,
   primaryRegistrationToRetainAfterTopologyRead,
+  prepareDesktopSshEnvironment,
   provisionDesktopSshEnvironment,
   readPrimaryEnvironmentTargetResult,
   secondaryRegistrationsToRetainAfterTopologyRead,
@@ -28,16 +36,30 @@ const TARGET: DesktopSshEnvironmentTarget = {
 
 function makeBridge(
   calls: string[],
-  options?: { readonly failDescriptor?: boolean },
+  options?: {
+    readonly failDescriptor?: boolean;
+    readonly savedTokenRejected?: boolean;
+    readonly savedTokenPermissions?: ReadonlyArray<string>;
+  },
 ): DesktopBridge {
   return {
-    ensureSshEnvironment: async (target: DesktopSshEnvironmentTarget) => {
+    ensureSshEnvironment: async (
+      target: DesktopSshEnvironmentTarget,
+      ensureOptions?: { issuePairingToken?: boolean },
+    ) => {
       calls.push("ensure");
       return {
         target,
         httpBaseUrl: "http://127.0.0.1:3201/",
         wsBaseUrl: "ws://127.0.0.1:3201/",
-        pairingToken: "pairing-token",
+        pairingToken: ensureOptions?.issuePairingToken === true ? "pairing-token" : null,
+      };
+    },
+    fetchSshSessionState: async () => {
+      calls.push("session");
+      return {
+        authenticated: options?.savedTokenRejected !== true,
+        permissions: options?.savedTokenPermissions ?? AuthStandardClientScopes,
       };
     },
     fetchSshEnvironmentDescriptor: async () => {
@@ -83,6 +105,21 @@ describe("desktop SSH pairing", () => {
     }),
   );
 
+  it.effect("does not consume the credential when adding a route to a different machine", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+
+      const error = yield* provisionDesktopSshEnvironment(
+        makeBridge(calls),
+        TARGET,
+        EnvironmentId.make("some-other-machine"),
+      ).pipe(Effect.flip);
+
+      expect(error).toMatchObject({ reason: "configuration" });
+      expect(calls).toEqual(["ensure", "descriptor"]);
+    }),
+  );
+
   it.effect("does not consume the credential when descriptor discovery fails", () =>
     Effect.gen(function* () {
       const calls: string[] = [];
@@ -92,6 +129,74 @@ describe("desktop SSH pairing", () => {
         TARGET,
       ).pipe(Effect.flip);
 
+      expect(calls).toEqual(["ensure", "descriptor"]);
+    }),
+  );
+
+  it.effect("reconnects with the saved token while it holds every standard scope", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+
+      const prepared = yield* prepareDesktopSshEnvironment(makeBridge(calls), {
+        target: TARGET,
+        expectedEnvironmentId: EnvironmentId.make("environment-ssh"),
+        bearerToken: "saved-token",
+      });
+
+      expect(prepared.bearerToken).toBe("saved-token");
+      expect(calls).toEqual(["ensure", "descriptor", "session"]);
+    }),
+  );
+
+  it.effect("pairs again when the host no longer accepts the saved token", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+
+      const prepared = yield* prepareDesktopSshEnvironment(
+        makeBridge(calls, { savedTokenRejected: true }),
+        {
+          target: TARGET,
+          expectedEnvironmentId: EnvironmentId.make("environment-ssh"),
+          bearerToken: "saved-token",
+        },
+      );
+
+      expect(prepared.bearerToken).toBe("bearer-token");
+      expect(calls).toEqual(["ensure", "descriptor", "session", "ensure", "descriptor", "token"]);
+    }),
+  );
+
+  it.effect("pairs again when the saved token predates a standard scope", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+
+      const prepared = yield* prepareDesktopSshEnvironment(
+        makeBridge(calls, {
+          savedTokenPermissions: ["orchestration:read", "orchestration:operate"],
+        }),
+        {
+          target: TARGET,
+          expectedEnvironmentId: EnvironmentId.make("environment-ssh"),
+          bearerToken: "saved-token",
+        },
+      );
+
+      expect(prepared.bearerToken).toBe("bearer-token");
+      expect(calls).toEqual(["ensure", "descriptor", "session", "ensure", "descriptor", "token"]);
+    }),
+  );
+
+  it.effect("stops before sending the saved token or pairing on a different machine", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+
+      const error = yield* prepareDesktopSshEnvironment(makeBridge(calls), {
+        target: TARGET,
+        expectedEnvironmentId: EnvironmentId.make("some-other-machine"),
+        bearerToken: "saved-token",
+      }).pipe(Effect.flip);
+
+      expect(error).toMatchObject({ reason: "configuration" });
       expect(calls).toEqual(["ensure", "descriptor"]);
     }),
   );
@@ -184,6 +289,66 @@ describe("desktop-local bearer cache", () => {
         10_000,
       ),
     ).toEqual(new Map());
+  });
+});
+
+describe("rejected desktop-local bootstrap tokens", () => {
+  it("backs off on a rejected signature and retries it on a growing, capped delay", () => {
+    const signature = "http://a|ws://a|old-token";
+    const first = nextRejectedSecondaryBootstrap(undefined, signature, 0);
+
+    expect(isRejectedSecondaryBootstrap(first, signature, 59_999)).toBe(true);
+    expect(isRejectedSecondaryBootstrap(first, signature, 60_000)).toBe(false);
+
+    const second = nextRejectedSecondaryBootstrap(first, signature, 60_000);
+    expect(second.retryAtEpochMs).toBe(180_000);
+
+    let backoff = second;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      backoff = nextRejectedSecondaryBootstrap(backoff, signature, 0);
+    }
+    expect(backoff.delayMs).toBe(30 * 60_000);
+  });
+
+  it("retries at once when the token or endpoint changes", () => {
+    const rejected = nextRejectedSecondaryBootstrap(undefined, "http://a|ws://a|old-token", 0);
+
+    expect(isRejectedSecondaryBootstrap(rejected, "http://a|ws://a|new-token", 1)).toBe(false);
+    expect(isRejectedSecondaryBootstrap(rejected, "http://b|ws://b|old-token", 1)).toBe(false);
+    expect(isRejectedSecondaryBootstrap(undefined, "http://a|ws://a|old-token", 1)).toBe(false);
+    expect(nextRejectedSecondaryBootstrap(rejected, "http://a|ws://a|new-token", 1).delayMs).toBe(
+      60_000,
+    );
+  });
+
+  it("treats only authentication rejections as a dead credential", () => {
+    expect(
+      isRejectedBootstrapCredentialError(
+        new ConnectionBlockedError({ reason: "authentication", detail: "invalid" }),
+      ),
+    ).toBe(true);
+    expect(
+      isRejectedBootstrapCredentialError(
+        new ConnectionTransientError({ reason: "endpoint-unavailable", detail: "booting" }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("desktop-local bearer cache across token changes", () => {
+  it("keeps a live bearer when only the bootstrap token rotates", () => {
+    const cached = {
+      signature: "http://a|ws://a",
+      registration: {} as never,
+      expiresAtEpochMs: 20_000,
+      refreshAtEpochMs: 15_000,
+    };
+
+    expect(canReuseCachedPlatformRegistration(cached, "http://a|ws://a", 10_000)).toBe(true);
+    expect(
+      canRetainCachedPlatformRegistrationAfterRefreshFailure(cached, "http://a|ws://a", 16_000),
+    ).toBe(true);
+    expect(canReuseCachedPlatformRegistration(cached, "http://b|ws://b", 10_000)).toBe(false);
   });
 });
 

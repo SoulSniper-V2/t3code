@@ -18,8 +18,6 @@ type Options = {
   onDrop?: (point: { x: number; y: number }) => boolean;
 };
 
-/** A sidebar gesture ends on release, cancellation, or loss of its window.
- * Own the listeners so unmounting the list can cancel the sensor too. */
 export class SidebarPointerSensor {
   static activators = [
     {
@@ -34,7 +32,7 @@ export class SidebarPointerSensor {
   private readonly document: Document;
   private readonly window: Window;
 
-  constructor(private readonly props: SensorProps<Options>) {
+  constructor(private readonly props: Omit<SensorProps<Options>, "activeNode" | "context">) {
     this.pointer = props.event as PointerEvent;
     this.document = getOwnerDocument(this.pointer.target);
     this.window = getWindow(this.pointer.target);
@@ -66,10 +64,13 @@ export class SidebarPointerSensor {
 
   private move = (event: PointerEvent) => {
     if (this.phase === "finished" || event.pointerId !== this.pointer.pointerId) return;
-    // A release outside the window can be missed. Never activate or continue
-    // a drag when the initiating button is no longer held.
-    if ((event.buttons & 1) === 0) return this.cancel();
     const coordinates = { x: event.clientX, y: event.clientY };
+    // Desktop can report buttons=0 on the final move before pointerup. Let an
+    // active context drag drop there before cancelling the sidebar sort.
+    if ((event.buttons & 1) === 0) {
+      if (this.phase === "dragging") this.props.options.onDrop?.(coordinates);
+      return this.cancel();
+    }
     if (this.phase === "pending") {
       const offset = {
         x: event.clientX - this.pointer.clientX,
@@ -89,7 +90,6 @@ export class SidebarPointerSensor {
       this.document.addEventListener("selectionchange", this.clearSelection);
       this.clearSelection();
       this.props.onStart(this.coordinates());
-      return;
     }
     if (this.phase === "dragging") {
       if (event.cancelable) event.preventDefault();
@@ -131,10 +131,11 @@ export class SidebarPointerSensor {
     this.document.removeEventListener("dragstart", this.preventDefault);
     this.document.removeEventListener("contextmenu", this.preventDefault);
     this.document.removeEventListener("selectionchange", this.clearSelection);
-    // Cancellation can precede release by an arbitrary amount of time. Consume
-    // that release click, or let a fresh pointerdown end suppression if release
-    // happened outside the document. Ordinary clicks never install this guard.
-    if (!aborted) {
+    // Cancellation can precede release by an arbitrary amount of time. Consume that release
+    // click, or let a fresh pointerdown end suppression if release happened outside the
+    // document.
+    if (!aborted || cancelled) {
+      this.document.addEventListener("click", this.suppressClick, { capture: true });
       this.document.addEventListener("pointerdown", this.clearClickSuppression, { capture: true });
     }
     try {

@@ -7,6 +7,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   attachmentFileExtension,
+  chatAttachmentStableKey,
   createAttachmentId,
   createDeterministicAttachmentId,
   createPendingAttachmentId,
@@ -16,6 +17,7 @@ import {
   parseThreadSegmentFromAttachmentId,
   resolveAttachmentPathById,
   sweepStalePendingAttachments,
+  threadHtmlRenderAttachmentIds,
 } from "./attachmentStore.ts";
 
 describe("attachmentStore", () => {
@@ -27,6 +29,26 @@ describe("attachmentStore", () => {
     expect(first).toBe(retry);
     expect(next).not.toBe(first);
     expect(first && parseThreadSegmentFromAttachmentId(first)).toBe("thread-1");
+  });
+
+  it("gives a queued edit's new image its own id instead of an earlier image's", () => {
+    const imageA = new Uint8Array([1, 2, 3]);
+    const imageB = new Uint8Array([4, 5, 6]);
+    const sent = createDeterministicAttachmentId(
+      "thread-1",
+      chatAttachmentStableKey("message-1", 0, imageA),
+    );
+    const retried = createDeterministicAttachmentId(
+      "thread-1",
+      chatAttachmentStableKey("message-1", 0, imageA),
+    );
+    const edited = createDeterministicAttachmentId(
+      "thread-1",
+      chatAttachmentStableKey("message-1", 0, imageB),
+    );
+
+    expect(retried).toBe(sent);
+    expect(edited).not.toBe(sent);
   });
 
   it("keeps deterministic ids distinct when sanitized thread segments collide", () => {
@@ -91,8 +113,6 @@ describe("attachmentStore", () => {
     expect(attachmentFileExtension("report.PDF")).toBe(".pdf");
     expect(attachmentFileExtension("report")).toBe(".bin");
     expect(attachmentFileExtension("report.extensiontoolong")).toBe(".bin");
-    // ".part" is the in-flight upload suffix; storing it would make the file
-    // look like a stale partial to the sweep.
     expect(attachmentFileExtension("archive.part")).toBe(".bin");
     expect(createAttachmentId("x".repeat(80), ".abcdefghij")?.length).toBeLessThanOrEqual(128);
   });
@@ -217,5 +237,49 @@ describe("attachmentStore", () => {
     } finally {
       NodeFS.rmSync(attachmentsDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("threadHtmlRenderAttachmentIds", () => {
+  it("returns pages this thread published and skips other threads' and failed calls", () => {
+    const own = createAttachmentId("thread-a", "html")!;
+    const other = createAttachmentId("thread-b", "html")!;
+    const render = (attachmentId: string, extra = {}) => ({
+      toolName: "mcp__t3-code__html_render",
+      output: [
+        {
+          type: "text",
+          text: JSON.stringify({ htmlRender: { attachmentId, title: "x", height: 300 }, ...extra }),
+        },
+      ],
+    });
+    expect(
+      threadHtmlRenderAttachmentIds("thread-a", [
+        render(own),
+        render(other),
+        render(createAttachmentId("thread-a", "html")!, { isError: true }),
+        { toolName: "mcp__t3-code__html_preview", output: render(own).output },
+      ]),
+    ).toEqual([own]);
+  });
+
+  it("includes captured MCP App documents from any tool", () => {
+    const app = createAttachmentId("thread-a", "html")!;
+    expect(
+      threadHtmlRenderAttachmentIds("thread-a", [
+        {
+          toolName: "weather.get_weather",
+          output: {
+            t3McpApp: {
+              attachmentId: app,
+              server: "weather",
+              tool: "get_weather",
+              resourceUri: "ui://weather/dashboard",
+            },
+            result: { content: [] },
+          },
+        },
+      ]),
+    ).toEqual([app]);
   });
 });

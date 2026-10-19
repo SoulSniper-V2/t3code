@@ -1,10 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
+import * as Base64Url from "effect/encoding/Base64Url";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -12,12 +13,13 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Terminal from "effect/Terminal";
 import * as TestClock from "effect/testing/TestClock";
-import * as HttpClient from "effect/unstable/http/HttpClient";
-import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
 
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as ExternalLauncher from "../process/externalLauncher.ts";
 import * as CliTokenManager from "./CliTokenManager.ts";
 
-// pk_test_<base64 of "clerk.example.test$">
 const TEST_ENV = {
   T3CODE_CLERK_PUBLISHABLE_KEY: "pk_test_Y2xlcmsuZXhhbXBsZS50ZXN0JA==",
   T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: "oauth_client_test",
@@ -29,17 +31,13 @@ interface RecordedTokenRequest {
   readonly params: URLSearchParams;
 }
 
-// A JWT whose payload claims { email: "theo@example.test" } (signature is not
-// verified — the CLI only reads the claim to display the connected account).
 const TestIdTokenHeaderJson = Schema.fromJsonString(Schema.Struct({ alg: Schema.Literal("none") }));
 const TestIdTokenPayloadJson = Schema.fromJsonString(Schema.Struct({ email: Schema.String }));
 const encodeTestIdTokenHeader = Schema.encodeSync(TestIdTokenHeaderJson);
 const encodeTestIdTokenPayload = Schema.encodeSync(TestIdTokenPayloadJson);
 const idTokenWithEmail = (() => {
-  const header = Encoding.encodeBase64Url(encodeTestIdTokenHeader({ alg: "none" }));
-  const payload = Encoding.encodeBase64Url(
-    encodeTestIdTokenPayload({ email: "theo@example.test" }),
-  );
+  const header = Base64Url.encode(encodeTestIdTokenHeader({ alg: "none" }));
+  const payload = Base64Url.encode(encodeTestIdTokenPayload({ email: "theo@example.test" }));
   return `${header}.${payload}.`;
 })();
 
@@ -114,7 +112,6 @@ it.effect("finishes normally when the browser callback wins", () =>
 
 interface DeviceFlowServer {
   readonly requests: Array<RecordedTokenRequest>;
-  /** Token endpoint replies, consumed in order; the last one repeats. */
   readonly tokenReplies: Array<{ readonly status: number; readonly body: string }>;
 }
 
@@ -139,7 +136,7 @@ const tokenGranted = {
   }),
 };
 
-const makeDeviceFlowLayer = (server: DeviceFlowServer) =>
+const layerDeviceFlow = (server: DeviceFlowServer) =>
   Layer.succeed(
     HttpClient.HttpClient,
     HttpClient.make((request) =>
@@ -166,6 +163,56 @@ const makeDeviceFlowLayer = (server: DeviceFlowServer) =>
 const tokenRequests = (requests: ReadonlyArray<RecordedTokenRequest>) =>
   requests.filter((request) => request.url.endsWith("/oauth/token"));
 
+const layerStalledBody = Layer.succeed(
+  HttpClient.HttpClient,
+  HttpClient.make((request) =>
+    Effect.succeed(
+      HttpClientResponse.fromWeb(
+        request,
+        new Response(
+          new ReadableStream({
+            start: (controller) => controller.enqueue(new TextEncoder().encode("{")),
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    ),
+  ),
+);
+
+const expiredStoredToken = new TextEncoder().encode(
+  JSON.stringify({ accessToken: "expired", refreshToken: "refresh-token-1", expiresAtEpochMs: 0 }),
+);
+
+it.effect("a stalled token refresh fails and releases the credential lock", () =>
+  Effect.gen(function* () {
+    const manager = yield* CliTokenManager.CloudCliTokenManager;
+    const refresh = yield* manager.getExisting.pipe(Effect.flip, Effect.forkChild);
+    const hasCredential = yield* manager.hasCredential.pipe(Effect.forkChild);
+
+    yield* TestClock.adjust(Duration.seconds(10));
+
+    assert.instanceOf(yield* Fiber.join(refresh), CliTokenManager.CloudCliCredentialRefreshError);
+    assert.isTrue(yield* Fiber.join(hasCredential));
+  }).pipe(
+    Effect.provide(
+      CliTokenManager.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            layerStalledBody,
+            Layer.mock(ServerSecretStore.ServerSecretStore)({
+              get: () => Effect.succeedSome(expiredStoredToken),
+            }),
+            Layer.mock(ExternalLauncher.ExternalLauncher)({}),
+            NodeServices.layer,
+          ),
+        ),
+      ),
+    ),
+    provideTestEnv,
+  ),
+);
+
 it.layer(NodeServices.layer)("CliTokenManager.deviceAuthorizationLogin", (it) => {
   it.effect("requests a device code, shows it, and polls until Clerk grants the token", () =>
     Effect.gen(function* () {
@@ -179,7 +226,7 @@ it.layer(NodeServices.layer)("CliTokenManager.deviceAuthorizationLogin", (it) =>
         Effect.sync(() => {
           prompts.push(prompt);
         }),
-      ).pipe(Effect.provide(makeDeviceFlowLayer(server)), provideTestEnv, Effect.forkChild);
+      ).pipe(Effect.provide(layerDeviceFlow(server)), provideTestEnv, Effect.forkChild);
 
       yield* TestClock.adjust(Duration.seconds(10));
       const { token, identity } = yield* Fiber.join(fiber);
@@ -221,7 +268,7 @@ it.layer(NodeServices.layer)("CliTokenManager.deviceAuthorizationLogin", (it) =>
       };
 
       const fiber = yield* CliTokenManager.deviceAuthorizationLogin(() => Effect.void).pipe(
-        Effect.provide(makeDeviceFlowLayer(server)),
+        Effect.provide(layerDeviceFlow(server)),
         provideTestEnv,
         Effect.forkChild,
       );
@@ -230,7 +277,6 @@ it.layer(NodeServices.layer)("CliTokenManager.deviceAuthorizationLogin", (it) =>
       assert.lengthOf(tokenRequests(server.requests), 0);
       yield* TestClock.adjust(Duration.seconds(1));
       assert.lengthOf(tokenRequests(server.requests), 1);
-      // slow_down widens the 5s interval to 10s.
       yield* TestClock.adjust(Duration.seconds(9));
       assert.lengthOf(tokenRequests(server.requests), 1);
       yield* TestClock.adjust(Duration.seconds(1));
@@ -247,14 +293,13 @@ it.layer(NodeServices.layer)("CliTokenManager.deviceAuthorizationLogin", (it) =>
       };
 
       const fiber = yield* CliTokenManager.deviceAuthorizationLogin(() => Effect.void).pipe(
-        Effect.provide(makeDeviceFlowLayer(server)),
+        Effect.provide(layerDeviceFlow(server)),
         provideTestEnv,
         Effect.forkChild,
       );
 
       yield* TestClock.adjust(Duration.seconds(5));
       assert.lengthOf(tokenRequests(server.requests), 1);
-      // The 5xx widens the 5s interval to 10s before the retry.
       yield* TestClock.adjust(Duration.seconds(9));
       assert.lengthOf(tokenRequests(server.requests), 1);
       yield* TestClock.adjust(Duration.seconds(1));
@@ -272,7 +317,7 @@ it.layer(NodeServices.layer)("CliTokenManager.deviceAuthorizationLogin", (it) =>
       };
 
       const fiber = yield* CliTokenManager.deviceAuthorizationLogin(() => Effect.void).pipe(
-        Effect.provide(makeDeviceFlowLayer(server)),
+        Effect.provide(layerDeviceFlow(server)),
         provideTestEnv,
         Effect.flip,
         Effect.forkChild,
@@ -293,7 +338,7 @@ it.layer(NodeServices.layer)("CliTokenManager.deviceAuthorizationLogin", (it) =>
       };
 
       const fiber = yield* CliTokenManager.deviceAuthorizationLogin(() => Effect.void).pipe(
-        Effect.provide(makeDeviceFlowLayer(server)),
+        Effect.provide(layerDeviceFlow(server)),
         provideTestEnv,
         Effect.flip,
         Effect.forkChild,
@@ -313,7 +358,7 @@ it.layer(NodeServices.layer)("CliTokenManager.deviceAuthorizationLogin", (it) =>
       };
 
       const fiber = yield* CliTokenManager.deviceAuthorizationLogin(() => Effect.void).pipe(
-        Effect.provide(makeDeviceFlowLayer(server)),
+        Effect.provide(layerDeviceFlow(server)),
         provideTestEnv,
         Effect.flip,
         Effect.forkChild,
@@ -322,6 +367,20 @@ it.layer(NodeServices.layer)("CliTokenManager.deviceAuthorizationLogin", (it) =>
       const result = yield* Fiber.join(fiber);
 
       assert.isTrue(isAuthorizationError(result));
+    }),
+  );
+
+  it.effect("fails instead of hanging when the device authorization response stalls", () =>
+    Effect.gen(function* () {
+      const fiber = yield* CliTokenManager.deviceAuthorizationLogin(() => Effect.void).pipe(
+        Effect.provide(layerStalledBody),
+        provideTestEnv,
+        Effect.flip,
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust(Duration.seconds(10));
+
+      assert.isTrue(Cause.isTimeoutError(yield* Fiber.join(fiber)));
     }),
   );
 });

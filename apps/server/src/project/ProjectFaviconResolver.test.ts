@@ -12,7 +12,7 @@ import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
 import * as T3ProjectFileLoader from "./T3ProjectFileLoader.ts";
 
-const TestLayer = Layer.empty.pipe(
+const layerTest = Layer.empty.pipe(
   Layer.provideMerge(
     ProjectFaviconResolver.layer.pipe(
       Layer.provide(WorkspacePaths.layer),
@@ -49,7 +49,7 @@ const makeResolverWithFileSystem = (fileSystem: FileSystem.FileSystem) =>
     Effect.provideService(FileSystem.FileSystem, fileSystem),
   );
 
-it.layer(TestLayer)("ProjectFaviconResolverLive", (it) => {
+it.layer(layerTest)("ProjectFaviconResolverLive", (it) => {
   describe("resolvePath", () => {
     it.effect("serves repeated resolves from cache instead of re-walking candidates", () =>
       Effect.gen(function* () {
@@ -61,9 +61,6 @@ it.layer(TestLayer)("ProjectFaviconResolverLive", (it) => {
         const resolved = yield* resolver.resolvePath(cwd);
         expect(resolved?.endsWith(path.join("public", "favicon.svg"))).toBe(true);
 
-        // `favicon.svg` outranks `public/favicon.svg`, so a resolver that walked
-        // the candidate list again would switch to it. Staying on the original
-        // answer is only possible from cache.
         yield* writeTextFile(cwd, "favicon.svg", "<svg>root</svg>");
 
         for (const _attempt of [1, 2, 3]) {
@@ -89,7 +86,6 @@ it.layer(TestLayer)("ProjectFaviconResolverLive", (it) => {
 
         yield* fileSystem.remove(path.join(cwd, "favicon.svg")).pipe(Effect.orDie);
 
-        // Still inside the positive TTL: the cached path must not be served.
         expect(yield* resolver.resolvePath(cwd)).toBeNull();
       }).pipe(Effect.provide(TestClock.layer())),
     );
@@ -317,14 +313,10 @@ it.layer(TestLayer)("ProjectFaviconResolverLive", (it) => {
       }),
     );
 
-    // A large icon source with no icon metadata used to pin the server's event loop for
-    // minutes: the object pattern was unanchored, so it restarted at every offset and
-    // rescanned forward from each one. Anchoring keeps this proportional to file size.
     it.effect("scans large icon sources without an icon in reasonable time", () =>
       Effect.gen(function* () {
         const resolver = yield* ProjectFaviconResolver.ProjectFaviconResolver;
         const cwd = yield* makeTempDir;
-        // Mirrors a generated single-file build: large, brace-sparse, and no icon metadata.
         const filler = `<p>${"pokopia companion guide ".repeat(24)}</p>\n`;
         yield* writeTextFile(
           cwd,
@@ -399,6 +391,75 @@ it.layer(TestLayer)("ProjectFaviconResolverLive", (it) => {
           absolutePath: faviconPath,
         });
         expect(error.cause).toBe(cause);
+      }),
+    );
+
+    it.effect("probes well-known candidates concurrently", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const cwd = yield* makeTempDir;
+        let inFlight = 0;
+        let peakInFlight = 0;
+        const resolver = yield* makeResolverWithFileSystem(
+          FileSystem.FileSystem.of({
+            ...fileSystem,
+            stat: (filePath) =>
+              Effect.suspend(() => {
+                inFlight += 1;
+                peakInFlight = Math.max(peakInFlight, inFlight);
+                return Effect.yieldNow.pipe(Effect.andThen(fileSystem.stat(filePath)));
+              }).pipe(Effect.ensuring(Effect.sync(() => (inFlight -= 1)))),
+          }),
+        );
+
+        expect(yield* resolver.resolvePath(cwd)).toBeNull();
+        expect(peakInFlight).toBeGreaterThan(1);
+      }),
+    );
+
+    it.effect("returns a found favicon without waiting for lower-ranked probes", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        yield* writeTextFile(cwd, "favicon.svg", "<svg>root</svg>");
+        const stuckPath = path.join(cwd, "favicon.ico");
+        const resolver = yield* makeResolverWithFileSystem(
+          FileSystem.FileSystem.of({
+            ...fileSystem,
+            stat: (filePath) => (filePath === stuckPath ? Effect.never : fileSystem.stat(filePath)),
+          }),
+        );
+
+        expect(yield* resolver.resolvePath(cwd)).toBe(path.join(cwd, "favicon.svg"));
+      }),
+    );
+
+    it.effect("ignores a failing candidate that ranks below a found favicon", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* makeTempDir;
+        yield* writeTextFile(cwd, "favicon.svg", "<svg>root</svg>");
+        const failingPath = path.join(cwd, "favicon.ico");
+        const resolver = yield* makeResolverWithFileSystem(
+          FileSystem.FileSystem.of({
+            ...fileSystem,
+            stat: (filePath) =>
+              filePath === failingPath
+                ? Effect.fail(
+                    PlatformError.systemError({
+                      _tag: "PermissionDenied",
+                      module: "FileSystem",
+                      method: "stat",
+                      pathOrDescriptor: failingPath,
+                    }),
+                  )
+                : fileSystem.stat(filePath),
+          }),
+        );
+
+        expect(yield* resolver.resolvePath(cwd)).toBe(path.join(cwd, "favicon.svg"));
       }),
     );
 

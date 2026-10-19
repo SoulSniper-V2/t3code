@@ -1,6 +1,8 @@
 import { useAuth } from "@clerk/react";
-import { AuthAdministrativeScopes, AuthRelayWriteScope } from "@t3tools/contracts";
-import { useEffect, useRef, useState } from "react";
+import { useAtomValue } from "@effect/atom-react";
+import { AuthRelayReadScope, AuthRelayWriteScope, type AuthSessionState } from "@t3tools/contracts";
+import { AsyncResult, Atom } from "effect/reactivity";
+import { useState } from "react";
 
 import {
   CONNECT_ONBOARDING_OPT_OUT_STORAGE_KEY,
@@ -9,9 +11,13 @@ import {
 } from "~/cloud/connectOnboarding";
 import { hasCloudPublicConfig } from "~/cloud/publicConfig";
 import { useCloudLinkController } from "~/cloud/useCloudLinkController";
-import { usePrimarySessionState } from "~/environments/primary";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
-import { useEnvironments, usePrimaryEnvironment } from "~/state/environments";
+import {
+  useEnvironments,
+  usePrimaryEnvironment,
+  usePrimaryEnvironmentId,
+} from "~/state/environments";
+import { environmentSession, readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { CloudEnvironmentConnectRows } from "./CloudEnvironmentConnectList";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
@@ -20,15 +26,6 @@ import { Switch } from "../ui/switch";
 import { toastManager } from "../ui/toast";
 import { WizardSteps, WizardPopup, WizardHeader, WizardPanel, WizardFooter } from "../ui/wizard";
 
-/**
- * Post-sign-in onboarding wizard for T3 Connect. Opens on every in-session
- * sign-in — sign-out removes the connected relay environments, so each new
- * session starts with no devices to reach. It first prompts to publish this
- * environment (managed tunnel + agent activity, both defaulting on) when the
- * current session is authorized to manage the relay link, then lists the
- * account's T3 Connect environments so every device can be connected right
- * away. A cold load with a restored session does not count as a sign-in.
- */
 export function ConnectOnboardingDialog() {
   if (!hasCloudPublicConfig()) return null;
 
@@ -36,6 +33,8 @@ export function ConnectOnboardingDialog() {
 }
 
 type OnboardingStep = "publish" | "devices";
+
+const EMPTY_SESSION_STATE_ATOM = Atom.make(AsyncResult.initial<AuthSessionState>());
 
 function ConfiguredConnectOnboardingDialog() {
   // Mirrors ManagedRelayAuthProvider: a pending Clerk session must not read as
@@ -47,22 +46,18 @@ function ConfiguredConnectOnboardingDialog() {
     ConnectOnboardingOptOutSchema,
   );
 
-  const desktopBridge = window.desktopBridge;
-  const primarySessionState = usePrimarySessionState();
-  const currentSessionScopes = desktopBridge
-    ? AuthAdministrativeScopes
-    : primarySessionState.data?.authenticated
-      ? (primarySessionState.data.scopes ?? null)
-      : null;
-  const canManageRelay = currentSessionScopes?.includes(AuthRelayWriteScope) ?? false;
-  // The publish step is only offered when we know the answer; opening the
-  // wizard before the session state resolves would let the step set change
-  // mid-flight. A failed session read still opens the wizard — it just means
-  // no publish step.
+  const { isReady: environmentsReady } = useEnvironments();
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const primarySessionState = useAtomValue(
+    primaryEnvironmentId === null
+      ? EMPTY_SESSION_STATE_ATOM
+      : environmentSession.sessionStateAtom(primaryEnvironmentId),
+  );
+  const canReadRelay = useEnvironmentScope(primaryEnvironmentId, AuthRelayReadScope);
+  const canWriteRelay = useEnvironmentScope(primaryEnvironmentId, AuthRelayWriteScope);
+  const canManageRelay = canReadRelay && canWriteRelay;
   const sessionScopesKnown =
-    Boolean(desktopBridge) ||
-    primarySessionState.data !== null ||
-    primarySessionState.error !== null;
+    primaryEnvironmentId === null ? environmentsReady : primarySessionState._tag !== "Initial";
 
   const controller = useCloudLinkController();
   const showPublishStep = canManageRelay && controller.linkState.target !== null;
@@ -77,28 +72,36 @@ function ConfiguredConnectOnboardingDialog() {
   const [publishAgentActivity, setPublishAgentActivity] = useState(true);
   const [dontShowAgain, setDontShowAgain] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
-  const prefilledFromLinkStateRef = useRef(false);
-  const observedAccountRef = useRef<string | null | undefined>(undefined);
+  const [prefilledFromLinkState, setPrefilledFromLinkState] = useState(false);
+  // undefined until auth first settles, so the account already signed in at load
+  // never reads as a fresh sign-in.
+  const [observedAccount, setObservedAccount] = useState<string | null | undefined>(undefined);
+
+  if (step === "publish" && sessionScopesKnown && !showPublishStep && !isApplying) {
+    setStep("devices");
+  }
 
   const optOutAccounts = optOutState.optOutAccounts;
 
-  // Every sign-in or account switch that completes during this session
-  // requests the wizard — account transitions clear the connected relay
-  // environments, so each new session starts with no devices to reach. A cold
-  // load observes undefined → account and must not re-prompt.
-  useEffect(() => {
-    if (!isLoaded) return;
-    // A loaded-but-incomplete snapshot (signed in, user id not yet populated)
-    // must not be recorded as signed-out — the next render would then look
-    // like a fresh sign-in on a cold load.
-    if (isSignedIn && !userId) return;
-    const previousAccount = observedAccountRef.current;
+  // A loaded-but-incomplete snapshot (signed in, user id not yet populated)
+  // must not be recorded as signed-out — the next render would then look
+  // like a fresh sign-in on a cold load.
+  if (isLoaded && !(isSignedIn && !userId)) {
     const nextAccount = isSignedIn && userId ? userId : null;
-    observedAccountRef.current = nextAccount;
-    if (previousAccount !== undefined && previousAccount !== nextAccount && nextAccount !== null) {
-      setRequestedAccount(nextAccount);
+    if (nextAccount !== observedAccount) {
+      setObservedAccount(nextAccount);
+      if (observedAccount !== undefined && nextAccount !== null) {
+        setRequestedAccount(nextAccount);
+      }
     }
-  }, [isLoaded, isSignedIn, userId]);
+  }
+
+  if (openForAccount !== null && (!isSignedIn || userId !== openForAccount)) {
+    setOpenForAccount(null);
+  }
+  if (requestedAccount !== null && (!isSignedIn || userId !== requestedAccount)) {
+    setRequestedAccount(null);
+  }
 
   // A manageable session implies a primary environment, so when the scopes
   // allow publishing, wait for the connection target too — otherwise the
@@ -106,63 +109,34 @@ function ConfiguredConnectOnboardingDialog() {
   // becomes available and freeze there.
   const publishStepDecided = !canManageRelay || controller.linkState.target !== null;
 
-  // Open once the session scopes resolve so the step set is stable. Accounts
-  // that chose "Don't show this again" are skipped.
-  useEffect(() => {
-    if (requestedAccount === null || openForAccount !== null) return;
+  if (requestedAccount !== null && openForAccount === null) {
     if (optOutAccounts.includes(requestedAccount)) {
       setRequestedAccount(null);
-      return;
-    }
-    if (!sessionScopesKnown || !publishStepDecided) return;
-    setRequestedAccount(null);
-    prefilledFromLinkStateRef.current = false;
-    setExposeEnvironment(true);
-    setPublishAgentActivity(true);
-    setDontShowAgain(false);
-    setStep(canManageRelay && controller.linkState.target !== null ? "publish" : "devices");
-    setOpenForAccount(requestedAccount);
-  }, [
-    canManageRelay,
-    controller.linkState.target,
-    openForAccount,
-    optOutAccounts,
-    publishStepDecided,
-    requestedAccount,
-    sessionScopesKnown,
-  ]);
-
-  // Signing out (or switching accounts) mid-wizard invalidates everything the
-  // wizard would do — close it and let the sign-in trigger re-evaluate.
-  useEffect(() => {
-    if (openForAccount !== null && (!isSignedIn || userId !== openForAccount)) {
-      setOpenForAccount(null);
-    }
-    if (requestedAccount !== null && (!isSignedIn || userId !== requestedAccount)) {
+    } else if (sessionScopesKnown && publishStepDecided) {
       setRequestedAccount(null);
+      setPrefilledFromLinkState(false);
+      setExposeEnvironment(true);
+      setPublishAgentActivity(true);
+      setDontShowAgain(false);
+      setStep(canManageRelay && controller.linkState.target !== null ? "publish" : "devices");
+      setOpenForAccount(requestedAccount);
     }
-  }, [isSignedIn, openForAccount, requestedAccount, userId]);
+  }
 
-  // Toggles default on, but an environment that is already linked should show
-  // its actual configuration instead of silently proposing to rewrite it.
-  // Only when the link belongs to the account being onboarded, though — after
-  // an account switch the cached link state can still describe the previous
-  // account's setup.
   const linkStateData = controller.linkState.data;
-  useEffect(() => {
-    if (openForAccount === null || prefilledFromLinkStateRef.current || linkStateData === null) {
-      return;
-    }
-    prefilledFromLinkStateRef.current = true;
-    if (linkStateData.linked && linkStateData.cloudUserId === openForAccount) {
+  if (openForAccount !== null && !prefilledFromLinkState && linkStateData !== null) {
+    setPrefilledFromLinkState(true);
+    if (
+      linkStateData.linked &&
+      linkStateData.linkRevoked !== true &&
+      linkStateData.cloudUserId === openForAccount
+    ) {
       setExposeEnvironment(linkStateData.managedTunnelActive ?? linkStateData.linked);
       setPublishAgentActivity(linkStateData.publishAgentActivity);
     }
-  }, [linkStateData, openForAccount]);
+  }
 
   const complete = () => {
-    // Keep the wizard up while a link request is in flight so its outcome
-    // (and any failure) stays visible.
     if (isApplying) return;
     const account = openForAccount;
     setOpenForAccount(null);
@@ -176,6 +150,16 @@ function ConfiguredConnectOnboardingDialog() {
   };
 
   const applyPublishSelection = async () => {
+    if (isApplying) return;
+    if (
+      primaryEnvironmentId === null ||
+      !readEnvironmentScope(primaryEnvironmentId, AuthRelayReadScope) ||
+      !readEnvironmentScope(primaryEnvironmentId, AuthRelayWriteScope)
+    ) {
+      setStep("devices");
+      return;
+    }
+    if (linkStateData === null || controller.linkState.error !== null) return;
     // The wizard only ever enables — with both toggles off there is nothing to
     // apply, and an existing link must not be torn down from onboarding.
     if (!exposeEnvironment && !publishAgentActivity) {
@@ -203,8 +187,6 @@ function ConfiguredConnectOnboardingDialog() {
     <Dialog
       open={openForAccount !== null}
       onOpenChange={(open) => {
-        // Keep the dialog up while a link request is in flight so its outcome
-        // (and any failure) stays visible.
         if (!open && !isApplying) complete();
       }}
     >
@@ -225,6 +207,13 @@ function ConfiguredConnectOnboardingDialog() {
               isStepDisabled={() => isApplying}
               onStepChange={(index) => {
                 const next = steps[index];
+                if (
+                  next === "publish" &&
+                  (primaryEnvironmentId === null ||
+                    !readEnvironmentScope(primaryEnvironmentId, AuthRelayReadScope) ||
+                    !readEnvironmentScope(primaryEnvironmentId, AuthRelayWriteScope))
+                )
+                  return;
                 if (next) setStep(next);
               }}
             />
@@ -235,10 +224,24 @@ function ConfiguredConnectOnboardingDialog() {
             <PublishStep
               exposeEnvironment={exposeEnvironment}
               publishAgentActivity={publishAgentActivity}
-              disabled={isApplying}
-              operationError={controller.operationError}
-              onExposeEnvironmentChange={setExposeEnvironment}
-              onPublishAgentActivityChange={setPublishAgentActivity}
+              disabled={isApplying || !canManageRelay || linkStateData === null}
+              operationError={controller.operationError ?? controller.linkState.error}
+              onExposeEnvironmentChange={(enabled) => {
+                if (
+                  primaryEnvironmentId !== null &&
+                  readEnvironmentScope(primaryEnvironmentId, AuthRelayReadScope) &&
+                  readEnvironmentScope(primaryEnvironmentId, AuthRelayWriteScope)
+                )
+                  setExposeEnvironment(enabled);
+              }}
+              onPublishAgentActivityChange={(enabled) => {
+                if (
+                  primaryEnvironmentId !== null &&
+                  readEnvironmentScope(primaryEnvironmentId, AuthRelayReadScope) &&
+                  readEnvironmentScope(primaryEnvironmentId, AuthRelayWriteScope)
+                )
+                  setPublishAgentActivity(enabled);
+              }}
             />
           ) : (
             <DevicesStep />
@@ -261,7 +264,7 @@ function ConfiguredConnectOnboardingDialog() {
                 Not now
               </Button>
               <Button
-                disabled={isApplying || (controller.linkState.isPending && linkStateData === null)}
+                disabled={isApplying || !canManageRelay || linkStateData === null}
                 onClick={() => void applyPublishSelection()}
               >
                 {isApplying ? "Enabling…" : "Continue"}

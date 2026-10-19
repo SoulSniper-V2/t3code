@@ -1,5 +1,6 @@
 import {
-  AuthOrchestrationOperateScope,
+  AuthEnvironmentMaintainScope,
+  sessionGrantsScope,
   type AuthSessionState,
   type ExecutionEnvironmentCapabilities,
   type ServerProvider,
@@ -16,7 +17,7 @@ export function canMaintainEnvironment(session: AuthSessionState | null, connect
   return (
     connected &&
     session?.authenticated === true &&
-    session.scopes?.includes(AuthOrchestrationOperateScope) === true
+    sessionGrantsScope(session, AuthEnvironmentMaintainScope)
   );
 }
 
@@ -52,7 +53,6 @@ const Releases = Schema.Array(
 );
 const decodeReleases = Schema.decodeUnknownSync(Releases);
 
-/** Preserve the host's release channel and never offer a downgrade. */
 export async function findEnvironmentUpdate(currentVersion: string, signal: AbortSignal) {
   const channel = cliReleaseChannelOf(currentVersion);
   for (let page = 1; ; page++) {

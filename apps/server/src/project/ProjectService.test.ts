@@ -8,33 +8,31 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import { TestClock } from "effect/testing";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
-import * as IdAllocator from "../orchestration-v2/IdAllocator.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as LegacyV1ThreadImporter from "../orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
-import {
-  OrchestrationV2EventSinkLayerLive,
-  ProjectServiceLayerLive,
-} from "../orchestration-v2/runtimeLayer.ts";
+import * as RuntimeLayer from "../orchestration-v2/runtimeLayer.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
 import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
 import * as ProjectService from "./ProjectService.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
 
-const workspacePathsLayer = Layer.succeed(WorkspacePaths.WorkspacePaths, {
+const layerWorkspacePaths = Layer.succeed(WorkspacePaths.WorkspacePaths, {
   normalizeWorkspaceRoot: (workspaceRoot) => Effect.succeed(workspaceRoot.replace(/\/$/, "")),
   resolveRelativePathWithinRoot: ({ workspaceRoot, relativePath }) =>
     Effect.succeed({ absolutePath: `${workspaceRoot}/${relativePath}`, relativePath }),
 });
 
-const metadataLayer = Layer.merge(
+const layerMetadata = Layer.merge(
   Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
     resolve: (workspaceRoot) =>
       Effect.succeed({
@@ -52,38 +50,37 @@ const metadataLayer = Layer.merge(
   }),
 );
 
-const makeTestLayer = (
+const layerTestFor = (
   projectMetadataLayer: Layer.Layer<
     | ProjectFaviconResolver.ProjectFaviconResolver
     | RepositoryIdentityResolver.RepositoryIdentityResolver
   >,
 ) =>
-  ProjectServiceLayerLive.pipe(
+  RuntimeLayer.layerProjectService.pipe(
     Layer.provideMerge(ProjectEnrichmentService.layer),
-    Layer.provideMerge(workspacePathsLayer),
+    Layer.provideMerge(layerWorkspacePaths),
     Layer.provideMerge(projectMetadataLayer),
-    Layer.provideMerge(SqlitePersistenceMemory),
+    Layer.provideMerge(SqlitePersistence.layerMemory),
+    Layer.provideMerge(ServerSettings.layerTest()),
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "project-service-test-" })),
     Layer.provide(NodeServices.layer),
   );
 
-const TestLayer = makeTestLayer(metadataLayer);
+const layerTest = layerTestFor(layerMetadata);
 
-/** Every dependency of ProjectService.make, so a test can swap one of them. */
-const ProjectServiceDependenciesLayer = Layer.mergeAll(
-  OrchestrationV2EventSinkLayerLive,
+const layerProjectServiceDependencies = Layer.mergeAll(
+  RuntimeLayer.layerEventSink,
   ProjectStore.layer,
   ProjectionStore.layer,
   IdAllocator.layer,
   ThreadCommandExecutor.layer,
 ).pipe(
-  Layer.provideMerge(
-    LegacyV1ThreadImporter.layer.pipe(Layer.provide(OrchestrationV2EventSinkLayerLive)),
-  ),
+  Layer.provideMerge(LegacyV1ThreadImporter.layer.pipe(Layer.provide(RuntimeLayer.layerEventSink))),
   Layer.provideMerge(ProjectEnrichmentService.layer),
-  Layer.provideMerge(workspacePathsLayer),
-  Layer.provideMerge(metadataLayer),
-  Layer.provideMerge(SqlitePersistenceMemory),
+  Layer.provideMerge(layerWorkspacePaths),
+  Layer.provideMerge(layerMetadata),
+  Layer.provideMerge(SqlitePersistence.layerMemory),
+  Layer.provideMerge(ServerSettings.layerTest()),
   Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "project-service-race-" })),
   Layer.provide(NodeServices.layer),
 );
@@ -101,7 +98,7 @@ const waitForProject = Effect.fn("ProjectServiceTest.waitForProject")(function* 
   return yield* Effect.die(`Project ${projectId} was not enriched in time.`);
 });
 
-it.layer(TestLayer)("ProjectService", (it) => {
+it.layer(layerTest)("ProjectService", (it) => {
   it.effect("creates, updates, resolves, snapshots, and soft-deletes projects", () =>
     Effect.gen(function* () {
       const service = yield* ProjectService.ProjectService;
@@ -261,7 +258,6 @@ it.layer(TestLayer)("ProjectService", (it) => {
         workspaceRoot: "/work/retry",
       };
       const first = yield* service.create(input);
-      // A retry re-plans against the row it created; its receipt still answers.
       const retried = yield* service.create(input);
       assert.deepEqual(retried, first);
       const updateInput = {
@@ -324,7 +320,6 @@ it.layer(TestLayer)("ProjectService", (it) => {
       };
       const first = yield* service.update(invalid).pipe(Effect.flip);
       assert.equal(first._tag, "ProjectOperationError");
-      // Same id, now a valid payload: the recorded rejection wins.
       const replayed = yield* service
         .update({ ...invalid, scripts: [{ ...invalid.scripts[0]!, id: "valid" }] })
         .pipe(Effect.flip);
@@ -398,7 +393,6 @@ it.layer(TestLayer)("ProjectService", (it) => {
         commandId: CommandId.make("command:freed:delete"),
         projectId: holderId,
       });
-      // A fresh plan would now succeed; the recorded conflict still answers.
       const replayed = yield* service.create(claim).pipe(Effect.flip);
       assert.deepEqual(replayed, first);
       assert.instanceOf(replayed, ProjectService.ProjectConflictError);
@@ -500,7 +494,7 @@ it.effect(
       const repositoryCalls = yield* Ref.make(0);
       const faviconCalls = yield* Ref.make(0);
 
-      const slowMetadataLayer = Layer.merge(
+      const layerSlowMetadata = Layer.merge(
         Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
           resolve: (workspaceRoot) =>
             Effect.gen(function* () {
@@ -592,13 +586,13 @@ it.effect(
         assert.equal(secondSnapshot.projects[0]?.faviconPath, "/work/slow-enrichment/favicon.svg");
         assert.equal(yield* Ref.get(repositoryCalls), 1);
         assert.equal(yield* Ref.get(faviconCalls), 1);
-      }).pipe(Effect.provide(makeTestLayer(slowMetadataLayer)));
+      }).pipe(Effect.provide(layerTestFor(layerSlowMetadata)));
     }),
 );
 
 it.effect("keeps project snapshots available when optional metadata enrichment fails", () =>
   Effect.gen(function* () {
-    const failingMetadataLayer = Layer.merge(
+    const layerFailingMetadata = Layer.merge(
       Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
         resolve: () => Effect.succeed(null),
       }),
@@ -630,14 +624,14 @@ it.effect("keeps project snapshots available when optional metadata enrichment f
       assert.equal(snapshot.projects[0]?.title, "Still visible");
       assert.isNull(snapshot.projects[0]?.repositoryIdentity ?? null);
       assert.isNull(snapshot.projects[0]?.faviconPath ?? null);
-    }).pipe(Effect.provide(makeTestLayer(failingMetadataLayer)));
+    }).pipe(Effect.provide(layerTestFor(layerFailingMetadata)));
   }),
 );
 
 it.effect("invalidates workspace-derived metadata when a project moves", () =>
   Effect.gen(function* () {
     const metadataVersion = yield* Ref.make(1);
-    const versionedMetadataLayer = Layer.merge(
+    const layerVersionedMetadata = Layer.merge(
       Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
         resolve: (workspaceRoot) =>
           Ref.get(metadataVersion).pipe(
@@ -700,7 +694,7 @@ it.effect("invalidates workspace-derived metadata when a project moves", () =>
         )).faviconPath,
         "/work/original/favicon-v3.svg",
       );
-    }).pipe(Effect.provide(makeTestLayer(versionedMetadataLayer)));
+    }).pipe(Effect.provide(layerTestFor(layerVersionedMetadata)));
   }),
 );
 
@@ -709,7 +703,6 @@ it.effect("serializes two projects claiming the same workspace root", () =>
     const eventSink = yield* EventSink.EventSinkV2;
     const firstReachedCommit = yield* Deferred.make<void>();
     const releaseFirst = yield* Deferred.make<void>();
-    // Hold the first claim between its plan and its commit.
     const gatedSink = EventSink.EventSinkV2.of({
       ...eventSink,
       commitProjectCommand: (input) =>
@@ -741,7 +734,7 @@ it.effect("serializes two projects claiming the same workspace root", () =>
     yield* Deferred.succeed(releaseFirst, undefined);
     assert.equal((yield* Fiber.join(first)).id, "project:race:first");
     assert.equal((yield* Fiber.join(second))._tag, "ProjectConflictError");
-  }).pipe(Effect.provide(ProjectServiceDependenciesLayer)),
+  }).pipe(Effect.provide(layerProjectServiceDependencies)),
 );
 
 it.effect("rejects an update that waited on the lock while its project was deleted", () =>
@@ -749,7 +742,6 @@ it.effect("rejects an update that waited on the lock while its project was delet
     const eventSink = yield* EventSink.EventSinkV2;
     const deleteReachedCommit = yield* Deferred.make<void>();
     const releaseDelete = yield* Deferred.make<void>();
-    // Hold the delete between its plan and its commit, inside the project lock.
     const gatedSink = EventSink.EventSinkV2.of({
       ...eventSink,
       commitProjectCommand: (input) =>
@@ -776,7 +768,6 @@ it.effect("rejects an update that waited on the lock while its project was delet
       .pipe(Effect.forkChild({ startImmediately: true }));
     yield* Deferred.await(deleteReachedCommit);
     const updateCommandId = CommandId.make("command:update-race:update");
-    // The update sees the active row, then queues behind the delete's lock.
     const update = yield* service
       .update({ commandId: updateCommandId, projectId, title: "Too late" })
       .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
@@ -784,7 +775,6 @@ it.effect("rejects an update that waited on the lock while its project was delet
     yield* Deferred.succeed(releaseDelete, undefined);
     assert.isNotNull((yield* Fiber.join(deletion)).deletedAt);
     assert.instanceOf(yield* Fiber.join(update), ProjectService.ProjectNotFoundError);
-    // The planner rejected it under the lock, so the rejection has a receipt.
     const receipts = yield* sql<{ readonly status: string }>`
       SELECT status FROM orchestration_command_receipts WHERE command_id = ${updateCommandId}
     `;
@@ -801,5 +791,5 @@ it.effect("rejects an update that waited on the lock while its project was delet
       Option.getOrThrow(yield* service.getById(projectId, { includeDeleted: true })).title,
       "Update race",
     );
-  }).pipe(Effect.provide(ProjectServiceDependenciesLayer)),
+  }).pipe(Effect.provide(layerProjectServiceDependencies)),
 );

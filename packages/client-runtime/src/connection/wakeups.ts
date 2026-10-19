@@ -6,14 +6,19 @@ export type ConnectionWakeup =
   | "application-active"
   | "application-active-probe"
   | "application-active-reconnect"
-  | "credentials-changed";
+  | "credentials-changed"
+  | "network-changed";
 
-export function isApplicationActiveWakeup(reason: ConnectionWakeup): boolean {
+function isApplicationActiveWakeup(reason: ConnectionWakeup): boolean {
   return (
     reason === "application-active" ||
     reason === "application-active-probe" ||
     reason === "application-active-reconnect"
   );
+}
+
+export function resetsRetryBackoff(reason: ConnectionWakeup): boolean {
+  return isApplicationActiveWakeup(reason) || reason === "network-changed";
 }
 
 // A long resume replaces the session, and the new session subscribes on its own.

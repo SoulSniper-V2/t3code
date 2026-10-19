@@ -14,7 +14,8 @@ export type HardwareKeyboardCommand =
   | "terminal"
   | "review"
   | "copyThreadReference"
-  | "toggleSidebar";
+  | "toggleSidebar"
+  | "cycleHost";
 
 type CommandHandler = (command: HardwareKeyboardCommand) => boolean | void;
 
@@ -22,10 +23,6 @@ const handlers = new Map<HardwareKeyboardCommand, Set<CommandHandler>>();
 const registrationListeners = new Set<() => void>();
 let registrationVersion = 0;
 
-/**
- * Registers a context-specific hardware-keyboard action. The most recently mounted handler gets
- * the first chance to consume the command, allowing focused screens to override app defaults.
- */
 export function useHardwareKeyboardCommand(
   command: HardwareKeyboardCommand | ReadonlyArray<HardwareKeyboardCommand>,
   handler: CommandHandler,
@@ -90,4 +87,13 @@ export function parseActiveThreadPath(pathname: string): {
   } catch {
     return null;
   }
+}
+
+export function nextEnvironmentId<T extends { readonly environmentId: string }>(
+  environments: ReadonlyArray<T>,
+  currentId: string | null,
+): T["environmentId"] | null {
+  if (environments.length < 2) return null;
+  const index = environments.findIndex((environment) => environment.environmentId === currentId);
+  return environments[(index + 1) % environments.length]?.environmentId ?? null;
 }

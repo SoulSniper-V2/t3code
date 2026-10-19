@@ -6,7 +6,6 @@ import {
   Keyboard,
   Box,
   Maximize,
-  Moon,
   MoreHorizontal,
   PictureInPicture2,
   Power,
@@ -14,12 +13,13 @@ import {
   SlidersHorizontal,
   Smartphone,
   Square,
-  Sun,
   Type,
   X,
 } from "lucide-react";
+import { Moon, Sun } from "lucide";
 import type { ReactNode } from "react";
 import { Button } from "~/components/ui/button";
+import { MorphIcon } from "~/components/MorphIcon";
 import {
   Menu,
   MenuItem,
@@ -34,7 +34,6 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import type { DeviceStreamHandle, DeviceViewControls } from "./DeviceStreamView";
 import type { DeviceControls } from "./useDeviceControls";
 
-/** Stable floating controls for both presentations, regardless of panel width. */
 export function DeviceControlsRail(props: {
   platform: DevicePlatform;
   handle: DeviceStreamHandle | null;
@@ -132,7 +131,7 @@ export function DeviceControlsRail(props: {
           disabled={controls.disabled || !settings?.appearance}
           onClick={() => void controls.act({ type: "setAppearance", value: nextAppearance })}
         >
-          {settings?.appearance === "dark" ? <Sun /> : <Moon />}
+          <MorphIcon icon={settings?.appearance === "dark" ? Sun : Moon} />
         </RailButton>
         <Menu>
           <MenuTrigger

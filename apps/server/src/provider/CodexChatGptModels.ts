@@ -1,7 +1,7 @@
 import type { ServerProviderModel } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 
 export class ChatGptCatalogError extends Schema.TaggedError<ChatGptCatalogError>()(
   "ChatGptCatalogError",
@@ -18,7 +18,6 @@ const Catalog = Schema.Struct({
   ),
 });
 
-/** Account choices come from OpenAI; native model/list contributes capability metadata only. */
 export const chatGptModels = Effect.fn("chatGptModels")(function* (
   accessToken: string,
   nativeModels: ReadonlyArray<ServerProviderModel>,

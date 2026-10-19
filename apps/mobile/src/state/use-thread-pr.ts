@@ -5,7 +5,7 @@ import {
   createLinkedPullRequestSummaryAtomFamily,
   pullRequestDetailToVcsStatus,
 } from "@t3tools/client-runtime/state/pull-requests";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { useCallback, useEffect, useMemo } from "react";
 
 import { connectionAtomRuntime } from "../connection/runtime";
@@ -39,10 +39,6 @@ export {
   type ThreadPrPresentation,
 } from "./thread-pr-presentation";
 
-/**
- * Linked PRs use server snapshots. Branch fallback and legacy references share
- * a live summary request across visible rows in the same environment.
- */
 export function useThreadPr(thread: EnvironmentThreadShell): ThreadPrPresentation | null {
   const supportsLinks = useAtomValue(
     serverEnvironment.configValueAtom(thread.environmentId),

@@ -1,4 +1,9 @@
 import type { PreviewMiniPlayerFrame } from "../preview/previewMiniPlayerLayout";
+import { DETAILS_CARD_CLEARANCE } from "./chatCanvasLayout";
+
+export const THREAD_DETAILS_CARD_GAP = 12;
+// Keep in sync with --thread-details-panel-width, which sizes the popover and the find bar.
+const THREAD_DETAILS_CARD_WIDTH = 280;
 
 export function resolveThreadDetailsCardDensity(
   height: number,
@@ -9,33 +14,34 @@ export function resolveThreadDetailsCardDensity(
   return "essential";
 }
 
-/** The card uses leftover space. It never changes the conversation's width. */
 export function resolveThreadDetailsCardLayout({
   container,
-  chat,
+  lane,
   frame,
   overlapsDetailsCard = false,
+  topInset = 0,
 }: {
   container: { width: number; height: number };
-  chat: { left: number; width: number };
+  lane: { padding: number; minChatWidth: number };
   frame: PreviewMiniPlayerFrame | null;
   overlapsDetailsCard?: boolean;
+  topInset?: number;
 }) {
-  const gap = 12;
-  const width = Math.min(312, container.width - chat.left - chat.width - gap * 2);
-  if (width < 240) return null;
+  const gap = THREAD_DETAILS_CARD_GAP;
+  const width = THREAD_DETAILS_CARD_WIDTH;
   const x = container.width - width - gap;
-  // Resizing consumes the height above the player. Dragging first tries to
-  // clear the full card and folds it only when there is no readable placement.
+  if (x - DETAILS_CARD_CLEARANCE - lane.padding < lane.minChatWidth) return null;
+  const y = gap + topInset;
   const height =
     overlapsDetailsCard && frame && frame.x + frame.width > x - gap && frame.x < x + width + gap
-      ? Math.min(container.height - gap * 2, frame.y - gap * 2)
-      : container.height - gap * 2;
+      ? Math.min(container.height - y - gap, frame.y - y - gap)
+      : container.height - y - gap;
   if (height < 160) return null;
   return {
     x,
+    right: gap,
     width,
-    y: gap,
+    y,
     height,
   } as const;
 }

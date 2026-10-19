@@ -2,7 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as OtlpResource from "effect/unstable/observability/OtlpResource";
+import * as OtlpResource from "effect/observability/OtlpResource";
 
 import * as OtelEnvironment from "./otelEnvironment.ts";
 
@@ -19,7 +19,6 @@ const specIgnored = (value: string) =>
 describe("OtelEnvironment", () => {
   it.effect.each([
     { name: "nothing set", env: {}, disabled: false, warnings: [] },
-    // OTEL_SDK_DISABLED follows the specification: only `true`, case-insensitively.
     { name: "spec true", env: { OTEL_SDK_DISABLED: "true" }, disabled: true, warnings: [SPEC_OFF] },
     { name: "spec True", env: { OTEL_SDK_DISABLED: "True" }, disabled: true, warnings: [SPEC_OFF] },
     {
@@ -41,7 +40,6 @@ describe("OtelEnvironment", () => {
       disabled: false,
       warnings: [specIgnored("yes")],
     },
-    // T3CODE_OTEL_SDK_DISABLED takes Config.Boolean's values, case-insensitively.
     { name: "t3 1", env: { T3CODE_OTEL_SDK_DISABLED: "1" }, disabled: true, warnings: [T3_OFF] },
     {
       name: "t3 TRUE",
@@ -488,17 +486,22 @@ describe("OtelEnvironment", () => {
       { name: "encoded separators", raw: "a%2Cb=x%3Dy", attributes: ["a,b"] },
     ])("lets the exporters' own read succeed with $name", ({ raw, attributes }) =>
       Effect.gen(function* () {
-        const env = ConfigProvider.layer(
+        const layerEnv = ConfigProvider.layer(
           ConfigProvider.fromEnv({ env: { OTEL_RESOURCE_ATTRIBUTES: raw } }),
         );
-        const otel = yield* OtelEnvironment.load.pipe(Effect.provide(env));
+        const otel = yield* OtelEnvironment.load.pipe(Effect.provide(layerEnv));
         const resource = yield* OtlpResource.fromConfig({ serviceName: "t3" }).pipe(
           Effect.provide(
-            Layer.provide(OtelEnvironment.layerResourceAttributes(otel.resourceAttributes), env),
+            Layer.provide(
+              OtelEnvironment.layerResourceAttributes(otel.resourceAttributes),
+              layerEnv,
+            ),
           ),
         );
         assert.deepStrictEqual(
-          resource.attributes.map((attribute) => attribute.key),
+          resource.attributes
+            .map((attribute) => attribute.key)
+            .filter((key) => !key.startsWith("telemetry.sdk.")),
           [...attributes, "service.name"],
         );
       }),

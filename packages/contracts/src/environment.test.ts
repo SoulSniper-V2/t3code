@@ -14,6 +14,39 @@ const descriptor = {
 } as const;
 
 describe("ExecutionEnvironmentDescriptor", () => {
+  it("keeps settled cleanup optional alongside current worktree capabilities", () => {
+    expect(decodeDescriptor(descriptor).capabilities.settledWorktreeCleanup).toBeUndefined();
+    const capabilities = {
+      settledWorktreeCleanup: true,
+      storageCleanupRun: true,
+      projectWorktreeCleanup: true,
+      worktreesDirectory: true,
+      threadAutoSettlementScope: true,
+    };
+    expect(decodeDescriptor({ ...descriptor, capabilities }).capabilities).toMatchObject(
+      capabilities,
+    );
+  });
+
+  it("decodes old, recognized and future manual installation descriptors", () => {
+    expect(decodeDescriptor(descriptor).capabilities.serverInstallation).toBeUndefined();
+    for (const installation of [{ kind: "npx" }, { kind: "npm-global", prefix: "/opt/node" }]) {
+      expect(
+        decodeDescriptor({
+          ...descriptor,
+          capabilities: { ...descriptor.capabilities, serverInstallation: installation },
+        }).capabilities.serverInstallation,
+      ).toEqual(installation);
+    }
+    for (const installation of [{ kind: "future-manager" }, { kind: "npm-global" }]) {
+      expect(
+        decodeDescriptor({
+          ...descriptor,
+          capabilities: { ...descriptor.capabilities, serverInstallation: installation },
+        }).capabilities.serverInstallation,
+      ).toBeUndefined();
+    }
+  });
   it("requires an advertised required-worktree bootstrap capability", () => {
     expect(decodeDescriptor(descriptor).capabilities.requiredWorktreeBootstrap).toBeUndefined();
     expect(

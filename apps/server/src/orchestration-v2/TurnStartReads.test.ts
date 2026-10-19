@@ -15,13 +15,13 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
-const databaseLayer = Layer.mergeAll(
-  SqlitePersistenceMemory,
-  ProjectionStore.layer.pipe(Layer.provide(SqlitePersistenceMemory)),
+const layerDatabase = Layer.mergeAll(
+  SqlitePersistence.layerMemory,
+  ProjectionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
 );
 
 it.effect.each(["sqlite", "memory"] as const)(
@@ -285,7 +285,6 @@ it.effect.each(["sqlite", "memory"] as const)(
       assert.deepEqual(yield* store.getTurnStartHistory(threadId, [oldRunId]), [item]);
       assert.deepEqual(yield* store.getTurnStartHistory(threadId, [runId]), []);
       assert.deepEqual(yield* store.getTurnStartHistory(threadId, []), []);
-      // Pairing depends on IDs, not payload decoding or item status.
       const resultId = TurnItemId.make("interrupt-result");
       assert.isTrue(yield* store.hasUnpairedRunInterruptRequest(threadId, item.id, resultId));
       assert.isFalse(yield* store.hasUnpairedRunInterruptRequest(threadId, resultId, item.id));
@@ -362,8 +361,8 @@ it.effect.each(["sqlite", "memory"] as const)(
     }).pipe(
       Effect.provide(
         storage === "sqlite"
-          ? databaseLayer
-          : Layer.merge(SqlitePersistenceMemory, ProjectionStore.layerMemory),
+          ? layerDatabase
+          : Layer.merge(SqlitePersistence.layerMemory, ProjectionStore.layerMemory),
       ),
     ),
 );

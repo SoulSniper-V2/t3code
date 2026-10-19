@@ -1,7 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentShellStatus } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentId, MessageId } from "@t3tools/contracts";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry } from "./atom-registry";
 import { environmentShell } from "./shell";
@@ -23,8 +23,7 @@ const threadOutboxShellStatusesAtom = Atom.make(
 /**
  * Queued pending tasks the outbox drain must not deliver right now: the one
  * open in the new-task editor, plus any whose latest edits could not be saved
- * back yet (delivering those would send stale content). Editing sessions hold
- * their message id here and release it once the queued payload is current.
+ * back yet (delivering those would send stale content).
  */
 export const editingQueuedMessageIdsAtom = Atom.make<Readonly<Record<MessageId, true>>>({}).pipe(
   Atom.keepAlive,
@@ -58,12 +57,6 @@ export function useThreadOutboxMessages() {
   return useAtomValue(threadOutboxManager.queuedMessagesByThreadKeyAtom);
 }
 
-/**
- * Thread keys (`environmentId:threadId`) of existing threads with a message
- * waiting in the outbox. Creations are excluded: they have no thread row yet
- * and surface as pending tasks instead. Derived once so list builders and
- * reorder planners agree on which settled threads are pulled back to active.
- */
 export const queuedThreadKeysAtom = Atom.make((get): ReadonlySet<string> => {
   const keys = new Set<string>();
   for (const [threadKey, queue] of Object.entries(

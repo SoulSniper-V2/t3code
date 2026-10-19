@@ -6,7 +6,7 @@ import type { EnvironmentCatalogState } from "@t3tools/client-runtime/state/conn
 import type { EnvironmentShellState } from "@t3tools/client-runtime/state/shell";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
-import { Atom, AtomRegistry } from "effect/unstable/reactivity";
+import { Atom, AtomRegistry } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import { createAllEnvironmentProjectSnapshotsReadyAtom } from "./shell";
@@ -110,7 +110,6 @@ describe("project snapshot readiness", () => {
     registry.set(shells(LOCAL), shellState("live"));
     expect(registry.get(ready)).toBe(false);
 
-    // An old cache and a reconnect in progress can both omit a real project.
     registry.set(shells(REMOTE), shellState("cached"));
     expect(registry.get(ready)).toBe(false);
     registry.set(shells(REMOTE), shellState("synchronizing"));

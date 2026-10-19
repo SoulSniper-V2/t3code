@@ -65,6 +65,19 @@ function hasNonWhitespace(
  * placeholder characters (e.g. terminal context chips on web) can treat
  * those as token boundaries.
  */
+export function isPathWord(
+  text: string,
+  wordStart: number,
+  cursor: number,
+  isWhitespaceChar: (char: string) => boolean,
+): boolean {
+  let wordEnd = cursor;
+  while (wordEnd < text.length && !isWhitespaceChar(text[wordEnd] ?? "")) {
+    wordEnd += 1;
+  }
+  return text.slice(wordStart + 1, wordEnd).includes("/");
+}
+
 export function detectComposerTrigger(
   text: string,
   cursorInput: number,

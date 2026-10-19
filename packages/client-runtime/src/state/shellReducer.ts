@@ -1,8 +1,50 @@
-import type {
-  OrchestrationProjectShell,
-  OrchestrationV2ShellSnapshot,
-  OrchestrationV2ShellStreamItem,
+import {
+  OrchestrationV2ThreadShell,
+  RepositoryIdentity,
+  ThreadPullRequestLink,
+  type OrchestrationProjectShell,
+  type OrchestrationV2ShellSnapshot,
+  type OrchestrationV2ShellStreamItem,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+
+const sameThreadShell = Schema.toEquivalence(OrchestrationV2ThreadShell);
+const sameLinks = Schema.toEquivalence(Schema.UndefinedOr(Schema.Array(ThreadPullRequestLink)));
+const sameRepositoryIdentity = Schema.toEquivalence(
+  Schema.UndefinedOr(Schema.NullOr(RepositoryIdentity)),
+);
+
+export function sameThreadPullRequests(
+  left: OrchestrationV2ThreadShell["pullRequests"],
+  right: OrchestrationV2ThreadShell["pullRequests"],
+): boolean {
+  return left === right || sameLinks(left, right);
+}
+
+/**
+ * Links are compared apart from the rest of the row because a deferred snapshot arrives without
+ * them; such a row keeps its links until they fill in.
+ */
+export function reuseUnchangedThreadShells(
+  previous: OrchestrationV2ShellSnapshot | null,
+  next: OrchestrationV2ShellSnapshot,
+): OrchestrationV2ShellSnapshot {
+  if (previous === null || previous.threads.length === 0) return next;
+  const previousById = new Map(previous.threads.map((thread) => [thread.id, thread] as const));
+  let changed = false;
+  const threads = next.threads.map((thread) => {
+    const prior = previousById.get(thread.id);
+    if (prior === undefined) return thread;
+    const candidate =
+      thread.pullRequests === undefined && prior.pullRequests !== undefined
+        ? { ...thread, pullRequests: prior.pullRequests }
+        : thread;
+    const retained = sameThreadShell(prior, candidate) ? prior : candidate;
+    if (retained !== thread) changed = true;
+    return retained;
+  });
+  return changed ? { ...next, threads } : next;
+}
 
 function upsertById<T extends { readonly id: unknown }>(
   items: ReadonlyArray<T>,
@@ -36,17 +78,6 @@ export interface MergeShellSnapshotOptions {
   readonly resolvedRepositoryIdentityRoots: ReadonlyArray<string>;
 }
 
-/**
- * Merge an incoming full shell snapshot into prior client state.
- *
- * Authoritative snapshots (no options) replace structure and sequence even when
- * lower than cache, while retaining a prior non-null identity when the candidate
- * is still unresolved/null for the same root.
- *
- * Enrichment snapshots (options present) only patch repository identity for
- * matching current projects. They never replace projects, threads, archives,
- * or sequence, regardless of the incoming snapshot sequence.
- */
 export function mergeShellSnapshotProjects(
   previous: OrchestrationV2ShellSnapshot | null | undefined,
   next: OrchestrationV2ShellSnapshot,
@@ -69,6 +100,11 @@ export function mergeShellSnapshotProjects(
           return project;
         }
         if (resolvedRootSet?.has(project.workspaceRoot) === true) {
+          // Refreshes re-resolve every root; an unchanged identity keeps the project's identity
+          // so every subscriber (each pull request row, the sidebar) skips re-rendering.
+          if (sameRepositoryIdentity(project.repositoryIdentity, candidate.repositoryIdentity)) {
+            return project;
+          }
           return { ...project, repositoryIdentity: candidate.repositoryIdentity };
         }
         if (project.repositoryIdentity == null && candidate.repositoryIdentity != null) {
@@ -92,7 +128,6 @@ export function mergeShellSnapshotProjects(
   };
 }
 
-/** Applies one committed V2 shell delta while preserving active/archive exclusivity. */
 export function applyShellStreamEvent(
   snapshot: OrchestrationV2ShellSnapshot,
   event: Exclude<
@@ -123,6 +158,13 @@ export function applyShellStreamEvent(
         snapshotSequence: event.sequence,
       };
     case "thread.updated": {
+      const existing =
+        event.location === "active"
+          ? snapshot.threads.find((thread) => thread.id === event.thread.id)
+          : undefined;
+      if (existing !== undefined && sameThreadShell(existing, event.thread)) {
+        return { ...snapshot, snapshotSequence: event.sequence };
+      }
       const withoutThread = (threads: OrchestrationV2ShellSnapshot["threads"]) =>
         threads.filter((thread) => thread.id !== event.thread.id);
       return {

@@ -1,6 +1,6 @@
 import {
   ORCHESTRATION_CACHE_SCHEMA_VERSION,
-  StoredOrchestrationShellSnapshot,
+  ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION,
 } from "@t3tools/client-runtime/platform";
 import {
   CommandId,
@@ -10,20 +10,17 @@ import {
   ThreadId,
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2ThreadDetailSnapshot,
+  type ThreadPullRequestLink,
   type VcsListRefsResult,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
-import * as Schema from "effect/Schema";
-import { vi } from "vite-plus/test";
-import * as Deferred from "effect/Deferred";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 
 import * as MobileDatabase from "../persistence/mobile-database";
 import { make } from "./environment-cache-store";
-import { encodeStoredShellSnapshot } from "./shell-cache-encoding";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-1");
 const PROJECT_ID = ProjectId.make("project-1");
@@ -236,8 +233,6 @@ describe("mobile SQLite environment cache store", () => {
       expect(DateTime.formatIso(shell.threads[0]!.titleRegeneration!.startedAt)).toBe(
         "2026-07-29T12:00:00.000Z",
       );
-      // Working and unsettled threads are exactly what a backgrounded app
-      // caches; a decode failure here discards the whole shell on relaunch.
       expect(DateTime.formatIso(shell.threads[0]!.activityRunStartedAt!)).toBe(
         "2026-07-29T12:00:00.000Z",
       );
@@ -249,10 +244,82 @@ describe("mobile SQLite environment cache store", () => {
         ORCHESTRATION_CACHE_SCHEMA_VERSION,
       );
       expect(memory.schemaVersions.get(cacheId(ENVIRONMENT_ID, "thread", THREAD_ID))).toBe(
-        ORCHESTRATION_CACHE_SCHEMA_VERSION,
+        ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION,
       );
     }),
   );
+
+  it.live("returns cached threads before their pull request links, which load after", () =>
+    Effect.gen(function* () {
+      const memory = makeDatabase();
+      const store = yield* make().pipe(
+        Effect.provideService(MobileDatabase.MobileDatabase, memory.database),
+      );
+      const link: ThreadPullRequestLink = {
+        host: "github.com",
+        repository: "pingdotgg/t3code",
+        number: 42,
+        url: "https://github.com/pingdotgg/t3code/pull/42",
+        source: "agent",
+        linkedAt: "2026-07-29T12:00:00.000Z",
+        snapshot: null,
+        stack: null,
+      };
+      const linked = { ...SHELL_SNAPSHOT.threads[0]!, pullRequests: [link] };
+      const unlinked = { ...SHELL_SNAPSHOT.threads[0]!, id: ThreadId.make("thread-2") };
+      yield* store.saveShell(ENVIRONMENT_ID, {
+        ...SHELL_SNAPSHOT,
+        threads: [linked, unlinked],
+      });
+
+      const shell = Option.getOrThrow(yield* store.loadShell(ENVIRONMENT_ID));
+      expect(shell.threads.map((thread) => thread.pullRequests)).toEqual([undefined, undefined]);
+      const links = yield* shell.loadPullRequests!;
+      expect([...links]).toEqual([[THREAD_ID, [link]]]);
+    }),
+  );
+
+  it.live("keeps cached threads when their pull request links cannot be read", () => {
+    const messages: Array<unknown> = [];
+    const logger = Logger.make(({ message }) => {
+      messages.push(message);
+    });
+    return Effect.gen(function* () {
+      const memory = makeDatabase();
+      const store = yield* make().pipe(
+        Effect.provideService(MobileDatabase.MobileDatabase, memory.database),
+      );
+      const link: ThreadPullRequestLink = {
+        host: "github.com",
+        repository: "pingdotgg/t3code",
+        number: 5,
+        url: "https://github.com/pingdotgg/t3code/pull/5",
+        source: "agent",
+        linkedAt: "2026-07-29T12:00:00.000Z",
+        snapshot: null,
+        stack: null,
+      };
+      const readable = {
+        ...SHELL_SNAPSHOT.threads[0]!,
+        id: ThreadId.make("thread-2"),
+        pullRequests: [link],
+      };
+      yield* store.saveShell(ENVIRONMENT_ID, {
+        ...SHELL_SNAPSHOT,
+        threads: [SHELL_SNAPSHOT.threads[0]!, readable],
+      });
+      const id = cacheId(ENVIRONMENT_ID, "shell", "snapshot");
+      const payload = JSON.parse(memory.values.get(id)!);
+      payload.snapshot.threads[0].pullRequests = [{ number: -1 }];
+      memory.values.set(id, JSON.stringify(payload));
+
+      const shell = Option.getOrThrow(yield* store.loadShell(ENVIRONMENT_ID));
+      expect(shell.threads.map((thread) => thread.id)).toEqual([THREAD_ID, readable.id]);
+      expect([...(yield* shell.loadPullRequests!)]).toEqual([[readable.id, [link]]]);
+      expect(messages).toHaveLength(1);
+      expect(memory.removed).toEqual([]);
+    }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
+  });
 
   it.effect("round-trips schema-validated VCS refs", () =>
     Effect.gen(function* () {
@@ -329,103 +396,6 @@ describe("mobile SQLite environment cache store", () => {
 
       expect(yield* store.loadVcsRefs(ENVIRONMENT_ID, "/repo")).toEqual(Option.none());
       expect(yield* store.loadVcsRefs(otherEnvironmentId, "/repo")).toEqual(Option.some(REFS));
-    }),
-  );
-});
-
-describe("cooperative shell cache encoding", () => {
-  const encodeOriginal = Schema.encodeEffect(
-    Schema.fromJsonString(StoredOrchestrationShellSnapshot),
-  );
-  const stored = {
-    schemaVersion: ORCHESTRATION_CACHE_SCHEMA_VERSION,
-    environmentId: ENVIRONMENT_ID,
-    snapshot: {
-      ...SHELL_SNAPSHOT,
-      projects: SHELL_SNAPSHOT.projects.map((project) => ({
-        ...project,
-        title: "  Project  ",
-        unexpected: "drop this field",
-      })),
-      threads: Array.from({ length: 64 }, (_, index) => ({
-        ...SHELL_SNAPSHOT.threads[0]!,
-        id: ThreadId.make(`thread-${index}`),
-        branch: "  main  ",
-        activityRunStartedAt: index % 2 === 0 ? NOW : null,
-        unsettledAt: index % 2 === 0 ? NOW : null,
-        modelSelection: {
-          instanceId: PROVIDER_INSTANCE_ID,
-          model: "  gpt-5.4  ",
-          unexpected: "drop this field",
-        },
-        unexpected: "drop this field",
-      })),
-      archivedThreads: [{ ...SHELL_SNAPSHOT.threads[0]!, archivedAt: NOW }],
-      unexpected: "drop this field",
-    },
-    unexpected: "drop this field",
-  };
-
-  it.effect("preserves exact JSON, transforms, nulls, dates, and unknown-field stripping", () =>
-    Effect.gen(function* () {
-      const expected = yield* encodeOriginal(stored);
-      const actual = yield* encodeStoredShellSnapshot(stored);
-      expect(actual).toBe(expected);
-      const parsed = JSON.parse(actual);
-      expect(parsed).not.toHaveProperty("unexpected");
-      expect(parsed.snapshot).not.toHaveProperty("unexpected");
-      expect(parsed.snapshot.projects[0]).not.toHaveProperty("unexpected");
-      expect(parsed.snapshot.projects[0].title).toBe("Project");
-      expect(parsed.snapshot.threads[0]).not.toHaveProperty("unexpected");
-      expect(parsed.snapshot.threads[0].branch).toBe("main");
-      expect(parsed.snapshot.threads[0].modelSelection).toEqual({
-        instanceId: "codex",
-        model: "gpt-5.4",
-      });
-      expect(parsed.snapshot.threads[0].activityRunStartedAt).toBe(DateTime.formatIso(NOW));
-      expect(parsed.snapshot.threads[1].activityRunStartedAt).toBeNull();
-      expect(parsed.snapshot.archivedThreads[0].archivedAt).toBe(DateTime.formatIso(NOW));
-    }),
-  );
-
-  it.effect("still rejects invalid rows after an encoding batch yields", () =>
-    Effect.gen(function* () {
-      const invalid = {
-        ...stored,
-        snapshot: {
-          ...stored.snapshot,
-          threads: [...stored.snapshot.threads, { ...stored.snapshot.threads[0]!, itemCount: -1 }],
-        },
-      };
-      expect(yield* Effect.isFailure(encodeStoredShellSnapshot(invalid))).toBe(true);
-    }),
-  );
-
-  it.effect("cancels the pending host timer when encoding is interrupted", () =>
-    Effect.gen(function* () {
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      const fakeSetTimeout = globalThis.setTimeout;
-      const scheduled = yield* Deferred.make<ReturnType<typeof setTimeout>>();
-      vi.spyOn(globalThis, "setTimeout").mockImplementation((...args) => {
-        const timer = fakeSetTimeout(...args);
-        Deferred.doneUnsafe(scheduled, Effect.succeed(timer));
-        return timer;
-      });
-      const clearTimer = vi.spyOn(globalThis, "clearTimeout");
-      const fiber = yield* Effect.forkScoped(
-        Effect.suspend(() => encodeStoredShellSnapshot(stored)),
-      );
-      try {
-        const pendingTimer = yield* Deferred.await(scheduled);
-        expect(vi.getTimerCount()).toBe(1);
-        yield* Fiber.interrupt(fiber);
-        expect(clearTimer).toHaveBeenCalledWith(pendingTimer);
-        expect(vi.getTimerCount()).toBe(0);
-      } finally {
-        yield* Fiber.interrupt(fiber);
-        vi.restoreAllMocks();
-        vi.useRealTimers();
-      }
     }),
   );
 });

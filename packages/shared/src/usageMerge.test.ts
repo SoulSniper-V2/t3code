@@ -135,7 +135,6 @@ describe("mergeUsage", () => {
   });
 
   it("counts a shared transcript directory once", () => {
-    // Two worktree servers on one machine resolve the same provider home.
     const shared = { provider: "claude" as const, hostId: "mac", homePath: "/home/theo/.claude" };
     const merged = mergeUsage(
       [
@@ -172,7 +171,6 @@ describe("mergeUsage", () => {
       USAGE_CONTRACT_VERSION,
     );
 
-    // env-b's claude bucket is dropped, its codex bucket survives.
     expect(merged.costUsd).toBe(14);
     expect(merged.providers.map((provider) => provider.provider).sort()).toEqual([
       "claude",
@@ -514,6 +512,44 @@ describe("mergeUsage", () => {
     expect(merged.costQuality.cacheSavingsUsd).toBe(4);
   });
 
+  it("derives model token shares independently of their cost shares", () => {
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [
+              bucket({ costUsd: 90 }),
+              bucket({
+                provider: "codex",
+                model: "gpt-5.6-sol",
+                costUsd: 10,
+                totals: {
+                  uncachedInputTokens: 3 * 1160,
+                  cachedInputTokens: 0,
+                  cacheCreationTokens: 0,
+                  outputTokens: 0,
+                  reasoningTokens: 0,
+                },
+              }),
+            ],
+            [
+              { provider: "claude", hostId: "mac", homePath: "/a/.claude" },
+              { provider: "codex", hostId: "mac", homePath: "/a/.codex" },
+            ],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    const byModel = Object.fromEntries(merged.models.map((model) => [model.model, model]));
+    expect(byModel["claude-fable-5"]?.costShare).toBeCloseTo(0.9, 5);
+    expect(byModel["claude-fable-5"]?.tokenShare).toBeCloseTo(0.25, 5);
+    expect(byModel["gpt-5.6-sol"]?.costShare).toBeCloseTo(0.1, 5);
+    expect(byModel["gpt-5.6-sol"]?.tokenShare).toBeCloseTo(0.75, 5);
+  });
+
   it("marks a model with no known rates as unpriced rather than free", () => {
     const merged = mergeUsage(
       [
@@ -566,7 +602,6 @@ describe("mergeUsage", () => {
                 costSource: "unpriced",
                 unpricedRecords: 5,
               }),
-              // Reported cost on one record, no rates for the other four.
               bucket({
                 provider: "codex",
                 model: "partly-reported",
@@ -631,8 +666,6 @@ describe("mergeUsage", () => {
   });
 
   it("keeps two machines apart when hostname and home path collide", () => {
-    // Every Mac resolves /Users/theo/.claude, so a hostname clash used to make
-    // one machine's usage vanish. Filesystem identity separates them.
     const shape = { provider: "claude" as const, hostId: "mac", homePath: "/Users/theo/.claude" };
     const merged = mergeUsage(
       [
@@ -666,8 +699,6 @@ describe("mergeUsage", () => {
   });
 
   it("totals sessions from per-directory distinct counts, not per-bucket sums", () => {
-    // One session that spans two days appears in two buckets. Summing bucket
-    // sessions would say 2; the source's distinct count says 1.
     const merged = mergeUsage(
       [
         environment(

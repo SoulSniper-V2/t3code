@@ -1,3 +1,9 @@
+import {
+  AuthOrchestrationOperateScope,
+  AuthProvidersManageScope,
+  AuthOrchestrationReadScope,
+} from "@t3tools/contracts";
+import { useEnvironmentScope, readEnvironmentScope } from "~/state/session";
 import type {
   AcpRegistryConfigurableProvider,
   AcpRegistrySession,
@@ -38,6 +44,32 @@ function reportFailure(title: string, result: AtomCommandResult<unknown, unknown
   });
 }
 
+function parseProviderHeaders(
+  text: string,
+):
+  | { readonly ok: true; readonly headers: Record<string, string> | undefined }
+  | { readonly ok: false; readonly error: string } {
+  if (text.trim().length === 0) return { ok: true, headers: undefined };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Headers must be valid JSON.",
+    };
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    Array.isArray(parsed) ||
+    !Object.values(parsed).every((value) => typeof value === "string")
+  ) {
+    return { ok: false, error: "Headers must be a JSON object with string values." };
+  }
+  return { ok: true, headers: parsed as Record<string, string> };
+}
+
 export function AcpSessionManagementSection(props: {
   readonly environmentId: EnvironmentId;
   readonly instanceId: ProviderInstanceId;
@@ -45,6 +77,8 @@ export function AcpSessionManagementSection(props: {
   readonly projects: ReadonlyArray<AcpSessionProject>;
   readonly readOnly: boolean;
 }) {
+  const canOperate = useEnvironmentScope(props.environmentId, AuthOrchestrationOperateScope);
+  const canRead = useEnvironmentScope(props.environmentId, AuthOrchestrationReadScope);
   const [projectId, setProjectId] = useState<ProjectId | null>(props.projects[0]?.id ?? null);
   const [sessions, setSessions] = useState<ReadonlyArray<AcpRegistrySession>>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -117,7 +151,12 @@ export function AcpSessionManagementSection(props: {
   };
 
   const importNativeSession = async (session: AcpRegistrySession) => {
-    if (projectId === null || importingSessionId !== null) return;
+    if (
+      !readEnvironmentScope(props.environmentId, AuthOrchestrationOperateScope) ||
+      projectId === null ||
+      importingSessionId !== null
+    )
+      return;
     setImportingSessionId(session.sessionId);
     const result = await importSession({
       environmentId: props.environmentId,
@@ -154,7 +193,8 @@ export function AcpSessionManagementSection(props: {
       `Permanently delete native ACP session "${session.title ?? session.sessionId}"?`,
       { variant: "destructive" },
     );
-    if (!confirmed) return;
+    if (!confirmed || !readEnvironmentScope(props.environmentId, AuthOrchestrationOperateScope))
+      return;
     setDeletingSessionId(session.sessionId);
     const result = await deleteSession({
       environmentId: props.environmentId,
@@ -199,31 +239,24 @@ export function AcpSessionManagementSection(props: {
   };
 
   const saveProvider = async (provider: AcpRegistryConfigurableProvider) => {
-    if (projectId === null || savingProviderId !== null) return;
+    if (
+      !readEnvironmentScope(props.environmentId, AuthProvidersManageScope) ||
+      projectId === null ||
+      savingProviderId !== null
+    )
+      return;
     const draft = providerDrafts[provider.providerId];
     if (draft === undefined || draft.apiType.length === 0 || draft.baseUrl.length === 0) return;
-    let headers: Record<string, string> | undefined;
-    if (draft.headers.trim().length > 0) {
-      try {
-        const parsed: unknown = JSON.parse(draft.headers);
-        if (
-          typeof parsed !== "object" ||
-          parsed === null ||
-          Array.isArray(parsed) ||
-          !Object.values(parsed).every((value) => typeof value === "string")
-        ) {
-          throw new Error("Headers must be a JSON object with string values.");
-        }
-        headers = parsed as Record<string, string>;
-      } catch (error) {
-        toastManager.add({
-          type: "error",
-          title: "Invalid provider headers",
-          description: error instanceof Error ? error.message : "Headers must be valid JSON.",
-        });
-        return;
-      }
+    const parsedHeaders = parseProviderHeaders(draft.headers);
+    if (!parsedHeaders.ok) {
+      toastManager.add({
+        type: "error",
+        title: "Invalid provider headers",
+        description: parsedHeaders.error,
+      });
+      return;
     }
+    const headers = parsedHeaders.headers;
     setSavingProviderId(provider.providerId);
     const result = await setProvider({
       environmentId: props.environmentId,
@@ -251,7 +284,7 @@ export function AcpSessionManagementSection(props: {
       `Disable ACP provider "${provider.providerId}"?`,
       { variant: "destructive" },
     );
-    if (!confirmed) return;
+    if (!confirmed || !readEnvironmentScope(props.environmentId, AuthProvidersManageScope)) return;
     setSavingProviderId(provider.providerId);
     const result = await disableProvider({
       environmentId: props.environmentId,
@@ -267,7 +300,7 @@ export function AcpSessionManagementSection(props: {
   };
 
   const logoutProvider = async () => {
-    if (loggingOut) return;
+    if (loggingOut || !readEnvironmentScope(props.environmentId, AuthProvidersManageScope)) return;
     setLoggingOut(true);
     const result = await logout({
       environmentId: props.environmentId,
@@ -310,7 +343,7 @@ export function AcpSessionManagementSection(props: {
               <>
                 <Select
                   value={projectId ?? ""}
-                  disabled={props.readOnly || projectOperationPending}
+                  disabled={!canRead || projectOperationPending}
                   onValueChange={(value) => {
                     if (value === null) return;
                     setProjectId(value as ProjectId);
@@ -337,7 +370,7 @@ export function AcpSessionManagementSection(props: {
                   type="button"
                   size="sm"
                   variant="outline"
-                  disabled={props.readOnly || loading || projectId === null}
+                  disabled={!canRead || loading || projectId === null}
                   onClick={() => void loadSessions()}
                 >
                   {loading ? "Loading" : sessions.length === 0 ? "List sessions" : "Refresh"}
@@ -370,7 +403,7 @@ export function AcpSessionManagementSection(props: {
                         size="xs"
                         variant="ghost-muted"
                         disabled={
-                          props.readOnly ||
+                          !canOperate ||
                           !canImport ||
                           session.importedThreadId !== null ||
                           importingSessionId !== null
@@ -389,7 +422,7 @@ export function AcpSessionManagementSection(props: {
                           size="xs"
                           variant="ghost-muted"
                           disabled={
-                            props.readOnly ||
+                            !canOperate ||
                             session.importedThreadId !== null ||
                             deletingSessionId !== null
                           }
@@ -410,7 +443,7 @@ export function AcpSessionManagementSection(props: {
                 size="xs"
                 variant="ghost-muted"
                 className="w-fit"
-                disabled={props.readOnly || loading}
+                disabled={!canRead || loading}
                 onClick={() => void loadSessions(nextCursor)}
               >
                 {loading ? "Loading" : "Load more"}
@@ -433,7 +466,7 @@ export function AcpSessionManagementSection(props: {
               type="button"
               size="xs"
               variant="outline"
-              disabled={props.readOnly || loadingProviders || projectId === null}
+              disabled={!canRead || loadingProviders || projectId === null}
               onClick={() => void loadProviders()}
             >
               {loadingProviders ? "Loading" : providers.length === 0 ? "List providers" : "Refresh"}
@@ -443,7 +476,7 @@ export function AcpSessionManagementSection(props: {
           {!canList && props.projects.length > 1 ? (
             <Select
               value={projectId ?? ""}
-              disabled={props.readOnly || projectOperationPending}
+              disabled={!canRead || projectOperationPending}
               onValueChange={(value) => {
                 if (value === null) return;
                 setProjectId(value as ProjectId);

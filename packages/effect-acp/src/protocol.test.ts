@@ -4,14 +4,17 @@ import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Exit from "effect/Exit";
+import * as Logger from "effect/Logger";
 import * as Queue from "effect/Queue";
+import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Sink from "effect/Sink";
 import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
 import * as Ref from "effect/Ref";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import * as TestClock from "effect/testing/TestClock";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { it, assert } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -208,18 +211,129 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
     }),
   );
 
-  it.effect("keeps invalid core notification values only in the schema cause", () =>
+  // clanka once sent a usage_update without `used` and `size`. One bad update
+  // must not end a session whose later updates are fine.
+  it.effect("drops a session/update that fails to decode and keeps reading", () =>
     Effect.gen(function* () {
       const secret = "acp-core-notification-secret-sentinel";
       const { stdio, input } = yield* makeInMemoryStdio();
-      const termination = yield* Deferred.make<AcpError.AcpError>();
+      const events: Array<AcpProtocol.AcpProtocolLogEvent> = [];
+      const warnings: Array<unknown> = [];
+      let terminated = false;
       let transformCalls = 0;
-      yield* AcpProtocol.makeAcpPatchedProtocol({
+      const transport = yield* AcpProtocol.makeAcpPatchedProtocol({
         stdio,
         serverRequestMethods: new Set(),
+        logIncoming: true,
+        logger: (event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }),
         transformSessionUpdate: (notification) => {
           transformCalls += 1;
           return notification;
+        },
+        onTermination: () =>
+          Effect.sync(() => {
+            terminated = true;
+          }),
+      }).pipe(
+        Effect.provide(
+          Logger.layer([
+            Logger.make(({ logLevel, fiber }) => {
+              if (logLevel === "Warn")
+                warnings.push(fiber.getRef(References.CurrentLogAnnotations));
+            }),
+          ]),
+        ),
+      );
+      const received = yield* Deferred.make<AcpProtocol.AcpIncomingNotification>();
+      yield* transport.incoming.pipe(
+        Stream.runForEach((notification) => Deferred.succeed(received, notification)),
+        Effect.forkScoped,
+      );
+
+      const send = (params: unknown) =>
+        Queue.offer(
+          input,
+          encoder.encode(
+            `${encodeUnknownJsonString({ jsonrpc: "2.0", method: "session/update", params })}\n`,
+          ),
+        );
+      const malformed = {
+        sessionId: "session-1",
+        update: { sessionUpdate: "usage_update", cost: { amount: 1, currency: secret } },
+      };
+      yield* send(malformed);
+      yield* send(malformed);
+      yield* send({
+        sessionId: "session-1",
+        update: { sessionUpdate: "usage_update", used: 10, size: 100 },
+      });
+
+      const notification = yield* TestClock.withLive(
+        Deferred.await(received).pipe(Effect.timeout("2 seconds")),
+      );
+      assert.equal(notification._tag, "SessionUpdate");
+      assert.deepEqual(notification.params, {
+        sessionId: "session-1",
+        update: { sessionUpdate: "usage_update", used: 10, size: 100 },
+      });
+      assert.isFalse(terminated);
+      assert.equal(transformCalls, 1);
+
+      const decodeFailed = events.find(({ stage }) => stage === "decode_failed");
+      assert.deepInclude(decodeFailed?.payload as object, {
+        operation: "decode-notification-payload",
+        method: "session/update",
+        issueSummary: "update.used missing",
+      });
+      assert.lengthOf(
+        events.filter(({ stage }) => stage === "decode_failed"),
+        2,
+      );
+      assert.lengthOf(warnings, 1);
+      assert.deepInclude(warnings[0] as object, {
+        issueSummary: "update.used missing",
+      });
+      assert.notInclude(encodeUnknownJsonString({ decodeFailed, warnings }), secret);
+    }),
+  );
+
+  it.effect("keeps invalid core notification values only in the schema cause", () =>
+    Effect.gen(function* () {
+      const secret = "acp-core-notification-secret-sentinel";
+      const cause = yield* Schema.decodeUnknownEffect(AcpSchema.SessionNotification)({
+        sessionId: { secret },
+        update: { sessionUpdate: "plan", entries: [] },
+      }).pipe(Effect.flip);
+      const parseError = AcpError.AcpProtocolParseError.fromSchemaError(
+        "decode-notification-payload",
+        "session/update",
+        cause,
+      );
+      const { cause: directCause, ...directDiagnostics } = parseError;
+      assert.equal(parseError.operation, "decode-notification-payload");
+      assert.equal(parseError.method, "session/update");
+      assert.isAbove(parseError.issueCount ?? 0, 0);
+      assert.include(parseError.issueKinds ?? [], "Pointer");
+      assert.isAbove(parseError.maximumPathDepth ?? 0, 0);
+      assert.equal(parseError.issueSummary, "sessionId wrong type");
+      assert.isTrue(Schema.isSchemaError(directCause));
+      assert.notInclude(parseError.message, secret);
+      assert.notInclude(encodeUnknownJsonString(directDiagnostics), secret);
+    }),
+  );
+
+  it.effect("terminates when a callback on the reader dies", () =>
+    Effect.gen(function* () {
+      const { stdio, input } = yield* makeInMemoryStdio();
+      const termination = yield* Deferred.make<AcpError.AcpError>();
+      yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(),
+        transformSessionUpdate: () => {
+          throw new Error("normalizer bug");
         },
         onTermination: (error) => Deferred.succeed(termination, error).pipe(Effect.asVoid),
       });
@@ -231,29 +345,18 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
             jsonrpc: "2.0",
             method: "session/update",
             params: {
-              sessionId: { secret },
-              update: {
-                sessionUpdate: "plan",
-                entries: [],
-              },
+              sessionId: "session-1",
+              update: { sessionUpdate: "plan", entries: [] },
             },
           })}\n`,
         ),
       );
 
-      const error = yield* Deferred.await(termination);
-      assert.equal(transformCalls, 0);
-      assert.instanceOf(error, AcpError.AcpProtocolParseError);
-      const parseError = error as AcpError.AcpProtocolParseError;
-      const { cause, ...directDiagnostics } = parseError;
-      assert.equal(parseError.operation, "decode-notification-payload");
-      assert.equal(parseError.method, "session/update");
-      assert.isAbove(parseError.issueCount ?? 0, 0);
-      assert.include(parseError.issueKinds ?? [], "Pointer");
-      assert.isAbove(parseError.maximumPathDepth ?? 0, 0);
-      assert.isTrue(Schema.isSchemaError(cause));
-      assert.notInclude(parseError.message, secret);
-      assert.notInclude(encodeUnknownJsonString(directDiagnostics), secret);
+      const error = yield* TestClock.withLive(
+        Deferred.await(termination).pipe(Effect.timeout("2 seconds")),
+      );
+      assert.instanceOf(error, AcpError.AcpTransportError);
+      assert.equal((error as AcpError.AcpTransportError).operation, "read-input-stream");
     }),
   );
 
@@ -336,8 +439,6 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
         serverRequestMethods: new Set(),
       });
 
-      // Notifications encode through Schema, so the cause is the schema failure rather
-      // than the raw TypeError JSON.stringify throws. The ACP error shape is what callers see.
       const bigintError = yield* transport.notify("x/test", 1n).pipe(Effect.flip);
       assert.instanceOf(bigintError, AcpError.AcpProtocolParseError);
       assert.equal(bigintError.operation, "encode-message");
@@ -497,6 +598,37 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
         requestId: 1,
         operation: "receive-response",
       });
+    }),
+  );
+
+  it.effect("answers an extension request whose handler also dies as an internal error", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      yield* AcpProtocol.makeAcpPatchedProtocol({
+        stdio,
+        serverRequestMethods: new Set(),
+        onExtRequest: () =>
+          Effect.fail(AcpError.AcpRequestError.invalidParams("bad params")).pipe(
+            Effect.ensuring(Effect.die(new Error("cleanup bug"))),
+          ),
+      });
+
+      yield* Queue.offer(
+        input,
+        yield* encodeJsonl(ExtRequest, {
+          jsonrpc: "2.0",
+          id: 9,
+          method: "x/test",
+          params: { hello: "world" },
+          headers: [],
+        }),
+      );
+
+      const response = yield* Schema.decodeUnknownEffect(
+        Schema.fromJsonString(JsonRpcErrorResponse),
+      )(yield* Queue.take(output));
+      assert.equal(response.id, 9);
+      assert.equal(response.error.code, -32603);
     }),
   );
 
@@ -995,7 +1127,6 @@ it.layer(NodeServices.layer)("effect-acp protocol", (it) => {
       assert.isTrue(exitDetail.intentionalEnd);
       assert.equal(yield* Ref.get(terminations), 0);
 
-      // Tear down the forever input reader so the scoped test can finish.
       yield* Queue.end(input);
     }),
   );

@@ -1,32 +1,14 @@
-import type {
-  ServerProvider,
-  ServerProviderSkill,
-  ServerProviderSlashCommand,
+import {
+  isProviderWorkspaceSnapshotCurrent,
+  type ServerProvider,
+  type ServerProviderSkill,
+  type ServerProviderSlashCommand,
 } from "@t3tools/contracts";
 
 export type ProviderSkillSourceKind = "app" | "repo" | "project" | "personal" | "system" | "other";
 
-function titleCaseWords(value: string): string {
-  const words: string[] = [];
-  for (const segment of value.split(/[\s:_-]+/)) {
-    if (segment.length === 0) continue;
-    words.push(segment.charAt(0).toUpperCase() + segment.slice(1));
-  }
-  return words.join(" ");
-}
-
 function normalizePathSeparators(pathValue: string): string {
   return pathValue.replaceAll("\\", "/");
-}
-
-export function formatProviderSkillDisplayName(
-  skill: Pick<ServerProviderSkill, "name" | "displayName">,
-): string {
-  const displayName = skill.displayName?.trim();
-  if (displayName) {
-    return displayName;
-  }
-  return titleCaseWords(skill.name);
 }
 
 export function dedupeProviderSkillsByName(
@@ -44,11 +26,11 @@ export function dedupeProviderSkillsByName(
 }
 
 /**
- * Whether a composer pick can start this skill. A skill switched off in the
- * provider's settings will not run, and one the provider reserves for the
- * agent (Claude Code's `user-invocable: false`) rejects a user invocation.
- * Everything else, including skills the agent may not start on its own, is
- * fair game: the server dispatches the pick in the provider's native form.
+ * A skill switched off in the provider's settings will not run, and one the
+ * provider reserves for the agent (Claude Code's `user-invocable: false`)
+ * rejects a user invocation. Everything else, including skills the agent may
+ * not start on its own, is fair game: the server dispatches the pick in the
+ * provider's native form.
  */
 export function isProviderSkillUserInvocable(
   skill: Pick<ServerProviderSkill, "enabled" | "userInvocable">,
@@ -109,6 +91,27 @@ function resolveProviderWorkspaceSnapshot(
 ) {
   if (!cwd) return undefined;
   return provider.workspaceSnapshots?.find((snapshot) => snapshot.cwd === cwd);
+}
+
+export function hasCompleteProviderWorkspaceSnapshot(
+  provider: ServerProvider | null | undefined,
+  cwd: string | null | undefined,
+): boolean {
+  const snapshot = provider && resolveProviderWorkspaceSnapshot(provider, cwd);
+  return Boolean(snapshot && !snapshot.slashCommandsPending);
+}
+
+export function hasCurrentProviderWorkspaceSnapshot(
+  provider: ServerProvider | null | undefined,
+  cwd: string | null | undefined,
+  nowMs: number,
+): boolean {
+  const snapshot = provider && resolveProviderWorkspaceSnapshot(provider, cwd);
+  return Boolean(
+    snapshot &&
+    !snapshot.slashCommandsPending &&
+    isProviderWorkspaceSnapshotCurrent(snapshot, nowMs),
+  );
 }
 
 export function resolveProviderSkillsForCwd(

@@ -2,7 +2,11 @@ import { describe, expect, it } from "@effect/vitest";
 
 import { deriveAssetUrlState } from "./asset-url-state";
 
-const SUCCESS = { _tag: "Success" as const, url: "https://environment.example/api/assets/abc" };
+const SUCCESS = {
+  _tag: "Success" as const,
+  url: "https://environment.example/api/assets/abc",
+  expiresAt: Number.MAX_SAFE_INTEGER,
+};
 
 describe("deriveAssetUrlState", () => {
   it("passes a resolved URL through on a live environment", () => {
@@ -26,8 +30,6 @@ describe("deriveAssetUrlState", () => {
     }
   });
 
-  // A dead environment fails the URL query itself, so the query outcome alone
-  // cannot tell a missing file from a missing connection.
   it("reports disconnected when the query failed while the environment is down", () => {
     for (const connectionPhase of ["available", "offline", "reconnecting", "error"] as const) {
       expect(deriveAssetUrlState({ connectionPhase, shared: { _tag: "Failure" } })).toEqual({

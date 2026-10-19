@@ -6,6 +6,8 @@ import {
   ProviderThreadId,
   ProviderSessionId,
   ProviderDriverKind,
+  ProviderTurnId,
+  RunAttemptId,
   RunId,
   ThreadId,
   type OrchestrationV2ExecutionNode,
@@ -18,6 +20,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { v2Projection } from "./orchestrationV2TestFixtures.ts";
 import {
   presentPendingBackgroundWork,
+  presentProviderGoal,
   deriveReportedModelSelection,
   deriveLatestThreadRun,
   deriveProviderSubagentStatus,
@@ -190,6 +193,34 @@ describe("thread execution presentation", () => {
     expect(threadRuntimeHasInterruptibleRun(runtime)).toBe(true);
   });
 
+  it("marks an open run whose provider turn already ended", () => {
+    const attemptId = RunAttemptId.make("attempt-open");
+    const openRun = { ...run("run-open", 1, "running"), activeAttemptId: attemptId };
+    const providerTurn = (status: "running" | "failed") => ({
+      id: ProviderTurnId.make("provider-turn-open"),
+      providerThreadId: ProviderThreadId.make("provider-thread-open"),
+      nodeId: NodeId.make("node-open"),
+      runAttemptId: attemptId,
+      nativeTurnRef: null,
+      ordinal: 1,
+      status,
+      startedAt: now,
+      completedAt: status === "running" ? null : now,
+    });
+    const projection = (status: "running" | "failed") => ({
+      ...v2Projection,
+      runs: [openRun],
+      providerTurns: [providerTurn(status)],
+      updatedAt: now,
+    });
+
+    expect(deriveThreadActivityRun(projection("running"))?.turnEnded).toBeUndefined();
+    expect(deriveThreadActivityRun(projection("failed"))).toMatchObject({
+      status: "running",
+      turnEnded: true,
+    });
+  });
+
   it("presents a held queue as the stopped run instead of queued work", () => {
     const interrupted = { ...run("run-interrupted", 1, "interrupted"), completedAt: now };
     const held = { ...run("run-held", 2, "queued"), queueHeld: true };
@@ -202,11 +233,9 @@ describe("thread execution presentation", () => {
       activeRunId: null,
     });
 
-    // Resuming clears the hold, and the run reads as queued until it starts.
     const resumed = { ...projection, runs: [interrupted, { ...held, queueHeld: false }] };
     expect(deriveThreadRuntime(resumed)).toMatchObject({ status: "queued" });
 
-    // Recovery can hold a first message before any run executed; it is not work.
     const onlyHeld = {
       ...projection,
       runs: [held],
@@ -316,7 +345,6 @@ describe("deriveRunlessWorkStartedAt", () => {
   it("times a provider-native subagent from its runless root turn while it works", () => {
     const projection = { ...nativeChild, nodes: [rootTurn("running", later)] };
     expect(deriveRunlessWorkStartedAt(projection)).toBe("2026-07-28T10:05:00.000Z");
-    // The subagent has no run, so it stays unstoppable and unqueueable.
     expect(deriveThreadRuntime(projection)).toBeNull();
   });
 
@@ -551,7 +579,6 @@ describe("presentPendingBackgroundWork", () => {
     expect(presentPendingBackgroundWork([])).toBeNull();
   });
 
-  // A command left running, such as a dev server, does not wake the agent.
   it("says only commands are running, not waited on", () => {
     expect(
       presentPendingBackgroundWork([
@@ -675,5 +702,45 @@ describe("provider-reported model selection", () => {
     const variantReport = { ...selected, options: [{ id: "variant", value: "default" }] };
     expect(formatModelSelectionEffort(selected, models, variantReport)).toBe("Default");
     expect(formatModelSelectionEffort(selected, models)).toBe("Unknown");
+  });
+});
+
+describe("presentProviderGoal", () => {
+  it("summarizes Codex accounting and offers resume once the goal stops short", () => {
+    expect(
+      presentProviderGoal(
+        {
+          objective: "Ship the feature",
+          status: "paused",
+          tokensUsed: 12_400,
+          tokenBudget: 50_000,
+          timeUsedSeconds: 245,
+        },
+        false,
+      ),
+    ).toEqual({
+      title: "Goal paused",
+      objective: "Ship the feature",
+      usage: "12k / 50k tokens · 4m 5s",
+      canResume: true,
+    });
+  });
+
+  it("counts Claude evaluator checks and never offers resume", () => {
+    expect(
+      presentProviderGoal({ objective: "All tests pass", status: "active", checks: 1 }, true),
+    ).toEqual({
+      title: "Pursuing goal",
+      objective: "All tests pass",
+      usage: "1 check",
+      canResume: false,
+    });
+    expect(
+      presentProviderGoal({ objective: "All tests pass", status: "complete", checks: 0 }, false)
+        .usage,
+    ).toBeNull();
+    expect(
+      presentProviderGoal({ objective: "All tests pass", status: "active" }, false).title,
+    ).toBe("Goal set");
   });
 });

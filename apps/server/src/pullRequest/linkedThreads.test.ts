@@ -1,9 +1,9 @@
 import { assert, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { listLinkedPullRequestThreads } from "./linkedThreads.ts";
 
 const encodePayload = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -106,16 +106,6 @@ it.effect(
           thread_id, project_id, title, default_provider, runtime_mode, interaction_mode,
           created_at, updated_at, payload_json
         ) VALUES (
-          'legacy-single', 'project-1', 'legacy-single', 'codex', 'full-access', 'default',
-          ${createdAt}, ${createdAt},
-          '{"linkedPullRequest":{"projectId":"project-1","repository":"acme/web","number":7,"url":"https://github.com/acme/web/pull/7"}}'
-        )
-      `;
-      yield* sql`
-        INSERT INTO orchestration_v2_projection_threads (
-          thread_id, project_id, title, default_provider, runtime_mode, interaction_mode,
-          created_at, updated_at, payload_json
-        ) VALUES (
           'explicitly-unlinked', 'project-1', 'explicitly-unlinked', 'codex', 'full-access', 'default',
           ${createdAt}, ${createdAt},
           '{"linkedPullRequest":{"projectId":"project-1","repository":"acme/web","number":7,"url":"https://github.com/acme/web/pull/7"},"pullRequests":[]}'
@@ -169,7 +159,6 @@ it.effect(
         threads: [
           { id: "archived", projectId: "project-1", title: "archived", archivedAt },
           { id: "active", projectId: "project-1", title: "active", archivedAt: null },
-          { id: "legacy-single", projectId: "project-1", title: "legacy-single", archivedAt: null },
         ],
       });
       assert.deepStrictEqual(
@@ -180,5 +169,5 @@ it.effect(
         }),
         { threads: [] },
       );
-    }).pipe(Effect.provide(SqlitePersistenceMemory)),
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

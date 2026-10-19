@@ -11,9 +11,6 @@ import {
 } from "../shared.ts";
 import { CLAUDE_MCP_TOOL_PRESENTATION_PROMPT } from "./input.ts";
 
-// The scrape frame carries Claude Code's `tool_use_meta` as recorded. The map
-// frame's entry was removed from the recording, so it stands in for an MCP
-// tool Claude Code sends no display metadata for.
 export function assertClaudeMcpToolPresentationOutput(
   result: OrchestratorV2ScenarioResult,
   transcript: ProviderReplayTranscript,
@@ -35,6 +32,7 @@ export function assertClaudeMcpToolPresentationOutput(
 
   assert.equal(scrape?.status, "completed");
   assert.equal(scrape?.title, "Firecrawl scrape");
+  assert.deepEqual(scrape?.toolIcon, scrape?.toolSource?.icon);
   assert.deepEqual(scrape?.toolSource, {
     key: "mcp:firecrawl",
     name: "Firecrawl",
@@ -46,6 +44,10 @@ export function assertClaudeMcpToolPresentationOutput(
   });
 
   assert.equal(map?.status, "completed");
-  assert.isNull(map?.title);
-  assert.notProperty(map, "toolSource");
+  assert.equal(map?.title, "firecrawl map");
+  assert.deepEqual(map?.toolSource, {
+    key: "mcp:firecrawl",
+    name: "Firecrawl",
+    kind: "integration",
+  });
 }

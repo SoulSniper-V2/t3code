@@ -1,14 +1,15 @@
-import { ScreenScrollView as ScrollView } from "../../components/ScreenScrollView";
-import { NativeHeaderToolbar } from "../../native/StackHeader";
+import { Toolbar } from "../../components/ui/Toolbar";
+import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
+
 import { useAuth } from "@clerk/expo";
 import { StackActions, useNavigation } from "@react-navigation/native";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Platform, Pressable, RefreshControl, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { reportAtomCommandResult, settlePromise } from "@t3tools/client-runtime/state/runtime";
-import { AndroidSheetHeader } from "../../components/AndroidScreenHeader";
-import { AppText as Text } from "../../components/AppText";
+import { AndroidSheetHeader } from "../../components/ui/AndroidScreenHeader";
+import { AppText as Text } from "../../components/ui/AppText";
 import { useRemoteConnections } from "../../state/use-remote-environment-registry";
 import { CloudEnvironmentRows } from "../connection/CloudEnvironmentRows";
 import { splitEnvironmentSections } from "../connection/environmentSections";
@@ -16,13 +17,6 @@ import { useConnectionController } from "../connection/useConnectionController";
 import { optOutOfConnectOnboarding } from "./connectOnboardingOptOut";
 import { hasCloudPublicConfig } from "./publicConfig";
 
-/**
- * Post-sign-in onboarding sheet for T3 Connect. Mobile never publishes
- * environments itself — it consumes ones published elsewhere — so this simply
- * surfaces the account's T3 Connect environments right after sign-in so every
- * device can be connected in one go. It shows on every sign-in: sign-out
- * clears the connected environments, so each new session starts from zero.
- */
 export function ConnectOnboardingRouteScreen() {
   const navigation = useNavigation();
 
@@ -54,25 +48,19 @@ function ConfiguredConnectOnboardingRouteScreen() {
     cloudEnvironments: null,
   });
 
-  // Pull-to-refresh tracks its own spinner instead of discovery's refreshing
-  // flag, so background refreshes (e.g. the sign-in one) don't yank the
-  // content down.
-  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
-  const handlePullRefresh = useCallback(() => {
-    void (async () => {
-      setIsPullRefreshing(true);
-      await refreshRelayEnvironments();
-      setIsPullRefreshing(false);
-    })();
-  }, [refreshRelayEnvironments]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const handleRefresh = () => {
+    setIsRefreshing(true);
+    void refreshRelayEnvironments().finally(() => setIsRefreshing(false));
+  };
 
-  const handleClose = useCallback(() => {
+  const handleClose = () => {
     navigation.goBack();
-  }, [navigation]);
+  };
 
   // Persist before dismissing so a quick sign-out/sign-in cannot race ahead
   // of the preference write; the write is a local secure-store update.
-  const handleDontShowAgain = useCallback(() => {
+  const handleDontShowAgain = () => {
     void (async () => {
       if (userId) {
         const result = await settlePromise(() => optOutOfConnectOnboarding(userId));
@@ -80,21 +68,31 @@ function ConfiguredConnectOnboardingRouteScreen() {
       }
       navigation.goBack();
     })();
-  }, [navigation, userId]);
+  };
 
   return (
     <View collapsable={false} className="flex-1 bg-sheet">
       {Platform.OS === "android" ? (
         <AndroidSheetHeader
           title="Set up T3 Connect"
-          actions={[{ accessibilityLabel: "Close", icon: "xmark", onPress: handleClose }]}
+          actions={[
+            {
+              accessibilityLabel: "Refresh environments",
+              disabled: isRefreshing,
+              icon: "arrow.clockwise",
+              loading: isRefreshing,
+              onPress: handleRefresh,
+            },
+            { accessibilityLabel: "Close", icon: "xmark", onPress: handleClose },
+          ]}
         />
       ) : (
-        <NativeHeaderToolbar placement="right">
-          <NativeHeaderToolbar.Button icon="xmark" onPress={handleClose} separateBackground />
-        </NativeHeaderToolbar>
+        <Toolbar placement="right">
+          <Toolbar.Button icon="xmark" onPress={handleClose} separateBackground />
+        </Toolbar>
       )}
       <ScrollView
+        nestedScrollEnabled
         alwaysBounceVertical
         contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
@@ -106,7 +104,9 @@ function ConfiguredConnectOnboardingRouteScreen() {
           paddingTop: 16,
         }}
         refreshControl={
-          <RefreshControl refreshing={isPullRefreshing} onRefresh={handlePullRefresh} />
+          Platform.OS === "ios" ? (
+            <RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} />
+          ) : undefined
         }
       >
         {isSignedIn ? (
